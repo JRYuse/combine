@@ -18,6 +18,10 @@ import mindustry.mod.Mod;
 import mindustry.mod.Mods.LoadedMod;
 import mindustry.type.ItemStack;
 import mindustry.world.Block;
+import mindustry.world.blocks.power.ConsumeGenerator;
+import mindustry.world.blocks.power.HeaterGenerator;
+import mindustry.world.blocks.power.ImpactReactor;
+import mindustry.world.blocks.power.NuclearReactor;
 import mindustry.world.blocks.production.AttributeCrafter;
 import mindustry.world.blocks.production.BeamDrill;
 import mindustry.world.blocks.production.Drill;
@@ -71,8 +75,15 @@ public class Main extends Mod {
       return;
     }
     json = reader.parse(metaFile);
-    String[] array = json.asStringArray();
-    list.set(array);
+    if (json == null) {
+      Log.info("whitelist.json is empty or invalid, using default empty list");
+      return;
+    }
+    try {
+      String[] array = json.asStringArray();
+      list.set(array);
+    } finally {
+    }
   }
 
   /** 检测是否是 JS extend() 生成的适配器类 */
@@ -100,11 +111,16 @@ public class Main extends Mod {
         continue;
       if (list.contains(b.name))
         continue;
+
       boolean isFactory = b instanceof GenericCrafter;
       boolean isDrill = b instanceof Drill || b instanceof BeamDrill;
-      if (!isFactory && !isDrill)
+      boolean isGenerator = b instanceof ConsumeGenerator
+          || b instanceof mindustry.world.blocks.power.ImpactReactor
+          || b instanceof mindustry.world.blocks.power.NuclearReactor;
+
+      if (!isFactory && !isDrill && !isGenerator)
         continue;
-      if (b instanceof CombinedCrafter || b instanceof CombinedDrill)
+      if (b instanceof CombinedCrafter || b instanceof CombinedDrill || b instanceof CombinedGenerator)
         continue;
 
       Block combo;
@@ -117,7 +133,7 @@ public class Main extends Mod {
         else
           cc.mode = CombinedCrafter.Mode.generic;
         combo = cc;
-      } else {
+      } else if (isDrill) {
         CombinedDrill cd = createCombo(b, CombinedDrill.class);
         if (b instanceof BeamDrill)
           cd.mode = CombinedDrill.Mode.beam;
@@ -126,6 +142,17 @@ public class Main extends Mod {
         else
           cd.mode = CombinedDrill.Mode.drill;
         combo = cd;
+      } else { // generator
+        CombinedGenerator cg = createCombo(b, CombinedGenerator.class);
+        if (b instanceof mindustry.world.blocks.power.HeaterGenerator)
+          cg.mode = CombinedGenerator.Mode.heater;
+        else if (b instanceof mindustry.world.blocks.power.ImpactReactor)
+          cg.mode = CombinedGenerator.Mode.impact;
+        else if (b instanceof mindustry.world.blocks.power.NuclearReactor)
+          cg.mode = CombinedGenerator.Mode.nuclear;
+        else
+          cg.mode = CombinedGenerator.Mode.consume;
+        combo = cg;
       }
 
       copyFields(b, combo);

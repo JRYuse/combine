@@ -48,6 +48,7 @@ public class BlockCloner {
             || n.equals("techNode") || n.equals("techNodes")
             || n.equals("buildType")
             || n.equals("bars") || n.equals("stats")
+            || n.equals("barMap") // 关键：防止共享 bars 容器
             || n.equals("drawer"))
           continue;
 
@@ -55,7 +56,7 @@ public class BlockCloner {
         try {
           Object val = f.get(from);
           Field toField = findField(to.getClass(), n);
-          if (toField != null) {
+          if (toField != null && toField.getType() == f.getType()) {
             toField.setAccessible(true);
             toField.set(to, val);
           }
@@ -126,7 +127,7 @@ public class BlockCloner {
 
     copyRegionArray(original, combo, "teamRegions");
     copyRegionArray(original, combo, "variantRegions");
-
+    copyAllRegionArrays(original, combo);
     // 从原版深拷贝 drawer，然后替换 Liquid 绘制器
     try {
       Field comboDrawerF = findField(combo.getClass(), "drawer");
@@ -143,6 +144,34 @@ public class BlockCloner {
       }
     } catch (Exception e) {
       Log.err(e);
+    }
+  }
+
+  private static void copyAllRegionArrays(Block from, Block to) {
+    Class<?> clazz = from.getClass();
+    while (clazz != null && clazz != Object.class) {
+      for (Field f : clazz.getDeclaredFields()) {
+        int mod = f.getModifiers();
+        if (Modifier.isStatic(mod) || Modifier.isFinal(mod))
+          continue;
+        if (f.getType() != TextureRegion[].class)
+          continue;
+        f.setAccessible(true);
+        try {
+          TextureRegion[] fromArr = (TextureRegion[]) f.get(from);
+          if (fromArr == null)
+            continue;
+          Field toField = findField(to.getClass(), f.getName());
+          if (toField != null && toField.getType() == TextureRegion[].class) {
+            toField.setAccessible(true);
+            TextureRegion[] toArr = new TextureRegion[fromArr.length];
+            System.arraycopy(fromArr, 0, toArr, 0, fromArr.length);
+            toField.set(to, toArr);
+          }
+        } catch (Exception ignored) {
+        }
+      }
+      clazz = clazz.getSuperclass();
     }
   }
 

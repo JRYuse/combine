@@ -1200,6 +1200,37 @@ public class CombinedCrafter extends GenericCrafter {
             return needed && liquids.get(liquid) < comboTotalLiquidCap - 0.001f;
         }
 
+        // -------------------- 液体输出覆盖 --------------------
+        @Override
+        public void dumpLiquid(Liquid liquid, float scaling, int outputDir) {
+            int dump = this.cdump;
+            if (liquids.get(liquid) <= 0.0001f)
+                return;
+            for (int i = 0; i < proximity.size; i++) {
+                incrementDump(proximity.size);
+                Building other = proximity.get((i + dump) % proximity.size);
+                if (outputDir != -1 && (outputDir + rotation) % 4 != relativeTo(other))
+                    continue;
+                other = other.getLiquidDestination(self(), liquid);
+                if (other != null && other.block.hasLiquids && canDumpLiquid(other, liquid) && other.liquids != null) {
+                    float ofract = other.liquids.get(liquid) / Math.max(other.block.liquidCapacity, 1f);
+                    float fract = liquids.get(liquid) / Math.max(comboTotalLiquidCap, 1f);
+                    if (ofract < fract) {
+                        transferLiquid(other, (fract - ofract) * Math.max(comboTotalLiquidCap, 1f) / scaling, liquid);
+                    }
+                }
+            }
+        }
+
+        @Override
+        public void transferLiquid(Building next, float amount, Liquid liquid) {
+            float flow = Math.min(Math.max(next.block.liquidCapacity - next.liquids.get(liquid), 0f), amount);
+            if (next.acceptLiquid(self(), liquid)) {
+                next.handleLiquid(self(), liquid, flow);
+                liquids.remove(liquid, flow);
+            }
+        }
+
         @Override
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
