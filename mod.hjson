@@ -1,0 +1,23 @@
+#the mod name as displayed in-game
+displayName: "组合工厂"
+
+#the internal name of your mod
+name: "combine"
+
+#your name
+author: "R"
+
+#the fully qualified main class of the mod
+main: "combine.Main"
+
+#the mod description as seen in the mod dialog
+description: "1.2支持普通工厂，地形加成工厂，分离机，普通钻头，挖墙钻头（e星挖沙的不算)，e星的震地钻头组合，并且支持跨模组覆盖。如果你把该模组关闭，之前的建筑估计要重新解锁一遍）"
+
+#the mod version
+version: 1.2
+
+#the minimum game build required to run this mod
+minGameVersion: 159
+
+#this is a java mod
+java: true
