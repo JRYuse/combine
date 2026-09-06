@@ -14,19 +14,28 @@ import mindustry.content.TechTree.TechNode;
 import mindustry.ctype.ContentType;
 import mindustry.ctype.UnlockableContent;
 import mindustry.game.EventType.ClientLoadEvent;
+import mindustry.game.EventType.UnlockEvent;
 import mindustry.mod.Mod;
 import mindustry.mod.Mods.LoadedMod;
 import mindustry.type.ItemStack;
 import mindustry.world.Block;
+import mindustry.world.blocks.campaign.LaunchPad;
+import mindustry.world.blocks.defense.ForceProjector;
+import mindustry.world.blocks.defense.MendProjector;
+import mindustry.world.blocks.defense.OverdriveProjector;
+import mindustry.world.blocks.defense.RegenProjector;
 import mindustry.world.blocks.power.ConsumeGenerator;
 import mindustry.world.blocks.power.HeaterGenerator;
 import mindustry.world.blocks.power.ImpactReactor;
 import mindustry.world.blocks.power.NuclearReactor;
 import mindustry.world.blocks.production.AttributeCrafter;
 import mindustry.world.blocks.production.BeamDrill;
+import mindustry.world.blocks.production.BurstDrill;
 import mindustry.world.blocks.production.Drill;
 import mindustry.world.blocks.production.GenericCrafter;
 import mindustry.world.blocks.production.Separator;
+import mindustry.world.blocks.storage.CoreBlock;
+import mindustry.world.blocks.storage.StorageBlock;
 import mindustry.world.meta.BuildVisibility;
 
 import java.lang.reflect.Field;
@@ -47,6 +56,15 @@ public class Main extends Mod {
   public void loadContent() {
     Loads.load();
 
+    Events.on(UnlockEvent.class, event -> {
+      if (event.content instanceof Block b) {
+        Block orig = comboToOriginal.get(b);
+        if (orig != null && !orig.unlocked()) {
+          orig.unlock();
+        }
+      }
+    });
+
     Events.on(ClientLoadEvent.class, e -> {
       for (var entry : originalToCombo) {
         postInit(entry.value);
@@ -55,13 +73,28 @@ public class Main extends Mod {
       processModBlocks();
       rebuildTechTree();
 
+      // 隐藏所有原版（包括 processModBlocks 动态生成的）
       for (var entry : originalToCombo) {
         Block orig = entry.key;
         orig.hideDatabase = true;
         orig.buildVisibility = BuildVisibility.hidden;
         hideNode(orig);
       }
+
+      // 全量同步：组合已解锁 → 原版也解锁（覆盖预置 + Mod 动态生成）
+      syncUnlocks();
     });
+  }
+
+  /** 同步所有组合方块与其原版的解锁状态 */
+  void syncUnlocks() {
+    for (var entry : originalToCombo) {
+      Block orig = entry.key;
+      Block combo = entry.value;
+      if (combo.unlocked() && !orig.unlocked()) {
+        orig.unlock();
+      }
+    }
   }
 
   void getWhiteList() {
@@ -91,11 +124,9 @@ public class Main extends Mod {
     Class<?> cls = b.getClass();
     String name = cls.getName().toLowerCase();
 
-    // 类名特征
     if (name.contains("adapter") || name.contains("rhino") || name.contains("javascript"))
       return true;
 
-    // 关键：JavaAdapter 实现了 org.mozilla.javascript.Wrapper
     for (Class<?> iface : cls.getInterfaces()) {
       if (iface.getName().equals("org.mozilla.javascript.Wrapper"))
         return true;
@@ -113,14 +144,27 @@ public class Main extends Mod {
         continue;
 
       boolean isFactory = b instanceof GenericCrafter;
-      boolean isDrill = b instanceof Drill || b instanceof BeamDrill;
+      boolean isDrill = b instanceof Drill || b instanceof BeamDrill || b instanceof BurstDrill;
       boolean isGenerator = b instanceof ConsumeGenerator
-          || b instanceof mindustry.world.blocks.power.ImpactReactor
-          || b instanceof mindustry.world.blocks.power.NuclearReactor;
+          || b instanceof ImpactReactor
+          || b instanceof NuclearReactor;
+      boolean isLaunchPad = b instanceof LaunchPad;
+      boolean isRegen = b instanceof RegenProjector;
+      boolean isOverdrive = b instanceof OverdriveProjector;
+      boolean isMend = b instanceof MendProjector;
+      boolean isForce = b instanceof ForceProjector;
+      boolean isStorage = b instanceof StorageBlock && !(b instanceof CoreBlock);
 
-      if (!isFactory && !isDrill && !isGenerator)
+      if (!isFactory && !isDrill && !isGenerator && !isLaunchPad
+          && !isRegen && !isOverdrive && !isMend && !isForce && !isStorage)
         continue;
-      if (b instanceof CombinedCrafter || b instanceof CombinedDrill || b instanceof CombinedGenerator)
+
+      // 防止重复处理已转换类型
+      if (b instanceof CombinedCrafter || b instanceof CombinedDrill
+          || b instanceof CombinedGenerator || b instanceof CombinedLaunchPad
+          || b instanceof CombinedRegenProjector || b instanceof CombinedOverdriveProjector
+          || b instanceof CombinedMendProjector || b instanceof CombinedForceProjector
+          || b instanceof CombinedStorageBlock)
         continue;
 
       Block combo;
@@ -137,22 +181,34 @@ public class Main extends Mod {
         CombinedDrill cd = createCombo(b, CombinedDrill.class);
         if (b instanceof BeamDrill)
           cd.mode = CombinedDrill.Mode.beam;
-        else if (b.name.contains("blast") || b.name.contains("burst"))
+        else if (b instanceof BurstDrill)
           cd.mode = CombinedDrill.Mode.burst;
         else
           cd.mode = CombinedDrill.Mode.drill;
         combo = cd;
-      } else { // generator
+      } else if (isGenerator) {
         CombinedGenerator cg = createCombo(b, CombinedGenerator.class);
-        if (b instanceof mindustry.world.blocks.power.HeaterGenerator)
-          cg.mode = CombinedGenerator.Mode.heater;
-        else if (b instanceof mindustry.world.blocks.power.ImpactReactor)
+        if (b instanceof ImpactReactor)
           cg.mode = CombinedGenerator.Mode.impact;
-        else if (b instanceof mindustry.world.blocks.power.NuclearReactor)
+        else if (b instanceof NuclearReactor)
           cg.mode = CombinedGenerator.Mode.nuclear;
+        else if (b instanceof HeaterGenerator)
+          cg.mode = CombinedGenerator.Mode.heater;
         else
           cg.mode = CombinedGenerator.Mode.consume;
         combo = cg;
+      } else if (isLaunchPad) {
+        combo = createCombo(b, CombinedLaunchPad.class);
+      } else if (isRegen) {
+        combo = createCombo(b, CombinedRegenProjector.class);
+      } else if (isOverdrive) {
+        combo = createCombo(b, CombinedOverdriveProjector.class);
+      } else if (isMend) {
+        combo = createCombo(b, CombinedMendProjector.class);
+      } else if (isForce) {
+        combo = createCombo(b, CombinedForceProjector.class);
+      } else { // StorageBlock
+        combo = createCombo(b, CombinedStorageBlock.class);
       }
 
       copyFields(b, combo);
@@ -163,13 +219,7 @@ public class Main extends Mod {
     }
   }
 
-  /**
-   * 检查 clazz 在 baseClass 之上是否声明了额外的实例字段。
-   * 原版匿名类（如 Blocks$1）通常没有额外字段，返回 false。
-   * JS MultiCrafter 等魔改类通常有 tmpRecs 等额外字段，返回 true。
-   */
   boolean hasExtraFields(Class<?> clazz, Class<?> baseClass) {
-    // 收集基准类及其所有父类的字段名
     Set<String> baseFields = new HashSet<>();
     Class<?> c = baseClass;
     while (c != null && c != Object.class) {
@@ -179,7 +229,6 @@ public class Main extends Mod {
       c = c.getSuperclass();
     }
 
-    // 检查 clazz 及其父类（直到 baseClass 为止）的所有声明字段
     c = clazz;
     while (c != null && c != Object.class && c != baseClass) {
       for (Field f : c.getDeclaredFields()) {
@@ -188,7 +237,6 @@ public class Main extends Mod {
           continue;
 
         String n = f.getName();
-        // 系统字段不算
         if (n.equals("name") || n.equals("id")
             || n.equals("techNode") || n.equals("techNodes")
             || n.equals("buildType") || n.equals("bars") || n.equals("stats"))

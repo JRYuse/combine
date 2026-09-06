@@ -207,7 +207,11 @@ public class CombinedGenerator extends ConsumeGenerator {
 
   @Override
   public TextureRegion[] icons() {
-    return new TextureRegion[] { region, topRegion };
+    // nuclear 模式需要 topRegion 绘制冷却液覆盖层；其他模式不需要
+    if (mode == Mode.nuclear && topRegion != null && topRegion.found()) {
+      return new TextureRegion[] { region, topRegion };
+    }
+    return new TextureRegion[] { region };
   }
 
   // ==================== Building ====================

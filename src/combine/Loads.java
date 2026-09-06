@@ -10,6 +10,7 @@ public class Loads {
       cPlastaniumCompressor, cPhaseWeaver, cSurgeSmelter, cCryofluidMixer,
       cPyratiteMixer, cBlastMixer, cMelter, cSeparator, cDisassembler,
       cSporePress, cPulverizer, cCoalCentrifuge, cIncinerator;
+    public static Block cRegenProjector, cOverdriveProjector, cMendProjector, cForceProjector, cLaunchPad;
   public static Block cMechanicalDrill, cPneumaticDrill, cLaserDrill, cBlastDrill;
 
   public static void load() {
@@ -39,6 +40,12 @@ public class Loads {
 
     // 如果某个组合版需要覆盖 drawer，在 copyFields 之后写：
     // ((CombinedCrafter)cCryofluidMixer).drawer = new DrawMulti(...);
+
+    cRegenProjector = projector(Blocks.regenProjector, CombinedRegenProjector.class);
+    cOverdriveProjector = projector(Blocks.overdriveProjector, CombinedOverdriveProjector.class);
+    cMendProjector = projector(Blocks.mendProjector, CombinedMendProjector.class);
+    cForceProjector = projector(Blocks.forceProjector, CombinedForceProjector.class);
+    cLaunchPad = projector(Blocks.launchPad, CombinedLaunchPad.class);
   }
 
   private static Block crafter(Block orig, CombinedCrafter.Mode mode) {
@@ -53,5 +60,16 @@ public class Loads {
     d.mode = mode;
     copyFields(orig, d);
     return d;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static <T extends Block> Block projector(Block orig, Class<T> comboClass) {
+    T c = createCombo(orig, comboClass);
+    copyFields(orig, c);
+    c.init();
+    c.postInit();
+    c.loadIcon();
+    postInit(c);
+    return c;
   }
 }
