@@ -70,13 +70,14 @@ public class CombinedForceProjector extends ForceProjector {
             bullet.absorb();
             paramBlock.hitSound.at(bullet.x, bullet.y, 1f + Mathf.range(0.1f), paramBlock.hitSoundVolume);
             paramBlock.absorbEffect.at(bullet);
-            paramEntity.hit = 1f; // FIX: 改为本地 hit
+            paramEntity.hit = 1f;
             paramEntity.setBuildup(paramEntity.getBuildup() + bullet.type.shieldDamage(bullet));
         }
     };
 
     public CombinedForceProjector(String name) {
         super(name);
+        buildType = () -> new CombinedForceProjectorBuild();
         conductivePower = true;
         hasItems = true;
         hasLiquids = true;
@@ -87,7 +88,7 @@ public class CombinedForceProjector extends ForceProjector {
     public void init() {
         super.init();
         if (liquidCapacity != 9999f) {
-            baseLiquidCapacity = Math.max(1f, liquidCapacity);
+            baseLiquidCapacity = liquidCapacity;
             displayLiquid = liquidCapacity;
         }
         liquidCapacity = 9999f;
@@ -95,7 +96,7 @@ public class CombinedForceProjector extends ForceProjector {
             displayLiquid = 0;
         hasLiquids = true;
         hasItems = true;
-        conductivePower = true;
+
         cachedItems.clear();
         cachedLiquids.clear();
         if (consumers != null) {
@@ -133,11 +134,9 @@ public class CombinedForceProjector extends ForceProjector {
         public int comboTotalItemCap = 0;
         public int pendingLeaderPos = -1;
 
-        // ===== 组合体共享护盾状态（只有 leader 持有真实值）=====
+        // 组合体共享护盾核心状态（只有 leader 持有）
         public float comboBuildup = 0f;
         public boolean comboBroken = true;
-        public float comboPhaseHeat = 0f;
-        // FIX: 移除共享的 comboRadscl, comboWarmup, comboHit，改用本地字段
 
         public CombinedForceProjectorBuild leader() {
             if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null))
@@ -156,7 +155,7 @@ public class CombinedForceProjector extends ForceProjector {
             return l.comboGroup;
         }
 
-        // 获取/设置共享护盾状态（仅 buildup / broken / phaseHeat）
+        // 获取/设置共享 buildup / broken
         public float getBuildup() {
             return isLeader() ? comboBuildup : leader().comboBuildup;
         }
@@ -179,29 +178,10 @@ public class CombinedForceProjector extends ForceProjector {
                 leader().comboBroken = v;
         }
 
-        public float getPhaseHeat() {
-            return isLeader() ? comboPhaseHeat : leader().comboPhaseHeat;
-        }
-
-        public void setPhaseHeat(float v) {
-            if (isLeader())
-                comboPhaseHeat = v;
-            else
-                leader().comboPhaseHeat = v;
-        }
-
-        // ===== 同步共享状态到原版字段（供 drawShield 等使用）=====
-        // FIX: 只同步 buildup / broken / phaseHeat，warmup / radscl / hit 保持独立
+        // 同步共享状态到本地字段（供原版方法使用）
         public void syncToLocal() {
             this.buildup = getBuildup();
             this.broken = getBroken();
-            this.phaseHeat = getPhaseHeat();
-        }
-
-        public void syncFromLocal() {
-            setBuildup(this.buildup);
-            setBroken(this.broken);
-            setPhaseHeat(this.phaseHeat);
         }
 
         // ===== 组合体总盾容 =====
@@ -211,7 +191,7 @@ public class CombinedForceProjector extends ForceProjector {
                 if (!member.isValid())
                     continue;
                 CombinedForceProjector b = (CombinedForceProjector) member.block;
-                total += b.shieldHealth + b.phaseShieldBoost * getPhaseHeat();
+                total += b.shieldHealth + b.phaseShieldBoost * member.phaseHeat;
             }
             return total;
         }
@@ -288,8 +268,6 @@ public class CombinedForceProjector extends ForceProjector {
             if (oldGroup.size > newGroup.size)
                 splitAssets(oldGroup, newGroup);
             shareModules(newLeader);
-
-            // FIX: 只复制护盾核心状态，不复制动画状态（warmup/radscl/hit）
             if (oldGroup.size > 0) {
                 CombinedForceProjectorBuild oldLeader = null;
                 for (CombinedForceProjectorBuild b : oldGroup) {
@@ -301,10 +279,12 @@ public class CombinedForceProjector extends ForceProjector {
                 if (oldLeader != null && oldLeader != newLeader) {
                     newLeader.comboBuildup = oldLeader.comboBuildup;
                     newLeader.comboBroken = oldLeader.comboBroken;
-                    newLeader.comboPhaseHeat = oldLeader.comboPhaseHeat;
                 }
             }
-
+            // 新成员加入组合体时，所有力墙立刻展开
+            if (oldGroup.size > 0 && newGroup.size > oldGroup.size) {
+                newLeader.comboBroken = false;
+            }
             if (newLeader.items != null && totalItemCap > 0) {
                 int excess = newLeader.items.total() - totalItemCap;
                 if (excess > 0) {
@@ -528,10 +508,6 @@ public class CombinedForceProjector extends ForceProjector {
         public void created() {
             super.created();
             comboDirty = true;
-            // FIX: 新墙独立动画状态默认 0，不继承旧值
-            warmup = 0f;
-            radscl = 0f;
-            hit = 0f;
         }
 
         @Override
@@ -658,7 +634,7 @@ public class CombinedForceProjector extends ForceProjector {
             super.onRemoved();
         }
 
-        // ===== 覆盖核心 updateTile：共享盾容 + 共享修复，各自独立动画 =====
+        // ===== 覆盖核心 updateTile：共享盾容 + 共享修复，各自独立绘制/范围 =====
         @Override
         public void updateTile() {
             if (pendingLeaderPos != -1) {
@@ -679,76 +655,68 @@ public class CombinedForceProjector extends ForceProjector {
             if (isLeader() && comboDirty)
                 rebuildCombo();
             if (liquids != null && comboTotalLiquidCap > 0.001f) {
-                float excess = liquids.currentAmount() - comboTotalLiquidCap;
-                if (excess > 0.001f) {
-                    for (Liquid l : content.liquids()) {
-                        float amt = liquids.get(l);
-                        if (amt > 0.001f) {
-                            float remove = Math.min(amt, excess);
-                            liquids.remove(l, remove);
-                            excess -= remove;
-                            if (excess <= 0.001f)
-                                break;
-                        }
+                for (Liquid l : content.liquids()) {
+                    float amt = liquids.get(l);
+                    if (amt > comboTotalLiquidCap + 0.001f) {
+                        liquids.remove(l, amt - comboTotalLiquidCap);
                     }
                 }
             }
 
-            // 同步共享状态到本地字段（仅 buildup / broken / phaseHeat）
+            // 同步共享 buildup/broken 到本地字段
             syncToLocal();
 
             CombinedForceProjector block = (CombinedForceProjector) this.block;
-            boolean phaseValid = itemConsumer != null && itemConsumer.efficiency(this) > 0;
 
-            // phaseHeat 共享：更新本地值后通过 syncFromLocal 写回
+            // phaseHeat 独立更新
+            boolean phaseValid = itemConsumer != null && itemConsumer.efficiency(this) > 0;
             phaseHeat = Mathf.lerpDelta(phaseHeat, Mathf.num(phaseValid), 0.1f);
             if (phaseValid && !broken && timer(timerUse, block.phaseUseTime / timeScale) && efficiency > 0) {
                 consume();
             }
 
-            // FIX: radscl / warmup / hit 改为完全本地独立，不再共享
+            // warmup / radscl 独立更新
+            warmup = Mathf.lerpDelta(warmup, efficiency, 0.1f);
             radscl = Mathf.lerpDelta(radscl, broken ? 0f : warmup, 0.05f);
 
             if (Mathf.chanceDelta(buildup / block.shieldHealth * 0.1f)) {
                 Fx.reactorsmoke.at(x + Mathf.range(tilesize / 2f), y + Mathf.range(tilesize / 2f));
             }
 
-            warmup = Mathf.lerpDelta(warmup, efficiency, 0.1f);
-
-            // 所有成员贡献修复速度到共享 buildup
-            if (buildup > 0) {
+            // 只有 leader 负责修复共享 buildup
+            if (isLeader() && comboBuildup > 0) {
                 float comboCooldown = getComboCooldown();
-                buildup = Math.max(0f, buildup - delta() * comboCooldown);
+                comboBuildup = Math.max(0f, comboBuildup - delta() * comboCooldown);
             }
-            if (broken && buildup <= 0) {
-                broken = false;
-            }
-            float maxShield = getComboMaxShield();
-            if (buildup >= maxShield && !broken) {
-                broken = true;
-                buildup = maxShield;
-                block.shieldBreakEffect.at(x, y, realRadius(), team.color, block);
-                block.breakSound.at(x, y);
-                if (team != state.rules.defaultTeam) {
-                    Events.fire(Trigger.forceProjectorBreak);
+            if (isLeader()) {
+                if (comboBroken && comboBuildup <= 0) {
+                    comboBroken = false;
+                }
+                float maxShield = getComboMaxShield();
+                if (comboBuildup >= maxShield && !comboBroken) {
+                    comboBroken = true;
+                    comboBuildup = maxShield;
+                    block.shieldBreakEffect.at(x, y, realRadius(), team.color, block);
+                    block.breakSound.at(x, y);
+                    if (team != state.rules.defaultTeam) {
+                        Events.fire(Trigger.forceProjectorBreak);
+                    }
                 }
             }
+
             if (hit > 0f) {
                 hit -= 1f / 5f * Time.delta;
             }
-
-            // 把本地共享状态写回 leader
-            syncFromLocal();
 
             // 每个成员独立执行子弹偏转
             deflectBullets();
         }
 
-        // ===== 自己的 deflectBullets，使用本地 broken =====
+        // ===== 自己的 deflectBullets，使用共享状态 =====
         @Override
         public void deflectBullets() {
             float realRadius = realRadius();
-            if (realRadius > 0 && !broken) { // FIX: 用本地 broken
+            if (realRadius > 0 && !broken) {
                 paramBlock = (CombinedForceProjector) this.block;
                 paramEntity = this;
                 Groups.bullet.intersect(x - realRadius, y - realRadius, realRadius * 2f, realRadius * 2f,
@@ -756,11 +724,11 @@ public class CombinedForceProjector extends ForceProjector {
             }
         }
 
-        // ===== 保持原版 realRadius：每个成员用自己的 radscl =====
+        // ===== 保持原版 realRadius：每个成员用自己的 radius =====
         @Override
         public float realRadius() {
             CombinedForceProjector b = (CombinedForceProjector) block;
-            return (b.radius + phaseHeat * b.phaseRadiusBoost) * radscl; // FIX: 本地 radscl
+            return (b.radius + phaseHeat * b.phaseRadiusBoost) * radscl;
         }
 
         // ===== 保持原版 absorbExplosion =====
@@ -771,7 +739,7 @@ public class CombinedForceProjector extends ForceProjector {
                     ((CombinedForceProjector) block).shieldRotation, ex, ey);
             if (absorb) {
                 absorbEffect.at(ex, ey);
-                hit = 1f; // FIX: 本地 hit
+                hit = 1f;
                 setBuildup(Math.min(getBuildup() + damage * ((CombinedForceProjector) block).crashDamageMultiplier,
                         getComboMaxShield()));
                 syncToLocal();
@@ -783,7 +751,7 @@ public class CombinedForceProjector extends ForceProjector {
         @Override
         public void draw() {
             super.draw();
-            syncToLocal(); // 确保共享状态最新
+            syncToLocal();
             if (buildup > 0f) {
                 Draw.alpha(buildup / ((CombinedForceProjector) block).shieldHealth * 0.75f);
                 Draw.z(Layer.blockAdditive);
@@ -803,7 +771,7 @@ public class CombinedForceProjector extends ForceProjector {
             if (!broken) {
                 float radius = realRadius();
                 if (radius > 0.001f) {
-                    Draw.color(team.color, Color.white, Mathf.clamp(hit)); // FIX: 本地 hit
+                    Draw.color(team.color, Color.white, Mathf.clamp(hit));
                     if (renderer.animateShields) {
                         Draw.z(Layer.shields + 0.001f * hit);
                         Fill.poly(x, y, ((CombinedForceProjector) block).sides, radius,
@@ -876,11 +844,15 @@ public class CombinedForceProjector extends ForceProjector {
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float current = liquids.get(liquid);
-            float canAccept = Math.max(0f, comboTotalLiquidCap - current);
+            float currentTotal = liquids.currentAmount();
+            float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
+            // FIX: 将未接收的液体退回源端，防止因 block.liquidCapacity=9999f 导致源端过度扣除
+            float refund = amount - actual;
+            if (refund > 0.001f && source != null && source.liquids != null)
+                source.liquids.add(liquid, refund);
         }
 
         // ===== 显示面板 =====
@@ -1072,7 +1044,7 @@ public class CombinedForceProjector extends ForceProjector {
         // ===== 序列化 =====
         @Override
         public byte version() {
-            return 4; // FIX: 升级版本，动画状态不再共享序列化
+            return 3;
         }
 
         @Override
@@ -1091,22 +1063,19 @@ public class CombinedForceProjector extends ForceProjector {
                 if (liquids != null)
                     liquids = new LiquidModule();
             }
-            super.write(write); // super 会写每个成员自己的 warmup, radscl, hit
+            super.write(write);
             items = savedItems;
             liquids = savedLiquids;
             write.bool(comboLeader != null);
             if (comboLeader != null)
                 write.i(comboLeader.pos());
-            // FIX: 只写共享核心状态（buildup / broken / phaseHeat）
             write.f(getBuildup());
             write.bool(getBroken());
-            write.f(getPhaseHeat());
         }
 
         @Override
         public void read(Reads read, byte revision) {
-            super.read(read, revision); // super 会读每个成员自己的 warmup, radscl, hit
-
+            super.read(read, revision);
             boolean hasLeader = read.bool();
             int leaderPos = -1;
             if (hasLeader)
@@ -1125,18 +1094,9 @@ public class CombinedForceProjector extends ForceProjector {
             if (revision >= 3) {
                 setBuildup(read.f());
                 setBroken(read.bool());
-                if (revision == 3) {
-                    // 兼容旧存档：旧版在这里存了 radscl / warmup / hit，现在已改为本地独立
-                    // 读取并丢弃，避免后续数据错位
-                    read.f(); // 旧 radscl
-                    read.f(); // 旧 warmup
-                    setPhaseHeat(read.f());
-                    read.f(); // 旧 hit
-                } else { // revision >= 4
-                    setPhaseHeat(read.f());
-                }
-                syncToLocal();
             }
+            comboTotalLiquidCap = ((CombinedForceProjector)block).baseLiquidCapacity;
+            comboTotalItemCap = block.itemCapacity;
         }
     }
 }

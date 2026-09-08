@@ -17,6 +17,7 @@ import arc.util.Strings;
 import arc.util.Time;
 import arc.util.io.Reads;
 import arc.util.io.Writes;
+import combine.CombinedGenerator.CombinedGeneratorBuild;
 import mindustry.game.Team;
 import mindustry.gen.Building;
 import mindustry.gen.Icon;
@@ -46,19 +47,26 @@ import static mindustry.Vars.*;
 import static mindustry.Vars.iconMed;
 
 /**
- * 组合工厂 v12 —— 三模式统一版（修复序列化）
+ * 组合工厂 v13 —— 三模式统一版
  * 模式：
  * 1. generic : 普通工厂（原版 GenericCrafter 行为）
  * 2. attribute : 地形加成工厂（AttributeCrafter 行为）
  * 3. separator : 分离机（Separator 行为）
- * 相邻放置自动形成组合体、共享 items/liquids/power 的核心逻辑完全不变。
+ * 4. heatcrafter : 需热工厂（只从【直接相邻】的热源取热，不 BFS、不隔空传热）
+ * 5. heatproducer : 产热工厂（对外暴露平滑热量输出 producerHeat）
+ * 相邻放置自动形成组合体、共享 items/liquids/power 的核心逻辑不变。
+ * 热量显示（统计/血条/面板）仅 heatcrafter / heatproducer 两种模式可见。
+ * CombinedCrafterBuild 不再 implements HeatBlock：不再进入原版导体网络、
+ * 不会被原版方块当作热源读取，也彻底杜绝 crafter 之间互调 heat() 的递归。
  */
 public class CombinedCrafter extends GenericCrafter {
 
     public enum Mode {
         generic,
         attribute,
-        separator
+        separator,
+        heatcrafter,
+        heatproducer
     }
 
     /** 当前工厂模式 */
@@ -80,12 +88,25 @@ public class CombinedCrafter extends GenericCrafter {
     /** 缓存 ConsumeItems，供 separator 的 shouldConsume 使用 */
     protected @Nullable ConsumeItems consItems;
 
+    // ==================== HeatCrafter / HeatProducer 模式字段 ====================
+    public float heatRequirement = 10f;
+    public float maxEfficiency = 4f;
+    public float overheatScale = 0.5f;
+    public boolean overheat = false;
+    public boolean drawTop = true;
+
+    // ==================== HeatProducer 模式字段 ====================
+    public float heatOutput = 0f;
+
     // ==================== 原有字段 ====================
     public float displayLiquid;
     public boolean allowCrossTypeCombo = true;
     public float itemCapacityMultiplier = 1f;
     public float liquidCapacityMultiplier = 1f;
     public float safetyBuffer = 0.15f;
+
+    // ==================== 组合热量系统 ====================
+    public float heatCapacity = 100f;
     public float flowSmoothing = 0.92f;
     public float safetyBufferSeconds = 3f;
     public float baseLiquidCapacity = 10f;
@@ -106,8 +127,7 @@ public class CombinedCrafter extends GenericCrafter {
     @Override
     public void init() {
         super.init();
-        itemCapacity = Math.max(1, (int) (itemCapacity * itemCapacityMultiplier));
-        baseLiquidCapacity = Math.max(1f, liquidCapacity * liquidCapacityMultiplier);
+        baseLiquidCapacity = liquidCapacity;
         displayLiquid = liquidCapacity;
         liquidCapacity = 9999f;
         if (!hasLiquids)
@@ -115,12 +135,28 @@ public class CombinedCrafter extends GenericCrafter {
         hasLiquids = true;
         conductivePower = true;
         hasItems = true;
+        // 环境音已禁用（shouldAmbientSound 返回 false）
 
         // Separator 模式初始化
         if (mode == Mode.separator) {
             consItems = findConsumer(c -> c instanceof ConsumeItems);
             if (results == null)
                 results = new ItemStack[0];
+        }
+
+        // HeatCrafter / HeatProducer 模式初始化
+        if (mode == Mode.heatcrafter || mode == Mode.heatproducer) {
+            hasItems = true;
+            hasLiquids = true;
+            if (mode == Mode.heatproducer) {
+                heatRequirement = 0f; // 防止默认值泄漏到 stats
+            }
+        }
+
+        // 非产热/需热模式：清空热量字段，既不显示也不参与热量逻辑
+        if (mode != Mode.heatcrafter && mode != Mode.heatproducer) {
+            heatRequirement = 0f;
+            heatOutput = 0f;
         }
 
         // 缓存涉及物品（输入 + 输出 / results）
@@ -181,6 +217,12 @@ public class CombinedCrafter extends GenericCrafter {
 
     @Override
     public void setStats() {
+        // 只有产热/需热模式才显示热量统计
+        if (mode == Mode.heatproducer && heatOutput > 0)
+            stats.add(Stat.output, heatOutput, StatUnit.heatUnits);
+        if (mode == Mode.heatcrafter && heatRequirement > 0)
+            stats.add(Stat.input, heatRequirement, StatUnit.heatUnits);
+
         if (mode == Mode.separator) {
             stats.timePeriod = craftTime;
             stats.add(Stat.productionTime, craftTime / 60f, StatUnit.seconds);
@@ -219,6 +261,10 @@ public class CombinedCrafter extends GenericCrafter {
                     (int) ((baseEfficiency + Math.min(maxBoost, boostScale * sumAttribute(attribute, x, y))) * 100f)),
                     x, y, valid);
         }
+        if (mode == Mode.heatcrafter) {
+            // 放置时没有建筑可读，显示满热时的理论效率
+            drawPlaceText(Core.bundle.format("bar.efficiency", (int) (maxEfficiency * 100f)), x, y, valid);
+        }
     }
 
     @Override
@@ -233,6 +279,16 @@ public class CombinedCrafter extends GenericCrafter {
     @Override
     public void setBars() {
         super.setBars();
+        // 只有这两种模式显示热量条
+        if (mode == Mode.heatcrafter || mode == Mode.heatproducer) {
+            addBar("heat", (CombinedCrafterBuild e) -> new Bar("bar.heat", Pal.lightOrange, e::heatFrac));
+        }
+        if (mode == Mode.heatcrafter) {
+            addBar("efficiency", (CombinedCrafterBuild e) -> new Bar(
+                    () -> Core.bundle.formatFloat("bar.efficiency", e.heatEfficiency() * 100 * maxEfficiency, 1),
+                    () -> Pal.lightOrange,
+                    () -> e.heatEfficiency() / maxEfficiency));
+        }
         if (mode == Mode.attribute && displayEfficiency) {
             addBar("efficiency", (CombinedCrafterBuild entity) -> new Bar(
                     () -> Core.bundle.format("bar.efficiency",
@@ -251,6 +307,12 @@ public class CombinedCrafter extends GenericCrafter {
         public float comboTotalLiquidCap = 0f;
         public int comboTotalItemCap = 0;
 
+        // ---- 组合热量共享 ----
+        public float comboHeat = 0f;
+        public float comboHeatCap = 0f;
+        // HeatProducer 平滑输出值（对外暴露，非池子存量）
+        public float producerHeat = 0f;
+
         // Attribute 模式数据
         public float attrsum;
         // Separator 模式数据
@@ -268,6 +330,100 @@ public class CombinedCrafter extends GenericCrafter {
                 comboLeader = null;
             }
             return comboLeader == null ? this : comboLeader;
+        }
+
+        // 热量访问
+        public float getComboHeat() {
+            return isLeader() ? comboHeat : leader().comboHeat;
+        }
+
+        public void setComboHeat(float v) {
+            if (isLeader())
+                comboHeat = v;
+            else
+                leader().comboHeat = v;
+        }
+
+        public float getComboHeatCap() {
+            return isLeader() ? comboHeatCap : leader().comboHeatCap;
+        }
+
+        public void setComboHeatCap(float v) {
+            if (isLeader())
+                comboHeatCap = v;
+            else
+                leader().comboHeatCap = v;
+        }
+
+        /**
+         * 热量读取（不再是 HeatBlock 接口方法，仅供本类内部使用）。
+         * heatcrafter：只统计【直接相邻】的热源，不 BFS、不跳板、不穿墙、
+         * 不借道其它工厂 —— 热量绝不隔空传播。
+         * 绝不调用其它组合工厂的 heat()（防互相递归 → StackOverflowError）。
+         */
+        public float heat() {
+            CombinedCrafter cb = (CombinedCrafter) block;
+            // HeatProducer 模式：返回平滑后的瞬时热量输出值
+            if (cb.mode == Mode.heatproducer) {
+                return producerHeat;
+            }
+            // HeatCrafter 模式：直接相邻的热源求和
+            if (cb.mode == Mode.heatcrafter) {
+                float sum = 0f;
+                ObjectSet<CombinedGeneratorBuild> countedClusters = new ObjectSet<>();
+                for (Building b : proximity) {
+                    if (b == null || !b.isValid() || b.team != team || b == this)
+                        continue;
+
+                    if (b instanceof CombinedGeneratorBuild gb) {
+                        // 组合发电机：按簇去重，贴到簇内任意一台即读取整簇共享热量池
+                        if (countedClusters.add(gb.leader()))
+                            sum += gb.getComboHeat();
+                    } else if (b instanceof CombinedCrafterBuild other) {
+                        // 产热的组合工厂才是热源；只取字段，绝不调用 other.heat()
+                        CombinedCrafter ob = (CombinedCrafter) other.block;
+                        if (ob.mode == Mode.heatproducer) {
+                            sum += other.producerHeat;
+                        } else if (ob.heatOutput > 0) {
+                            sum += other.getComboHeat(); // 兼容旧式 heatOutput 配置
+                        }
+                        // heatcrafter / 普通工厂不产热，跳过
+                    } else if (b instanceof mindustry.world.blocks.heat.HeatBlock hb) {
+                        sum += hb.heat(); // 原版热源（电热器、热路由器等）
+                    }
+                }
+                return sum;
+            }
+
+            // 其他模式：保留原有逻辑，但绝不调用其它组合工厂的 heat()（防互相递归）
+            float self = getComboHeat();
+            if (cb.heatOutput > 0)
+                return self;
+            float max = self;
+            for (Building b : proximity) {
+                if (b instanceof mindustry.world.blocks.heat.HeatBlock hb && b != this
+                        && !(b instanceof CombinedCrafterBuild)) {
+                    max = Math.max(max, hb.heat());
+                }
+            }
+            return max;
+        }
+
+        public float heatFrac() {
+            CombinedCrafter cb = (CombinedCrafter) block;
+            if (cb.mode == Mode.heatcrafter)
+                return heat() / Math.max(cb.heatRequirement * cb.maxEfficiency, 1f);
+            if (cb.mode == Mode.heatproducer)
+                return producerHeat / Math.max(cb.heatOutput, 0.001f);
+            return heat() / Math.max(getComboHeatCap(), 1f);
+        }
+
+        /** HeatCrafter 热量效率 */
+        public float heatEfficiency() {
+            CombinedCrafter cb = (CombinedCrafter) block;
+            if (cb.mode != Mode.heatcrafter)
+                return 1f;
+            return Math.min(heat() / cb.heatRequirement, cb.maxEfficiency);
         }
 
         public boolean isLeader() {
@@ -330,6 +486,19 @@ public class CombinedCrafter extends GenericCrafter {
             }
             newLeader.comboLeader = null;
 
+            // 热量继承：如果旧 leader 还在新组中且换了 leader，转移热量
+            CombinedCrafterBuild oldLeader = null;
+            for (CombinedCrafterBuild b : oldGroup) {
+                if (b.isValid() && b.comboLeader == null) {
+                    oldLeader = b;
+                    break;
+                }
+            }
+            if (oldLeader != null && oldLeader != newLeader && newGroup.contains(oldLeader)) {
+                newLeader.comboHeat = oldLeader.comboHeat;
+                oldLeader.comboHeat = 0f;
+            }
+
             float totalLiqCap = 0f;
             int totalItemCap = 0;
             for (CombinedCrafterBuild b : newGroup) {
@@ -347,6 +516,19 @@ public class CombinedCrafter extends GenericCrafter {
                     if (bBlock.mode == Mode.attribute) {
                         b.attrsum = sumAttribute(bBlock.attribute, b.tile.x, b.tile.y);
                     }
+                }
+            }
+
+            // 组合热量容量汇总
+            float totalHeatCap = 0f;
+            for (CombinedCrafterBuild b : newGroup) {
+                if (b.isValid()) {
+                    totalHeatCap += ((CombinedCrafter) b.block).heatCapacity;
+                }
+            }
+            for (CombinedCrafterBuild b : newGroup) {
+                if (b.isValid()) {
+                    b.comboHeatCap = totalHeatCap;
                 }
             }
 
@@ -452,6 +634,59 @@ public class CombinedCrafter extends GenericCrafter {
             for (CombinedCrafterBuild b : oldGroup) {
                 if (b.isValid() && !newGroup.contains(b))
                     kicked.add(b);
+            }
+
+            // ---- 组合热量分配 ----
+            float oldHeat = oldLeader.comboHeat;
+            float oldTotalHeatCap = 0f;
+            for (CombinedCrafterBuild b : oldGroup) {
+                if (b.isValid()) {
+                    oldTotalHeatCap += ((CombinedCrafter) b.block).heatCapacity;
+                }
+            }
+            float newGroupHeatCap = 0f;
+            for (CombinedCrafterBuild b : newGroup) {
+                if (b.isValid()) {
+                    newGroupHeatCap += ((CombinedCrafter) b.block).heatCapacity;
+                }
+            }
+            float kickedTotalHeatCap = 0f;
+            float[] kickedHeatCaps = new float[kicked.size];
+            for (int i = 0; i < kicked.size; i++) {
+                CombinedCrafterBuild b = kicked.get(i);
+                if (b.isValid()) {
+                    kickedHeatCaps[i] = ((CombinedCrafter) b.block).heatCapacity;
+                    kickedTotalHeatCap += kickedHeatCaps[i];
+                }
+            }
+
+            if (oldTotalHeatCap > 0.001f && oldHeat > 0.001f) {
+                // 新组保留热量
+                if (oldLeader.isValid() && newGroup.contains(oldLeader)) {
+                    oldLeader.comboHeat = oldHeat * newGroupHeatCap / oldTotalHeatCap;
+                } else if (newGroup.size > 0) {
+                    CombinedCrafterBuild newGroupLeader = newGroup.first();
+                    for (CombinedCrafterBuild b : newGroup) {
+                        if (b.isValid() && b.pos() < newGroupLeader.pos())
+                            newGroupLeader = b;
+                    }
+                    newGroupLeader.comboHeat = oldHeat * newGroupHeatCap / oldTotalHeatCap;
+                    newGroupLeader.comboHeatCap = newGroupHeatCap;
+                }
+
+                // 被踢出的成员按比例分配热量
+                float remainingHeat = oldHeat;
+                for (int i = 0; i < kicked.size; i++) {
+                    CombinedCrafterBuild b = kicked.get(i);
+                    if (!b.isValid())
+                        continue;
+                    float ideal = (i == kicked.size - 1) ? remainingHeat
+                            : oldHeat * kickedHeatCaps[i] / oldTotalHeatCap;
+                    ideal = Math.min(ideal, remainingHeat);
+                    b.comboHeat = ideal;
+                    b.comboHeatCap = kickedHeatCaps[i];
+                    remainingHeat -= ideal;
+                }
             }
 
             int oldTotalItemCap = 0;
@@ -795,6 +1030,8 @@ public class CombinedCrafter extends GenericCrafter {
             comboDirty = false;
             comboTotalLiquidCap = 0f;
             comboTotalItemCap = 0;
+            comboHeat = 0f;
+            comboHeatCap = 0f;
             super.onRemoved();
         }
 
@@ -839,9 +1076,25 @@ public class CombinedCrafter extends GenericCrafter {
         }
 
         @Override
+        public boolean shouldAmbientSound() {
+            return false; // 禁用环境音，避免 Android 声音线程崩溃
+        }
+
+        @Override
+        public mindustry.world.meta.BlockStatus status() {
+            CombinedCrafter cb = (CombinedCrafter) block;
+            if (cb.mode == Mode.heatcrafter) {
+                if (heat() <= 0.001f)
+                    return mindustry.world.meta.BlockStatus.noInput;
+                if (efficiency > 0)
+                    return mindustry.world.meta.BlockStatus.active;
+            }
+            return super.status();
+        }
+
+        @Override
         public boolean shouldConsume() {
             CombinedCrafter cb = (CombinedCrafter) block;
-
             if (cb.mode == Mode.separator) {
                 int total = items.total();
                 if (cb.consItems != null) {
@@ -901,7 +1154,22 @@ public class CombinedCrafter extends GenericCrafter {
                 rebuildCombo();
             }
 
+            // 热量自然衰减（只有 leader 执行）
+            if (isLeader() && comboHeat > 0) {
+                CombinedCrafter cb = (CombinedCrafter) block;
+                comboHeat = Math.max(0f, comboHeat - cb.heatCapacity * 0.0001f * delta());
+            }
+
             CombinedCrafter cb = (CombinedCrafter) block;
+
+            // HeatProducer 模式的热量注入已在 updateGenericOrAttribute 中处理
+            // 非 heatproducer 模式的旧热量输出保留（兼容旧配置）
+            if (cb.mode != Mode.heatproducer && cb.heatOutput > 0 && efficiency > 0) {
+                float current = getComboHeat();
+                float cap = getComboHeatCap();
+                setComboHeat(Math.min(current + cb.heatOutput * efficiency * delta(), cap));
+            }
+
             if (cb.mode == Mode.separator) {
                 updateSeparator();
             } else {
@@ -910,8 +1178,83 @@ public class CombinedCrafter extends GenericCrafter {
         }
 
         private void updateGenericOrAttribute() {
-            if (efficiency > 0) {
-                progress += getProgressIncrease(craftTime);
+            CombinedCrafter cb = (CombinedCrafter) block;
+            // 热量需求检查（heat() 只读直接相邻的热源）
+            float heatEff = 1f;
+            if (cb.heatRequirement > 0) {
+                heatEff = Math.min(heat() / cb.heatRequirement, 1f);
+            }
+            // HeatCrafter 模式：效率由热量决定
+            if (cb.mode == Mode.heatcrafter) {
+                heatEff = heatEfficiency();
+                if (heatEff > 0 && efficiency > 0) {
+                    progress += getProgressIncrease(craftTime) * heatEff;
+                    warmup = Mathf.approachDelta(warmup, warmupTarget(), warmupSpeed);
+
+                    if (outputLiquids != null) {
+                        float inc = getProgressIncrease(1f);
+                        for (var output : outputLiquids) {
+                            handleLiquid(this, output.liquid,
+                                    Math.min(output.amount * inc, comboTotalLiquidCap - liquids.get(output.liquid)));
+                        }
+                    }
+
+                    if (wasVisible && Mathf.chanceDelta(updateEffectChance)) {
+                        updateEffect.at(x + Mathf.range(size * updateEffectSpread),
+                                y + Mathf.range(size * updateEffectSpread));
+                    }
+                } else {
+                    warmup = Mathf.approachDelta(warmup, 0f, warmupSpeed);
+                }
+
+                totalProgress += warmup * Time.delta;
+                if (progress >= 1f)
+                    craft();
+                dumpOutputs();
+                return;
+            }
+
+            // HeatProducer 模式：运行时输出热量
+            if (cb.mode == Mode.heatproducer) {
+                if (efficiency > 0) {
+                    progress += getProgressIncrease(craftTime);
+                    warmup = Mathf.approachDelta(warmup, warmupTarget(), warmupSpeed);
+                    // 平滑热量输出值（对外暴露）
+                    producerHeat = Mathf.approachDelta(producerHeat, cb.heatOutput * efficiency, warmupSpeed * delta());
+
+                    // 同时往共享池注入（供组合体内部不相邻成员使用）
+                    if (cb.heatOutput > 0) {
+                        float current = getComboHeat();
+                        float cap = getComboHeatCap();
+                        setComboHeat(Math.min(current + cb.heatOutput * efficiency * delta(), cap));
+                    }
+
+                    if (outputLiquids != null) {
+                        float inc = getProgressIncrease(1f);
+                        for (var output : outputLiquids) {
+                            handleLiquid(this, output.liquid,
+                                    Math.min(output.amount * inc, comboTotalLiquidCap - liquids.get(output.liquid)));
+                        }
+                    }
+
+                    if (wasVisible && Mathf.chanceDelta(updateEffectChance)) {
+                        updateEffect.at(x + Mathf.range(size * updateEffectSpread),
+                                y + Mathf.range(size * updateEffectSpread));
+                    }
+                } else {
+                    warmup = Mathf.approachDelta(warmup, 0f, warmupSpeed);
+                    producerHeat = Mathf.approachDelta(producerHeat, 0f, warmupSpeed * delta());
+                }
+
+                totalProgress += warmup * Time.delta;
+                if (progress >= 1f)
+                    craft();
+                dumpOutputs();
+                return;
+            }
+            // Generic / Attribute 模式
+            if (efficiency > 0 && heatEff > 0) {
+                progress += getProgressIncrease(craftTime) * heatEff;
                 warmup = Mathf.approachDelta(warmup, warmupTarget(), warmupSpeed);
 
                 if (outputLiquids != null) {
@@ -940,8 +1283,14 @@ public class CombinedCrafter extends GenericCrafter {
             totalProgress += warmup * Time.delta;
             CombinedCrafter cb = (CombinedCrafter) block;
 
-            if (efficiency > 0) {
-                progress += getProgressIncrease(craftTime);
+            // 热量需求检查
+            float heatEfficiency = 1f;
+            if (cb.heatRequirement > 0) {
+                heatEfficiency = Math.min(heat() / cb.heatRequirement, 1f);
+            }
+
+            if (efficiency > 0 && heatEfficiency > 0) {
+                progress += getProgressIncrease(craftTime) * heatEfficiency;
                 warmup = Mathf.lerpDelta(warmup, 1f, cb.separatorWarmupSpeed);
             } else {
                 warmup = Mathf.lerpDelta(warmup, 0f, cb.separatorWarmupSpeed);
@@ -1197,49 +1546,21 @@ public class CombinedCrafter extends GenericCrafter {
                     break;
                 }
             }
-            return needed && liquids.get(liquid) < comboTotalLiquidCap - 0.001f;
-        }
-
-        // -------------------- 液体输出覆盖 --------------------
-        @Override
-        public void dumpLiquid(Liquid liquid, float scaling, int outputDir) {
-            int dump = this.cdump;
-            if (liquids.get(liquid) <= 0.0001f)
-                return;
-            for (int i = 0; i < proximity.size; i++) {
-                incrementDump(proximity.size);
-                Building other = proximity.get((i + dump) % proximity.size);
-                if (outputDir != -1 && (outputDir + rotation) % 4 != relativeTo(other))
-                    continue;
-                other = other.getLiquidDestination(self(), liquid);
-                if (other != null && other.block.hasLiquids && canDumpLiquid(other, liquid) && other.liquids != null) {
-                    float ofract = other.liquids.get(liquid) / Math.max(other.block.liquidCapacity, 1f);
-                    float fract = liquids.get(liquid) / Math.max(comboTotalLiquidCap, 1f);
-                    if (ofract < fract) {
-                        transferLiquid(other, (fract - ofract) * Math.max(comboTotalLiquidCap, 1f) / scaling, liquid);
-                    }
-                }
-            }
-        }
-
-        @Override
-        public void transferLiquid(Building next, float amount, Liquid liquid) {
-            float flow = Math.min(Math.max(next.block.liquidCapacity - next.liquids.get(liquid), 0f), amount);
-            if (next.acceptLiquid(self(), liquid)) {
-                next.handleLiquid(self(), liquid, flow);
-                liquids.remove(liquid, flow);
-            }
+            return needed && liquids.currentAmount() < comboTotalLiquidCap - 0.001f;
         }
 
         @Override
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float current = liquids.get(liquid);
-            float canAccept = Math.max(0f, comboTotalLiquidCap - current);
+            float currentTotal = liquids.currentAmount();
+            float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
+            float refund = amount - actual;
+            if (refund > 0.001f && source != null && source.liquids != null)
+                source.liquids.add(liquid, refund);
         }
 
         @Override
@@ -1253,6 +1574,14 @@ public class CombinedCrafter extends GenericCrafter {
 
         public float getTotalLiquidCapacity() {
             return Math.max(comboTotalLiquidCap, 1f);
+        }
+
+        @Override
+        public void dumpLiquid(Liquid liquid, float scaling, int outputDir) {
+            float oldCap = block.liquidCapacity;
+            block.liquidCapacity = Math.max(comboTotalLiquidCap, 1f);
+            super.dumpLiquid(liquid, scaling, outputDir);
+            block.liquidCapacity = oldCap;
         }
 
         // -------------------- 显示 --------------------
@@ -1309,6 +1638,30 @@ public class CombinedCrafter extends GenericCrafter {
         }
 
         public void buildComboBars(Table table) {
+            CombinedCrafter cb = (CombinedCrafter) block;
+            // 只有 heatcrafter / heatproducer 显示热量条
+            if (cb.mode == Mode.heatcrafter) {
+                final float h = heat(), req = cb.heatRequirement;
+                table.add(new Bar(
+                        () -> "热量 " + Strings.fixed(h, 1) + "/" + Strings.fixed(req, 1),
+                        () -> Pal.lightOrange,
+                        () -> Math.min(h / req, 1f)));
+                table.row();
+                final float eff = heatEfficiency();
+                table.add(new Bar(
+                        () -> "效率 " + Strings.fixed(eff * 100f, 0) + "%",
+                        () -> Pal.accent,
+                        () -> eff / cb.maxEfficiency));
+                table.row();
+            } else if (cb.mode == Mode.heatproducer) {
+                final float h = producerHeat, out = cb.heatOutput;
+                table.add(new Bar(
+                        () -> "热量 " + Strings.fixed(h, 1) + "/" + Strings.fixed(out, 1),
+                        () -> Pal.lightOrange,
+                        () -> h / out));
+                table.row();
+            }
+
             float totalPower = 0f;
             for (CombinedCrafterBuild member : group()) {
                 if (member.isValid() && member.block.consPower != null)
@@ -1425,8 +1778,8 @@ public class CombinedCrafter extends GenericCrafter {
             table.add("[lightgray]本机: " + block.localizedName + "[]").left();
             table.row();
 
+            boolean hasLocalInput = false;
             if (block.consumers != null && block.consumers.length > 0) {
-                boolean hasLocalInput = false;
                 for (Consume cons : block.consumers) {
                     if (cons instanceof ConsumeItems ci) {
                         for (ItemStack stack : ci.items) {
@@ -1496,6 +1849,22 @@ public class CombinedCrafter extends GenericCrafter {
                 }
             }
 
+            // 热量需求显示：只有 heatcrafter 模式
+            if (mb.mode == Mode.heatcrafter && mb.heatRequirement > 0) {
+                if (!hasLocalInput) {
+                    table.add("[gray]输入:").left();
+                    table.row();
+                    hasLocalInput = true;
+                }
+                boolean has = heat() >= mb.heatRequirement;
+                table.table(row -> {
+                    row.left();
+                    row.add("[orange]≈ " + Strings.fixed(mb.heatRequirement, 0) + " 单位热量")
+                            .color(has ? Color.white : Color.scarlet).left();
+                }).left();
+                table.row();
+            }
+
             boolean hasLocalOutput = false;
             if (mb.mode == Mode.separator && mb.results != null && mb.results.length > 0) {
                 int[] sum = { 0 };
@@ -1551,6 +1920,18 @@ public class CombinedCrafter extends GenericCrafter {
                     table.row();
                 }
             }
+            if (mb.mode == Mode.heatproducer && mb.heatOutput > 0) {
+                if (!hasLocalOutput) {
+                    table.add("[gray]产出:").left();
+                    table.row();
+                    hasLocalOutput = true;
+                }
+                table.table(row -> {
+                    row.left();
+                    row.add("[orange]热量 " + Strings.fixed(mb.heatOutput, 1) + " 热/s").color(Pal.lightOrange).left();
+                }).left();
+                table.row();
+            }
             if (!hasLocalOutput && (block.consumers == null || block.consumers.length == 0)) {
                 table.add("[darkGray]无").left();
                 table.row();
@@ -1560,7 +1941,7 @@ public class CombinedCrafter extends GenericCrafter {
         // -------------------- 序列化 --------------------
         @Override
         public byte version() {
-            return 2;
+            return 3;
         }
 
         @Override
@@ -1595,12 +1976,18 @@ public class CombinedCrafter extends GenericCrafter {
             if (comboLeader != null)
                 write.i(comboLeader.pos());
 
+            // 写入共享热量
+            write.f(getComboHeat());
+            write.f(getComboHeatCap());
+
             // 模式特定数据
             CombinedCrafter cb = (CombinedCrafter) block;
             if (cb.mode == Mode.separator) {
                 write.i(seed);
             } else if (cb.mode == Mode.attribute) {
                 write.f(attrsum);
+            } else if (cb.mode == Mode.heatproducer) {
+                write.f(producerHeat);
             }
         }
 
@@ -1612,6 +1999,10 @@ public class CombinedCrafter extends GenericCrafter {
             int leaderPos = -1;
             if (hasLeader)
                 leaderPos = read.i();
+
+            // 读取共享热量
+            comboHeat = read.f();
+            comboHeatCap = read.f();
 
             comboDirty = true;
 
@@ -1635,6 +2026,8 @@ public class CombinedCrafter extends GenericCrafter {
                     seed = read.i();
                 } else if (cb.mode == Mode.attribute) {
                     attrsum = read.f();
+                } else if (cb.mode == Mode.heatproducer) {
+                    producerHeat = read.f();
                 }
             }
         }

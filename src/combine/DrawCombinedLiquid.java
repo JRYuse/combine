@@ -2,6 +2,7 @@ package combine;
 
 import arc.Core;
 import arc.graphics.g2d.TextureRegion;
+import combine.CombinedCrafter.CombinedCrafterBuild;
 import mindustry.gen.Building;
 import mindustry.graphics.Drawf;
 import mindustry.type.Liquid;
@@ -23,31 +24,24 @@ public class DrawCombinedLiquid extends DrawBlock {
 
   @Override
   public void draw(Building build) {
-    Liquid drawn = drawLiquid != null ? drawLiquid : build.liquids.current();
-    float cap = getComboLiquidCap(build);
-    float a = build.liquids.get(drawn) / Math.max(cap, 1f);
-    Drawf.liquid(liquid, build.x, build.y, a * alpha, drawn.color);
+    if (build instanceof CombinedCrafterBuild ccb) {
+      Liquid drawn = drawLiquid != null ? drawLiquid : build.liquids.current();
+      float a = ccb.liquids.get(drawn) / Math.max(ccb.comboTotalItemCap, 1);
+      Drawf.liquid(liquid, build.x, build.y,
+          a * alpha,
+          drawn.color);
+    }
   }
 
   @Override
   public void load(Block block) {
+    if (!(block instanceof CombinedCrafter))
+      throw new RuntimeException(block + "must be CombinedCrafter");
     if (!block.hasLiquids) {
       throw new RuntimeException(
-          "Block '" + block + "' has a DrawCombinedLiquid, but hasLiquids is false! Make sure it is true.");
+          "Block '" + block + "' has a DrawLiquidRegion, but hasLiquids is false! Make sure it is true.");
     }
-    liquid = Core.atlas.find(block.name + suffix);
-  }
 
-  /** 获取组合块的总液体容量，适配所有 Combined 类型 */
-  private float getComboLiquidCap(Building build) {
-    if (build instanceof CombinedCrafter.CombinedCrafterBuild b) return b.comboTotalLiquidCap;
-    if (build instanceof CombinedDrill.CombinedDrillBuild b) return b.comboTotalLiquidCap;
-    if (build instanceof CombinedGenerator.CombinedGeneratorBuild b) return b.comboTotalLiquidCap;
-    if (build instanceof CombinedRegenProjector.CombinedRegenProjectorBuild b) return b.comboTotalLiquidCap;
-    if (build instanceof CombinedOverdriveProjector.CombinedOverdriveProjectorBuild b) return b.comboTotalLiquidCap;
-    if (build instanceof CombinedMendProjector.CombinedMendProjectorBuild b) return b.comboTotalLiquidCap;
-    if (build instanceof CombinedForceProjector.CombinedForceProjectorBuild b) return b.comboTotalLiquidCap;
-    if (build instanceof CombinedLaunchPad.CombinedLaunchPadBuild b) return b.comboTotalLiquidCap;
-    return build.block.liquidCapacity;
+    liquid = Core.atlas.find(block.name + suffix);
   }
 }

@@ -53,13 +53,15 @@ import static mindustry.Vars.*;
 import static mindustry.Vars.iconMed;
 
 /**
- * 组合发电机 —— 四模式统一版
+ * 组合发电机 —— 四模式统一版（修复：组合热量共享 + 组合热量上限）
  * 模式：
  * 1. consume : 普通消耗型发电机（原版 ConsumeGenerator 行为）
  * 2. impact : 冲击反应堆（原版 ImpactReactor 行为）
  * 3. nuclear : 核反应堆（原版 NuclearReactor 行为）
  * 4. heater : 热力发电机（原版 HeaterGenerator 行为）
  * 相邻放置自动形成组合体、共享 items/liquids 输入池。
+ * 热量系统：所有成员的热量输出汇总到 leader 的共享池 comboHeat，
+ * 热量上限也汇总为 comboTotalHeatCap，对外统一返回。
  */
 public class CombinedGenerator extends ConsumeGenerator {
 
@@ -132,8 +134,7 @@ public class CombinedGenerator extends ConsumeGenerator {
   public void init() {
     super.init();
 
-    itemCapacity = Math.max(1, (int) (itemCapacity * itemCapacityMultiplier));
-    baseLiquidCapacity = Math.max(1f, liquidCapacity * liquidCapacityMultiplier);
+    baseLiquidCapacity = liquidCapacity;
     displayLiquid = baseLiquidCapacity;
     liquidCapacity = 9999f;
     if (!hasLiquids)
@@ -177,6 +178,7 @@ public class CombinedGenerator extends ConsumeGenerator {
     super.setStats();
 
     if (hasItems && mode != Mode.impact) {
+      stats.remove(Stat.productionTime);
       stats.add(Stat.productionTime, itemDuration / 60f, StatUnit.seconds);
     } else if (hasItems && mode == Mode.impact) {
       stats.add(Stat.productionTime, impactItemDuration / 60f, StatUnit.seconds);
@@ -194,11 +196,11 @@ public class CombinedGenerator extends ConsumeGenerator {
   public void setBars() {
     super.setBars();
     if (mode == Mode.nuclear) {
-      addBar("heat", (CombinedGeneratorBuild e) -> new Bar("bar.heat", Pal.lightOrange, () -> e.nuclearHeat));
+      addBar("heat", (CombinedGeneratorBuild e) -> new Bar("bar.heat", Pal.lightOrange, () -> e.heatFrac()));
     } else if (mode == Mode.heater) {
       addBar("heat",
           (CombinedGeneratorBuild e) -> new Bar("bar.heat", Pal.lightOrange,
-              () -> e.heaterHeat / heaterHeatOutput));
+              () -> e.heatFrac()));
     } else if (mode == Mode.impact) {
       addBar("warmup", (CombinedGeneratorBuild e) -> new Bar(() -> Core.bundle.get("bar.warmup"), () -> Pal.accent,
           () -> e.impactWarmup));
@@ -207,13 +209,11 @@ public class CombinedGenerator extends ConsumeGenerator {
 
   @Override
   public TextureRegion[] icons() {
-    // nuclear 模式需要 topRegion 绘制冷却液覆盖层；其他模式不需要
     if (mode == Mode.nuclear && topRegion != null && topRegion.found()) {
       return new TextureRegion[] { region, topRegion };
     }
     return new TextureRegion[] { region };
   }
-
   // ==================== Building ====================
 
   public class CombinedGeneratorBuild extends ConsumeGeneratorBuild implements HeatBlock {
@@ -225,6 +225,9 @@ public class CombinedGenerator extends ConsumeGenerator {
     public float comboTotalLiquidCap = 0f;
     public int comboTotalItemCap = 0;
     public int pendingLeaderPos = -1;
+
+    // ---- 组合共享热量池（仅 leader 持有真实值） ----
+    public float comboHeat = 0f;
 
     // ---- Impact 模式状态 ----
     public float impactWarmup;
@@ -259,6 +262,32 @@ public class CombinedGenerator extends ConsumeGenerator {
       if (l.comboGroup == null)
         l.comboGroup = new Seq<>();
       return l.comboGroup;
+    }
+
+    // ---- 组合热量访问 ----
+    public float getComboHeat() {
+      return isLeader() ? comboHeat : leader().comboHeat;
+    }
+
+    public void setComboHeat(float v) {
+      if (isLeader())
+        comboHeat = v;
+      else
+        leader().comboHeat = v;
+    }
+
+    // ---- 组合热量上限（累加全组） ----
+    public float getComboTotalHeatCap() {
+      float total = 0f;
+      for (CombinedGeneratorBuild member : group()) {
+        if (!member.isValid()) continue;
+        CombinedGenerator mb = (CombinedGenerator) member.block;
+        if (mb.mode == Mode.nuclear)
+          total += mb.nuclearHeatOutput;
+        else if (mb.mode == Mode.heater)
+          total += mb.heaterHeatOutput;
+      }
+      return Math.max(total, 0.001f);
     }
 
     // -------------------- 组合重建 --------------------
@@ -329,6 +358,23 @@ public class CombinedGenerator extends ConsumeGenerator {
       }
 
       shareModules(newLeader);
+
+      // 迁移旧热量池到 newLeader
+      if (oldGroup.size > 0 && newGroup.size > 0) {
+        float oldHeat = 0f;
+        for (CombinedGeneratorBuild b : oldGroup) {
+          if (b.isValid()) {
+            CombinedGenerator cb = (CombinedGenerator) b.block;
+            if (cb.mode == Mode.nuclear)
+              oldHeat = Math.max(oldHeat, b.nuclearHeatProgress);
+            else if (cb.mode == Mode.heater)
+              oldHeat = Math.max(oldHeat, b.heaterHeat);
+          }
+        }
+        if (oldHeat > 0f && newLeader != this) {
+          newLeader.comboHeat = Math.max(newLeader.comboHeat, oldHeat);
+        }
+      }
 
       if (newLeader.items != null && totalItemCap > 0) {
         int excess = newLeader.items.total() - totalItemCap;
@@ -574,6 +620,8 @@ public class CombinedGenerator extends ConsumeGenerator {
     @Override
     public void created() {
       super.created();
+      comboTotalLiquidCap = ((CombinedGenerator) block).baseLiquidCapacity;
+      comboTotalItemCap = block.itemCapacity;
       comboDirty = true;
     }
 
@@ -736,17 +784,10 @@ public class CombinedGenerator extends ConsumeGenerator {
       }
 
       if (liquids != null && comboTotalLiquidCap > 0.001f) {
-        float excess = liquids.currentAmount() - comboTotalLiquidCap;
-        if (excess > 0.001f) {
-          for (Liquid l : content.liquids()) {
-            float amt = liquids.get(l);
-            if (amt > 0.001f) {
-              float remove = Math.min(amt, excess);
-              liquids.remove(l, remove);
-              excess -= remove;
-              if (excess <= 0.001f)
-                break;
-            }
+        for (Liquid l : content.liquids()) {
+          float amt = liquids.get(l);
+          if (amt > comboTotalLiquidCap + 0.001f) {
+            liquids.remove(l, amt - comboTotalLiquidCap);
           }
         }
       }
@@ -765,6 +806,20 @@ public class CombinedGenerator extends ConsumeGenerator {
         case heater:
           updateHeater(cb);
           break;
+      }
+
+      // ---- 组合热量汇总（仅 leader 执行） ----
+      if (isLeader()) {
+        float total = 0f;
+        for (CombinedGeneratorBuild member : group()) {
+          if (!member.isValid()) continue;
+          CombinedGenerator mb = (CombinedGenerator) member.block;
+          if (mb.mode == Mode.nuclear)
+            total += member.nuclearHeatProgress;
+          else if (mb.mode == Mode.heater)
+            total += member.heaterHeat;
+        }
+        comboHeat = total;
       }
     }
 
@@ -884,25 +939,15 @@ public class CombinedGenerator extends ConsumeGenerator {
       heaterHeat = Mathf.approachDelta(heaterHeat, cb.heaterHeatOutput * efficiency, cb.heaterWarmupRate * delta());
     }
 
-    // -------------------- HeatBlock 接口 --------------------
+    // -------------------- HeatBlock 接口（组合共享） --------------------
     @Override
     public float heat() {
-      CombinedGenerator cb = (CombinedGenerator) block;
-      if (cb.mode == Mode.nuclear)
-        return nuclearHeatProgress;
-      if (cb.mode == Mode.heater)
-        return heaterHeat;
-      return 0f;
+      return getComboHeat();
     }
 
     @Override
     public float heatFrac() {
-      CombinedGenerator cb = (CombinedGenerator) block;
-      if (cb.mode == Mode.nuclear)
-        return nuclearHeatProgress / Math.max(cb.nuclearHeatOutput, 0.001f);
-      if (cb.mode == Mode.heater)
-        return heaterHeat / Math.max(cb.heaterHeatOutput, 0.001f);
-      return 0f;
+      return getComboHeat() / getComboTotalHeatCap();
     }
 
     // -------------------- 覆盖 Building 方法 --------------------
@@ -936,10 +981,7 @@ public class CombinedGenerator extends ConsumeGenerator {
     public double sense(LAccess sensor) {
       CombinedGenerator cb = (CombinedGenerator) block;
       if (sensor == LAccess.heat) {
-        if (cb.mode == Mode.nuclear)
-          return nuclearHeat;
-        if (cb.mode == Mode.heater)
-          return heaterHeat;
+        return getComboHeat();
       }
       return super.sense(sensor);
     }
@@ -1009,6 +1051,9 @@ public class CombinedGenerator extends ConsumeGenerator {
       float actual = Math.min(amount, canAccept);
       if (actual > 0.001f)
         liquids.add(liquid, actual);
+      float refund = amount - actual;
+      if (refund > 0.001f && source != null && source.liquids != null)
+        source.liquids.add(liquid, refund);
     }
 
     // -------------------- 绘制 --------------------
@@ -1122,19 +1167,13 @@ public class CombinedGenerator extends ConsumeGenerator {
       }
 
       CombinedGenerator cb = (CombinedGenerator) block;
-      if (cb.mode == Mode.nuclear) {
-        final float h = nuclearHeat;
+      if (cb.mode == Mode.nuclear || cb.mode == Mode.heater) {
+        final float h = getComboHeat();
+        final float cap = getComboTotalHeatCap();
         table.add(new Bar(
-            () -> "热量 " + Strings.fixed(h * 100, 0) + "%",
+            () -> "热量 " + Strings.fixed(h, 1) + "/" + Strings.fixed(cap, 1),
             () -> Pal.lightOrange,
-            () -> h));
-        table.row();
-      } else if (cb.mode == Mode.heater) {
-        final float h = heaterHeat / Math.max(cb.heaterHeatOutput, 0.001f);
-        table.add(new Bar(
-            () -> "热量 " + Strings.fixed(heaterHeat, 1) + "/" + Strings.fixed(cb.heaterHeatOutput, 1),
-            () -> Pal.lightOrange,
-            () -> h));
+            () -> h / cap));
         table.row();
       } else if (cb.mode == Mode.impact) {
         final float w = impactWarmup;
@@ -1323,7 +1362,7 @@ public class CombinedGenerator extends ConsumeGenerator {
     // -------------------- 序列化 --------------------
     @Override
     public byte version() {
-      return 2;
+      return 3;
     }
 
     @Override
@@ -1353,6 +1392,9 @@ public class CombinedGenerator extends ConsumeGenerator {
       write.bool(comboLeader != null);
       if (comboLeader != null)
         write.i(comboLeader.pos());
+
+      // 写入共享热量
+      write.f(getComboHeat());
 
       CombinedGenerator cb = (CombinedGenerator) block;
       if (cb.mode == Mode.impact) {
@@ -1389,6 +1431,11 @@ public class CombinedGenerator extends ConsumeGenerator {
         comboLeader = null;
       }
 
+      // 读取共享热量（version >= 3）
+      if (revision >= 3) {
+        comboHeat = read.f();
+      }
+
       if (revision >= 2) {
         CombinedGenerator cb = (CombinedGenerator) block;
         if (cb.mode == Mode.impact) {
@@ -1403,6 +1450,8 @@ public class CombinedGenerator extends ConsumeGenerator {
           heaterHeat = read.f();
         }
       }
+      comboTotalLiquidCap = ((CombinedGenerator) block).baseLiquidCapacity;
+      comboTotalItemCap = block.itemCapacity;
     }
   }
 }

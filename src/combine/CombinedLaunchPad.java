@@ -40,7 +40,6 @@ import static mindustry.Vars.*;
 import static mindustry.Vars.iconMed;
 
 import mindustry.world.blocks.campaign.LaunchPad;
-import mindustry.world.blocks.power.PowerGraph;
 
 public class CombinedLaunchPad extends LaunchPad {
     public boolean allowCrossTypeCombo = true;
@@ -52,6 +51,7 @@ public class CombinedLaunchPad extends LaunchPad {
 
     public CombinedLaunchPad(String name) {
         super(name);
+        buildType = () -> new CombinedLaunchPadBuild();
         conductivePower = true;
         hasItems = true;
         hasLiquids = true;
@@ -61,17 +61,14 @@ public class CombinedLaunchPad extends LaunchPad {
     @Override
     public void init() {
         super.init();
-        // FIX: 防止 init() 被多次调用（如 ContentLoader + 手动调用）导致 baseLiquidCapacity 被污染。
-        // 只在 liquidCapacity 还是原版值时计算一次，之后 liquidCapacity 会被设为 9999f。
         if (liquidCapacity != 9999f) {
-            baseLiquidCapacity = Math.max(1f, liquidCapacity);
+            baseLiquidCapacity = liquidCapacity;
             displayLiquid = liquidCapacity;
         }
         liquidCapacity = 9999f;
         if (!hasLiquids)
             displayLiquid = 0;
         hasLiquids = true;
-        conductivePower = true;
         hasItems = true;
 
         cachedItems.clear();
@@ -178,16 +175,6 @@ public class CombinedLaunchPad extends LaunchPad {
             if (oldGroup.size > newGroup.size)
                 splitAssets(oldGroup, newGroup);
             shareModules(newLeader);
-            for (CombinedLaunchPadBuild member : newGroup) {
-                if (member.isValid() && member.power != null) {
-                    // 如果 graph 为空或孤立，重新加入活跃图列表并刷新
-                    if (member.power.graph == null) {
-                        member.power.graph = new PowerGraph();
-                    }
-                    member.power.graph.add(member); // 确保建筑在图中
-                    member.power.graph.update(); // 立即尝试与邻近合并
-                }
-            }
             if (newLeader.items != null && totalItemCap > 0) {
                 int excess = newLeader.items.total() - totalItemCap;
                 if (excess > 0) {
@@ -405,7 +392,6 @@ public class CombinedLaunchPad extends LaunchPad {
                     if (m.isValid())
                         m.liquids = leader.liquids;
             }
-
         }
 
         @Override
@@ -572,35 +558,17 @@ public class CombinedLaunchPad extends LaunchPad {
                     }
                 }
             }
-
-            // FIX: 各自独立发射，只取自己的容量
-            if ((launchCounter += edelta()) >= launchTime && items.total() >= block.itemCapacity) {
+            if ((launchCounter += edelta()) >= launchTime && items.total() >= comboTotalItemCap) {
                 consume();
                 launchSound.at(x, y, 1f + Mathf.range(launchSoundPitchRand));
                 LaunchPayload entity = LaunchPayload.create();
-
-                // 只取该成员自己的 itemCapacity，不清空整个组合体
-                int remaining = block.itemCapacity;
-                Seq<Item> available = new Seq<>();
-                items.each((item, amount) -> available.add(item));
-
-                for (Item item : available) {
-                    if (remaining <= 0)
-                        break;
-                    int amt = items.get(item);
-                    if (amt > 0) {
-                        int take = Math.min(amt, remaining);
-                        entity.stacks.add(new ItemStack(item, take));
-                        items.remove(item, take);
-                        remaining -= take;
-                    }
-                }
-
+                items.each((item, amount) -> entity.stacks.add(new ItemStack(item, amount)));
                 entity.set(this);
                 entity.lifetime(120f);
                 entity.team(team);
                 entity.add();
                 Fx.launchPod.at(this);
+                items.clear();
                 Effect.shake(3f, 3f, this);
                 launchCounter = 0f;
             }
@@ -640,11 +608,15 @@ public class CombinedLaunchPad extends LaunchPad {
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float current = liquids.get(liquid);
-            float canAccept = Math.max(0f, comboTotalLiquidCap - current);
+            float currentTotal = liquids.currentAmount();
+            float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
+            // FIX: 将未接收的液体退回源端，防止因 block.liquidCapacity=9999f 导致源端过度扣除
+            float refund = amount - actual;
+            if (refund > 0.001f && source != null && source.liquids != null)
+                source.liquids.add(liquid, refund);
         }
 
         @Override

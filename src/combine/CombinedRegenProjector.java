@@ -47,6 +47,7 @@ public class CombinedRegenProjector extends RegenProjector {
 
     public CombinedRegenProjector(String name) {
         super(name);
+        buildType = () -> new CombinedRegenProjectorBuild();
         conductivePower = true;
         hasItems = true;
         hasLiquids = true;
@@ -56,14 +57,11 @@ public class CombinedRegenProjector extends RegenProjector {
     @Override
     public void init() {
         super.init();
-        // FIX: 防止 init() 被多次调用（如 ContentLoader + 手动调用）导致 baseLiquidCapacity 被污染。
-        // 只在 liquidCapacity 还是原版值时计算一次，之后 liquidCapacity 会被设为 9999f。
         if (liquidCapacity != 9999f) {
-            baseLiquidCapacity = Math.max(1f, liquidCapacity);
+            baseLiquidCapacity = liquidCapacity;
             displayLiquid = liquidCapacity;
         }
         liquidCapacity = 9999f;
-        conductivePower = true;
         if (!hasLiquids)
             displayLiquid = 0;
         hasLiquids = true;
@@ -606,11 +604,15 @@ public class CombinedRegenProjector extends RegenProjector {
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float current = liquids.get(liquid);
-            float canAccept = Math.max(0f, comboTotalLiquidCap - current);
+            float currentTotal = liquids.currentAmount();
+            float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
+            // FIX: 将未接收的液体退回源端，防止因 block.liquidCapacity=9999f 导致源端过度扣除
+            float refund = amount - actual;
+            if (refund > 0.001f && source != null && source.liquids != null)
+                source.liquids.add(liquid, refund);
         }
 
         @Override

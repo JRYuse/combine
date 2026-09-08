@@ -49,6 +49,7 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
 
     public CombinedOverdriveProjector(String name) {
         super(name);
+        buildType = () -> new CombinedOverdriveProjectorBuild();
         conductivePower = true;
         hasItems = true;
         hasLiquids = true;
@@ -58,15 +59,16 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
     @Override
     public void init() {
         super.init();
-        // itemCapacity = Math.max(1, (int) (itemCapacity * itemCapacityMultiplier));
-        baseLiquidCapacity = Math.max(1f, liquidCapacity);
-        displayLiquid = baseLiquidCapacity;
+        if (liquidCapacity != 9999f) {
+            baseLiquidCapacity = liquidCapacity;
+            displayLiquid = baseLiquidCapacity;
+        }
         liquidCapacity = 9999f;
         if (!hasLiquids)
             displayLiquid = 0;
         hasLiquids = true;
         hasItems = true;
-        conductivePower = true;
+
         cachedItems.clear();
         cachedLiquids.clear();
         if (consumers != null) {
@@ -605,11 +607,15 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float current = liquids.get(liquid);
-            float canAccept = Math.max(0f, comboTotalLiquidCap - current);
+            float currentTotal = liquids.currentAmount();
+            float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
+            // FIX: 将未接收的液体退回源端，防止因 block.liquidCapacity=9999f 导致源端过度扣除
+            float refund = amount - actual;
+            if (refund > 0.001f && source != null && source.liquids != null)
+                source.liquids.add(liquid, refund);
         }
 
         @Override

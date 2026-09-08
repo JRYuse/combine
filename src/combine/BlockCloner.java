@@ -58,6 +58,10 @@ public class BlockCloner {
           Field toField = findField(to.getClass(), n);
           if (toField != null && toField.getType() == f.getType()) {
             toField.setAccessible(true);
+            if (n.equals("region") || n.equals("fullIcon") || n.equals("uiIcon")) {
+              Log.info("[BC-COPY] @ -> @ | field=@ | val=@", from.name, to.name, n, val);
+            }
+
             toField.set(to, val);
           }
         } catch (Exception ignored) {
@@ -72,17 +76,25 @@ public class BlockCloner {
     if (original == null)
       return;
 
-    // FIX: 先调用 load() 初始化组合版特有的贴图字段，然后恢复 region
-    TextureRegion savedRegion = combo.region;
-    combo.load();
-    combo.region = savedRegion;
-
     combo.localizedName = original.localizedName;
     combo.description = original.description;
     combo.details = original.details;
     combo.fullIcon = original.fullIcon;
     combo.uiIcon = original.uiIcon;
-
+    combo.region = (original.region != null && original.region.found())
+        ? original.region
+        : Core.atlas.find(original.name);
+    combo.fullIcon = (original.fullIcon != null && original.fullIcon.found())
+        ? original.fullIcon
+        : Core.atlas.find(original.name + "-full", original.name);
+    combo.uiIcon = (original.uiIcon != null && original.uiIcon.found())
+        ? original.uiIcon
+        : Core.atlas.find(original.name + "-icon", original.name);
+    if (combo.region == null) {
+      combo.region = (original.region != null && original.region.found())
+          ? original.region
+          : Core.atlas.find(original.name);
+    }
     ObjectMap<String, String> fieldMap = new ObjectMap<>();
     if (combo instanceof CombinedDrill) {
       fieldMap.put("topRegionBeam", "topRegion");

@@ -143,6 +143,7 @@ public class CombinedDrill extends Block {
 
     public CombinedDrill(String name) {
         super(name);
+        buildType = () -> new CombinedDrillBuild();
         conductivePower = true;
         update = true;
         solid = true;
@@ -185,9 +186,9 @@ public class CombinedDrill extends Block {
     public void init() {
         super.init();
         conductivePower = true;
-        // itemCapacity = Math.max(1, (int) (itemCapacity * itemCapacityMultiplier));
-        // baseLiquidCapacity = Math.max(1f, liquidCapacity * liquidCapacityMultiplier);
-        displayLiquid = baseLiquidCapacity;
+        if (liquidCapacity != 9999f) {
+            displayLiquid = baseLiquidCapacity;
+        }
         liquidCapacity = 9999f;
         if (!hasLiquids)
             displayLiquid = 0;
@@ -1106,6 +1107,10 @@ public class CombinedDrill extends Block {
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
+            // FIX: 将未接收的液体退回源端，防止因 block.liquidCapacity=9999f 导致源端过度扣除
+            float refund = amount - actual;
+            if (refund > 0.001f && source != null && source.liquids != null)
+                source.liquids.add(liquid, refund);
         }
 
         @Override

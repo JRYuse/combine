@@ -9,15 +9,14 @@ public class Loads {
   public static Block cGraphitePress, cMultiPress, cSiliconSmelter, cSiliconCrucible, cKiln,
       cPlastaniumCompressor, cPhaseWeaver, cSurgeSmelter, cCryofluidMixer,
       cPyratiteMixer, cBlastMixer, cMelter, cSeparator, cDisassembler,
-      cSporePress, cPulverizer, cCoalCentrifuge, cIncinerator;
-    public static Block cRegenProjector, cOverdriveProjector, cMendProjector, cForceProjector, cLaunchPad;
+      cSporePress, cPulverizer, cCoalCentrifuge;
   public static Block cMechanicalDrill, cPneumaticDrill, cLaserDrill, cBlastDrill;
 
   public static void load() {
     cMechanicalDrill = drill(Blocks.mechanicalDrill, CombinedDrill.Mode.drill);
     cPneumaticDrill = drill(Blocks.pneumaticDrill, CombinedDrill.Mode.drill);
     cLaserDrill = drill(Blocks.laserDrill, CombinedDrill.Mode.drill);
-    cBlastDrill = drill(Blocks.blastDrill, CombinedDrill.Mode.burst);
+    cBlastDrill = drill(Blocks.blastDrill, CombinedDrill.Mode.drill);
 
     cGraphitePress = crafter(Blocks.graphitePress, CombinedCrafter.Mode.generic);
     cMultiPress = crafter(Blocks.multiPress, CombinedCrafter.Mode.generic);
@@ -36,16 +35,9 @@ public class Loads {
     cSporePress = crafter(Blocks.sporePress, CombinedCrafter.Mode.generic);
     cPulverizer = crafter(Blocks.pulverizer, CombinedCrafter.Mode.generic);
     cCoalCentrifuge = crafter(Blocks.coalCentrifuge, CombinedCrafter.Mode.generic);
-    cIncinerator = crafter(Blocks.incinerator, CombinedCrafter.Mode.generic);
 
     // 如果某个组合版需要覆盖 drawer，在 copyFields 之后写：
     // ((CombinedCrafter)cCryofluidMixer).drawer = new DrawMulti(...);
-
-    cRegenProjector = projector(Blocks.regenProjector, CombinedRegenProjector.class);
-    cOverdriveProjector = projector(Blocks.overdriveProjector, CombinedOverdriveProjector.class);
-    cMendProjector = projector(Blocks.mendProjector, CombinedMendProjector.class);
-    cForceProjector = projector(Blocks.forceProjector, CombinedForceProjector.class);
-    cLaunchPad = projector(Blocks.launchPad, CombinedLaunchPad.class);
   }
 
   private static Block crafter(Block orig, CombinedCrafter.Mode mode) {
@@ -60,16 +52,5 @@ public class Loads {
     d.mode = mode;
     copyFields(orig, d);
     return d;
-  }
-
-  @SuppressWarnings("unchecked")
-  private static <T extends Block> Block projector(Block orig, Class<T> comboClass) {
-    T c = createCombo(orig, comboClass);
-    copyFields(orig, c);
-    c.init();
-    c.postInit();
-    c.loadIcon();
-    postInit(c);
-    return c;
   }
 }
