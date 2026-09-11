@@ -4,26 +4,42 @@ import arc.Events;
 import arc.files.Fi;
 import arc.struct.ObjectMap;
 import arc.struct.Seq;
+import arc.struct.StringMap;
 import arc.util.Log;
-import arc.util.serialization.Json;
 import arc.util.serialization.JsonReader;
 import arc.util.serialization.JsonValue;
+import java.util.IdentityHashMap;
 import mindustry.Vars;
 import mindustry.content.TechTree;
 import mindustry.content.TechTree.TechNode;
 import mindustry.ctype.ContentType;
 import mindustry.ctype.UnlockableContent;
+import mindustry.game.EventType.BlockBuildBeginEvent;
 import mindustry.game.EventType.ClientLoadEvent;
+import mindustry.game.EventType.SaveLoadEvent;
+import mindustry.game.EventType.WorldLoadEvent;
+import mindustry.game.EventType.SchematicCreateEvent;
+import mindustry.game.EventType.TileChangeEvent;
+import mindustry.game.Schematic;
 import mindustry.mod.Mod;
 import mindustry.mod.Mods.LoadedMod;
 import mindustry.type.ItemStack;
 import mindustry.world.Block;
+import mindustry.world.Tile;
+import mindustry.world.blocks.ConstructBlock;
 import mindustry.world.blocks.campaign.LaunchPad;
+import mindustry.world.blocks.defense.Door;
 import mindustry.world.blocks.defense.ForceProjector;
 import mindustry.world.blocks.defense.MendProjector;
 import mindustry.world.blocks.defense.OverdriveProjector;
 import mindustry.world.blocks.defense.RegenProjector;
+import mindustry.world.blocks.defense.turrets.ContinuousLiquidTurret;
+import mindustry.world.blocks.defense.turrets.ItemTurret;
+import mindustry.world.blocks.defense.turrets.LaserTurret;
+import mindustry.world.blocks.defense.turrets.LiquidTurret;
+import mindustry.world.blocks.defense.turrets.PowerTurret;
 import mindustry.world.blocks.heat.HeatProducer;
+import mindustry.world.blocks.logic.LogicBlock;
 import mindustry.world.blocks.power.ConsumeGenerator;
 import mindustry.world.blocks.power.HeaterGenerator;
 import mindustry.world.blocks.power.ImpactReactor;
@@ -35,15 +51,13 @@ import mindustry.world.blocks.production.Drill;
 import mindustry.world.blocks.production.GenericCrafter;
 import mindustry.world.blocks.production.HeatCrafter;
 import mindustry.world.blocks.production.Incinerator;
+import mindustry.world.blocks.production.Pump;
+import mindustry.world.blocks.production.SolidPump;
+import mindustry.world.blocks.defense.Wall;
 import mindustry.world.blocks.production.Separator;
-import mindustry.world.blocks.storage.CoreBlock;
+import mindustry.world.blocks.production.WallCrafter;
 import mindustry.world.blocks.storage.StorageBlock;
 import mindustry.world.meta.BuildVisibility;
-
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
-import java.util.HashSet;
-import java.util.Set;
 
 import static combine.BlockCloner.*;
 
@@ -54,9 +68,48 @@ public class Main extends Mod {
   static JsonReader reader = new JsonReader();
   static JsonValue json;
 
+  
+  static final IdentityHashMap<Schematic, Schematic> virtualCopies = new IdentityHashMap<>();
+
   @Override
-  public void loadContent() {
-    Loads.load();
+  public void init() {
+    
+    
+    
+    Events.on(BlockBuildBeginEvent.class, e -> {
+      if (e.breaking)
+        return; 
+      if (e.tile.build instanceof ConstructBlock.ConstructBuild cons) {
+        Block combo = originalToCombo.get(cons.current);
+        if (combo != null) {
+          
+          cons.current = combo;
+        }
+      }
+    });
+
+    
+    
+    
+    Events.on(TileChangeEvent.class, e -> {
+      if (Vars.state.isEditor() || Vars.world.isGenerating())
+        return;
+      Block combo = originalToCombo.get(e.tile.block());
+      if (combo != null && e.tile.build != null && !e.tile.build.dead) {
+        e.tile.setBlock(combo, e.tile.team(), e.tile.build.rotation);
+      }
+    });
+
+    
+    Events.on(WorldLoadEvent.class, e -> syncComboUnlocks());
+    Events.on(SaveLoadEvent.class, e -> syncComboUnlocks());
+
+    
+    
+    Events.on(mindustry.game.EventType.Trigger.class, t -> {
+      if (t == mindustry.game.EventType.Trigger.update && !Vars.state.isMenu())
+        syncVirtualCopyEdits();
+    });
 
     Events.on(ClientLoadEvent.class, e -> {
       for (var entry : originalToCombo) {
@@ -66,6 +119,12 @@ public class Main extends Mod {
       processModBlocks();
       rebuildTechTree();
 
+      
+      convertSchematicLibrary();
+      
+      Events.on(SchematicCreateEvent.class, ev -> convertSchematicInPlace(ev.schematic));
+
+      syncComboUnlocks();
       for (var entry : originalToCombo) {
         Block orig = entry.key;
         orig.hideDatabase = true;
@@ -73,6 +132,109 @@ public class Main extends Mod {
         hideNode(orig);
       }
     });
+  }
+
+  
+
+
+
+
+  void syncComboUnlocks() {
+    for (var entry : originalToCombo) {
+      Block orig = entry.key;
+      Block combo = entry.value;
+      if (orig.unlocked() && !combo.unlocked())
+        combo.quietUnlock();
+    }
+  }
+
+  
+  void syncVirtualCopyEdits() {
+    if (virtualCopies.isEmpty())
+      return;
+    for (var e : virtualCopies.entrySet()) {
+      Schematic copy = e.getKey();
+      Schematic orig = e.getValue();
+      boolean changed = false;
+      if (!copy.labels.equals(orig.labels)) {
+        orig.labels.set(copy.labels);
+        changed = true;
+      }
+      String cn = copy.tags.get("name");
+      if (cn != null && !cn.equals(orig.tags.get("name"))) {
+        orig.tags.put("name", cn);
+        changed = true;
+      }
+      if (changed && orig.file != null) {
+        try {
+          mindustry.game.Schematics.write(orig, orig.file);
+        } catch (Throwable t) {
+          Log.err(t);
+        }
+      }
+    }
+  }
+
+  
+  void convertSchematicInPlace(Schematic s) {
+    s.tiles.each(st -> {
+      Block combo = originalToCombo.get(st.block);
+      if (combo != null)
+        st.block = combo;
+    });
+  }
+
+  
+
+
+
+
+
+
+  void convertSchematicLibrary() {
+    virtualCopies.clear();
+    Seq<Schematic> toHide = new Seq<>();
+    for (Schematic s : Vars.schematics.all()) {
+      if ("true".equals(s.tags.get("comboCopy"))) {
+        
+        if (s.file != null)
+          toHide.add(s);
+        continue;
+      }
+      boolean hasOrig = false;
+      for (var st : s.tiles) {
+        if (originalToCombo.containsKey(st.block)) {
+          hasOrig = true;
+          break;
+        }
+      }
+      if (!hasOrig)
+        continue;
+
+      Schematic copy = makeComboCopy(s);
+      copy.file = null; 
+      Vars.schematics.all().add(copy);
+      virtualCopies.put(copy, s); 
+      toHide.add(s);
+    }
+    for (Schematic s : toHide) {
+      Vars.schematics.all().remove(s); 
+    }
+    Vars.schematics.all().sort();
+  }
+
+  Schematic makeComboCopy(Schematic s) {
+    Seq<Schematic.Stile> tiles = new Seq<>(s.tiles.size);
+    for (var st : s.tiles) {
+      Block combo = originalToCombo.get(st.block);
+      tiles.add(new Schematic.Stile(combo != null ? combo : st.block, st.x, st.y, st.config, st.rotation));
+    }
+    StringMap tags = new StringMap();
+    tags.putAll(s.tags); 
+    tags.put("comboCopy", "true");
+    Schematic copy = new Schematic(tiles, tags, s.width, s.height);
+    copy.labels.addAll(s.labels); 
+    return copy;
   }
 
   void getWhiteList() {
@@ -97,16 +259,23 @@ public class Main extends Mod {
     }
   }
 
-  /** 检测是否是 JS extend() 生成的适配器类 */
+  
+
+  static boolean isExact(Block b, Class<? extends Block> target) {
+    Class<?> cls = b.getClass();
+    return cls == target || (cls.isAnonymousClass() && cls.getSuperclass() == target);
+  }
+
+  
   boolean isJSAdapter(Block b) {
     Class<?> cls = b.getClass();
     String name = cls.getName().toLowerCase();
 
-    // 类名特征
+    
     if (name.contains("adapter") || name.contains("rhino") || name.contains("javascript"))
       return true;
 
-    // 关键：JavaAdapter 实现了 org.mozilla.javascript.Wrapper
+    
     for (Class<?> iface : cls.getInterfaces()) {
       if (iface.getName().equals("org.mozilla.javascript.Wrapper"))
         return true;
@@ -122,64 +291,89 @@ public class Main extends Mod {
         continue;
       if (list.contains(b.name))
         continue;
-      if (b instanceof Incinerator)
-        continue;
-      boolean isFactory = b instanceof GenericCrafter;
-      boolean isHeatCrafter = b instanceof HeatCrafter;
-      boolean isHeatProducer = b instanceof HeatProducer;
-      boolean isDrill = b instanceof Drill || b instanceof BeamDrill || b instanceof BurstDrill;
-      boolean isGenerator = b instanceof ConsumeGenerator
-          || b instanceof ImpactReactor
-          || b instanceof NuclearReactor || b instanceof HeaterGenerator;
-      boolean isLaunchPad = b instanceof LaunchPad;
-      boolean isRegen = b instanceof RegenProjector;
-      boolean isOverdrive = b instanceof OverdriveProjector;
-      boolean isMend = b instanceof MendProjector;
-      boolean isForce = b instanceof ForceProjector;
-      boolean isStorage = b instanceof StorageBlock && !(b instanceof CoreBlock);
-
-      if (!isFactory && !isHeatCrafter && !isHeatProducer && !isDrill && !isGenerator && !isLaunchPad
-          && !isRegen && !isOverdrive && !isMend && !isForce)
+      if (isExact(b, Incinerator.class))
         continue;
 
-      // 防止重复处理已转换类型
-      if (b instanceof CombinedCrafter || b instanceof CombinedDrill
-          || b instanceof CombinedGenerator || b instanceof CombinedLaunchPad
-          || b instanceof CombinedRegenProjector || b instanceof CombinedOverdriveProjector
-          || b instanceof CombinedMendProjector || b instanceof CombinedForceProjector
-          || b instanceof CombinedStorageBlock)
+      boolean isFactory = isExact(b, GenericCrafter.class);
+      boolean isHeatCrafter = isExact(b, HeatCrafter.class);
+      boolean isHeatProducer = isExact(b, HeatProducer.class);
+      boolean isSeparator = isExact(b, Separator.class);
+      boolean isAttribute = isExact(b, AttributeCrafter.class);
+      boolean isDrill = isExact(b, Drill.class) || isExact(b, BeamDrill.class)
+          || isExact(b, BurstDrill.class);
+      boolean isGenerator = isExact(b, ConsumeGenerator.class)
+          || isExact(b, ImpactReactor.class)
+          || isExact(b, NuclearReactor.class) || isExact(b, HeaterGenerator.class);
+      boolean isLaunchPad = isExact(b, LaunchPad.class);
+      boolean isRegen = isExact(b, RegenProjector.class);
+      boolean isOverdrive = isExact(b, OverdriveProjector.class);
+      boolean isMend = isExact(b, MendProjector.class);
+      boolean isForce = isExact(b, ForceProjector.class);
+      
+      boolean isStorage = isExact(b, StorageBlock.class);
+      
+      boolean isLogic = isExact(b, LogicBlock.class);
+      boolean isContLiquidTurret = isExact(b, ContinuousLiquidTurret.class);
+      boolean isLiquidTurret = isExact(b, LiquidTurret.class);
+      boolean isItemTurret = isExact(b, ItemTurret.class);
+      boolean isPowerTurret = isExact(b, PowerTurret.class);
+      boolean isLaserTurret = isExact(b, LaserTurret.class);
+      boolean isPump = isExact(b, Pump.class) && !isExact(b, SolidPump.class);
+      boolean isSolidPump = isExact(b, SolidPump.class);
+      boolean isWallCrafter = isExact(b, WallCrafter.class);
+      boolean isWall = isExact(b, Wall.class) || isExact(b, Door.class);
+
+      if (!isFactory && !isHeatCrafter && !isHeatProducer && !isSeparator && !isAttribute
+          && !isDrill && !isGenerator && !isLaunchPad
+          && !isRegen && !isOverdrive && !isMend && !isForce && !isStorage
+          && !isLogic && !isContLiquidTurret && !isLiquidTurret && !isItemTurret
+          && !isPowerTurret && !isLaserTurret
+          && !isPump && !isSolidPump && !isWallCrafter && !isWall)
+        continue;
+
+      
+      if (isExact(b, CombinedCrafter.class) || isExact(b, CombinedDrill.class)
+          || isExact(b, CombinedGenerator.class) || isExact(b, CombinedLaunchPad.class)
+          || isExact(b, CombinedRegenProjector.class) || isExact(b, CombinedOverdriveProjector.class)
+          || isExact(b, CombinedMendProjector.class) || isExact(b, CombinedForceProjector.class)
+          || isExact(b, CombinedStorageBlock.class) || isExact(b, CombinedLogicProcessor.class)
+          || isExact(b, CombinedContinuousLiquidTurret.class) || isExact(b, CombinedLiquidTurret.class)
+          || isExact(b, CombinedItemTurret.class) || isExact(b, CombinedTurret.class)
+          || isExact(b, CombinedPump.class)
+          || isExact(b, CombinedWallCrafter.class)
+          || isExact(b, LinkWall.class))
         continue;
 
       Block combo;
-      if (isFactory || isHeatCrafter || isHeatProducer) {
+      if (isFactory || isHeatCrafter || isHeatProducer || isSeparator || isAttribute) {
         CombinedCrafter cc = createCombo(b, CombinedCrafter.class);
-        if (b instanceof HeatProducer)
+        if (isExact(b, HeatProducer.class))
           cc.mode = CombinedCrafter.Mode.heatproducer;
-        else if (b instanceof HeatCrafter)
+        else if (isExact(b, HeatCrafter.class))
           cc.mode = CombinedCrafter.Mode.heatcrafter;
-        else if (b instanceof AttributeCrafter)
+        else if (isAttribute)
           cc.mode = CombinedCrafter.Mode.attribute;
-        else if (b instanceof Separator)
+        else if (isSeparator)
           cc.mode = CombinedCrafter.Mode.separator;
         else
           cc.mode = CombinedCrafter.Mode.generic;
         combo = cc;
       } else if (isDrill) {
         CombinedDrill cd = createCombo(b, CombinedDrill.class);
-        if (b instanceof BeamDrill)
+        if (isExact(b, BeamDrill.class))
           cd.mode = CombinedDrill.Mode.beam;
-        else if (b instanceof BurstDrill)
+        else if (isExact(b, BurstDrill.class))
           cd.mode = CombinedDrill.Mode.burst;
         else
           cd.mode = CombinedDrill.Mode.drill;
         combo = cd;
       } else if (isGenerator) {
         CombinedGenerator cg = createCombo(b, CombinedGenerator.class);
-        if (b instanceof ImpactReactor)
+        if (isExact(b, ImpactReactor.class))
           cg.mode = CombinedGenerator.Mode.impact;
-        else if (b instanceof NuclearReactor)
+        else if (isExact(b, NuclearReactor.class))
           cg.mode = CombinedGenerator.Mode.nuclear;
-        else if (b instanceof HeaterGenerator)
+        else if (isExact(b, HeaterGenerator.class))
           cg.mode = CombinedGenerator.Mode.heater;
         else
           cg.mode = CombinedGenerator.Mode.consume;
@@ -192,6 +386,32 @@ public class Main extends Mod {
         combo = createCombo(b, CombinedOverdriveProjector.class);
       } else if (isMend) {
         combo = createCombo(b, CombinedMendProjector.class);
+      } else if (isStorage) {
+        combo = createCombo(b, CombinedStorageBlock.class);
+      } else if (isLogic) {
+        combo = createCombo(b, CombinedLogicProcessor.class);
+      } else if (isContLiquidTurret) {
+        combo = createCombo(b, CombinedContinuousLiquidTurret.class);
+      } else if (isLiquidTurret) {
+        combo = createCombo(b, CombinedLiquidTurret.class);
+      } else if (isItemTurret) {
+        combo = createCombo(b, CombinedItemTurret.class);
+      } else if (isPowerTurret || isLaserTurret) {
+        
+        CombinedTurret ct = createCombo(b, CombinedTurret.class);
+        ct.mode = isLaserTurret ? CombinedTurret.Mode.laser : CombinedTurret.Mode.power;
+        combo = ct;
+      } else if (isPump) {
+        combo = createCombo(b, CombinedPump.class);
+      } else if (isSolidPump) {
+        combo = createCombo(b, CombinedSolidPump.class);
+      } else if (isWallCrafter) {
+
+        combo = createCombo(b, CombinedWallCrafter.class);
+      } else if (isWall) {
+        LinkWall lw = createCombo(b, LinkWall.class);
+        lw.mode = isExact(b, Door.class) ? LinkWall.Mode.door : LinkWall.Mode.wall;
+        combo = lw;
       } else {
         combo = createCombo(b, CombinedForceProjector.class);
       }
@@ -204,46 +424,10 @@ public class Main extends Mod {
     }
   }
 
-  /**
-   * 检查 clazz 在 baseClass 之上是否声明了额外的实例字段。
-   * 原版匿名类（如 Blocks$1）通常没有额外字段，返回 false。
-   * JS MultiCrafter 等魔改类通常有 tmpRecs 等额外字段，返回 true。
-   */
-  boolean hasExtraFields(Class<?> clazz, Class<?> baseClass) {
-    // 收集基准类及其所有父类的字段名
-    Set<String> baseFields = new HashSet<>();
-    Class<?> c = baseClass;
-    while (c != null && c != Object.class) {
-      for (Field f : c.getDeclaredFields()) {
-        baseFields.add(f.getName());
-      }
-      c = c.getSuperclass();
-    }
+  
 
-    // 检查 clazz 及其父类（直到 baseClass 为止）的所有声明字段
-    c = clazz;
-    while (c != null && c != Object.class && c != baseClass) {
-      for (Field f : c.getDeclaredFields()) {
-        int mod = f.getModifiers();
-        if (Modifier.isStatic(mod) || Modifier.isFinal(mod) || f.isSynthetic())
-          continue;
 
-        String n = f.getName();
-        // 系统字段不算
-        if (n.equals("name") || n.equals("id")
-            || n.equals("techNode") || n.equals("techNodes")
-            || n.equals("buildType") || n.equals("bars") || n.equals("stats"))
-          continue;
 
-        if (!baseFields.contains(n)) {
-          Log.info("Extra field '" + n + "' found in " + clazz.getName());
-          return true;
-        }
-      }
-      c = c.getSuperclass();
-    }
-    return false;
-  }
 
   void rebuildTechTree() {
     ObjectMap<TechNode, TechNode> nodeMap = new ObjectMap<>();

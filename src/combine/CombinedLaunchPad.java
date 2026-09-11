@@ -69,6 +69,7 @@ public class CombinedLaunchPad extends LaunchPad {
         if (!hasLiquids)
             displayLiquid = 0;
         hasLiquids = true;
+        conductivePower = true;
         hasItems = true;
 
         cachedItems.clear();
@@ -88,6 +89,11 @@ public class CombinedLaunchPad extends LaunchPad {
                 }
             }
         }
+
+        // 禁用环境音循环：避免触发 SoundControl 环境音线程在 Android 上的
+        // IllegalThreadStateException（Thread.start 崩溃）
+        ambientSound = mindustry.gen.Sounds.none;
+        ambientSoundVolume = 0f;
     }
 
     @Override
@@ -175,36 +181,6 @@ public class CombinedLaunchPad extends LaunchPad {
             if (oldGroup.size > newGroup.size)
                 splitAssets(oldGroup, newGroup);
             shareModules(newLeader);
-            if (newLeader.items != null && totalItemCap > 0) {
-                int excess = newLeader.items.total() - totalItemCap;
-                if (excess > 0) {
-                    for (Item item : cachedItems) {
-                        int amt = newLeader.items.get(item);
-                        if (amt > 0) {
-                            int remove = Math.min(amt, excess);
-                            newLeader.items.remove(item, remove);
-                            excess -= remove;
-                            if (excess <= 0)
-                                break;
-                        }
-                    }
-                }
-            }
-            if (newLeader.liquids != null && totalLiqCap > 0.001f) {
-                float excess = newLeader.liquids.currentAmount() - totalLiqCap;
-                if (excess > 0.001f) {
-                    for (Liquid liquid : cachedLiquids) {
-                        float amt = newLeader.liquids.get(liquid);
-                        if (amt > 0.001f) {
-                            float remove = Math.min(amt, excess);
-                            newLeader.liquids.remove(liquid, remove);
-                            excess -= remove;
-                            if (excess <= 0.001f)
-                                break;
-                        }
-                    }
-                }
-            }
             for (CombinedLaunchPadBuild old : oldGroup) {
                 if (old != this && old.isValid() && !newGroup.contains(old)) {
                     old.comboLeader = null;
@@ -284,7 +260,7 @@ public class CombinedLaunchPad extends LaunchPad {
                                 : Math.round(kickedTotalShare * (float) itemCaps[i] / kickedTotalItemCap);
                         ideal = Math.min(ideal, remaining);
                         int canTake = Math.max(0, itemCaps[i] - kickedAllocated[i]);
-                        int share = Math.min(ideal, canTake);
+                        int share = ideal; // 不做容量硬截断：超出份额暂时超容保留，宁可超容也不丢物品
                         if (share > 0) {
                             newItemMods[i].add(item, share);
                             kickedAllocated[i] += share;
@@ -308,7 +284,7 @@ public class CombinedLaunchPad extends LaunchPad {
                                 : kickedTotalShare * liquidCaps[i] / kickedTotalLiquidCap;
                         ideal = Math.min(ideal, remaining);
                         float canTake = Math.max(0f, liquidCaps[i] - kickedAllocated[i]);
-                        float share = Math.min(ideal, canTake);
+                        float share = ideal; // 不做容量硬截断：超出份额暂时超容保留，宁可超容也不丢物品
                         if (share > 0.001f) {
                             newLiquidMods[i].add(liquid, share);
                             kickedAllocated[i] += share;
@@ -357,11 +333,11 @@ public class CombinedLaunchPad extends LaunchPad {
                 for (CombinedLaunchPadBuild m : group()) {
                     if (m != leader && m.isValid() && m.items != null && !processedItems.contains(m.items)) {
                         processedItems.add(m.items);
-                        for (Item item : cachedItems) {
+                        for (Item item : content.items()) {
                             int amt = m.items.get(item);
                             if (amt > 0) {
                                 int canAccept = Math.max(0, totalItemCap - leader.items.total());
-                                int transfer = Math.min(amt, canAccept);
+                                int transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0)
                                     leader.items.add(item, transfer);
                             }
@@ -377,11 +353,11 @@ public class CombinedLaunchPad extends LaunchPad {
                 for (CombinedLaunchPadBuild m : group()) {
                     if (m != leader && m.isValid() && m.liquids != null && !processedLiquids.contains(m.liquids)) {
                         processedLiquids.add(m.liquids);
-                        for (Liquid liquid : cachedLiquids) {
+                        for (Liquid liquid : content.liquids()) {
                             float amt = m.liquids.get(liquid);
                             if (amt > 0.001f) {
                                 float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.currentAmount());
-                                float transfer = Math.min(amt, canAccept);
+                                float transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0.001f)
                                     leader.liquids.add(liquid, transfer);
                             }
@@ -471,7 +447,7 @@ public class CombinedLaunchPad extends LaunchPad {
                                     : Math.round(total * (float) itemCaps[i] / totalItemCap);
                             ideal = Math.min(ideal, remaining);
                             int canTake = Math.max(0, itemCaps[i] - allocated[i]);
-                            int share = Math.min(ideal, canTake);
+                            int share = ideal; // 不做容量硬截断：超出份额暂时超容保留，宁可超容也不丢物品
                             if (share > 0) {
                                 itemMods[i].add(item, share);
                                 allocated[i] += share;
@@ -492,7 +468,7 @@ public class CombinedLaunchPad extends LaunchPad {
                                     : total * liquidCaps[i] / totalLiquidCap;
                             ideal = Math.min(ideal, remaining);
                             float canTake = Math.max(0f, liquidCaps[i] - allocated[i]);
-                            float share = Math.min(ideal, canTake);
+                            float share = ideal; // 不做容量硬截断：超出份额暂时超容保留，宁可超容也不丢物品
                             if (share > 0.001f) {
                                 liquidMods[i].add(liquid, share);
                                 allocated[i] += share;
@@ -572,6 +548,13 @@ public class CombinedLaunchPad extends LaunchPad {
                 Effect.shake(3f, 3f, this);
                 launchCounter = 0f;
             }
+        }
+
+        @Override
+        public boolean shouldAmbientSound() {
+            // 禁用环境音循环，避免触发 SoundControl 环境音线程在 Android 上的
+            // IllegalThreadStateException（Thread.start 崩溃）
+            return false;
         }
 
         @Override

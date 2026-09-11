@@ -215,6 +215,11 @@ public class CombinedDrill extends Block {
             ambientSoundVolume = 0.18f;
             ambientSound = Sounds.drillCharge;
         }
+
+        // 禁用环境音循环：避免触发 SoundControl 环境音线程在 Android 上的
+        // IllegalThreadStateException（Thread.start 崩溃）
+        ambientSound = mindustry.gen.Sounds.none;
+        ambientSoundVolume = 0f;
     }
 
     @Override
@@ -538,36 +543,6 @@ public class CombinedDrill extends Block {
             if (oldGroup.size > newGroup.size)
                 splitAssets(oldGroup, newGroup);
             shareModules(newLeader);
-            if (newLeader.items != null && totalItemCap > 0) {
-                int excess = newLeader.items.total() - totalItemCap;
-                if (excess > 0) {
-                    for (Item item : content.items()) {
-                        int amt = newLeader.items.get(item);
-                        if (amt > 0) {
-                            int remove = Math.min(amt, excess);
-                            newLeader.items.remove(item, remove);
-                            excess -= remove;
-                            if (excess <= 0)
-                                break;
-                        }
-                    }
-                }
-            }
-            if (newLeader.liquids != null && totalLiqCap > 0.001f) {
-                float excess = newLeader.liquids.currentAmount() - totalLiqCap;
-                if (excess > 0.001f) {
-                    for (Liquid liquid : content.liquids()) {
-                        float amt = newLeader.liquids.get(liquid);
-                        if (amt > 0.001f) {
-                            float remove = Math.min(amt, excess);
-                            newLeader.liquids.remove(liquid, remove);
-                            excess -= remove;
-                            if (excess <= 0.001f)
-                                break;
-                        }
-                    }
-                }
-            }
             for (CombinedDrillBuild oldMember : oldGroup) {
                 if (oldMember != this && oldMember.isValid() && !newGroup.contains(oldMember)) {
                     oldMember.comboLeader = null;
@@ -646,7 +621,7 @@ public class CombinedDrill extends Block {
                                 : Math.round(kickedTotalShare * (float) itemCaps[i] / kickedTotalItemCap);
                         ideal = Math.min(ideal, remaining);
                         int canTake = Math.max(0, itemCaps[i] - kickedAllocated[i]);
-                        int share = Math.min(ideal, canTake);
+                        int share = ideal; // 不做容量硬截断：超出份额暂时超容保留，宁可超容也不丢物品
                         if (share > 0) {
                             newItemMods[i].add(item, share);
                             kickedAllocated[i] += share;
@@ -670,7 +645,7 @@ public class CombinedDrill extends Block {
                                 : kickedTotalShare * liquidCaps[i] / kickedTotalLiquidCap;
                         ideal = Math.min(ideal, remaining);
                         float canTake = Math.max(0f, liquidCaps[i] - kickedAllocated[i]);
-                        float share = Math.min(ideal, canTake);
+                        float share = ideal; // 不做容量硬截断：超出份额暂时超容保留，宁可超容也不丢物品
                         if (share > 0.001f) {
                             newLiquidMods[i].add(liquid, share);
                             kickedAllocated[i] += share;
@@ -722,7 +697,7 @@ public class CombinedDrill extends Block {
                             int amt = member.items.get(item);
                             if (amt > 0) {
                                 int canAccept = Math.max(0, totalItemCap - leader.items.total());
-                                int transfer = Math.min(amt, canAccept);
+                                int transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0)
                                     leader.items.add(item, transfer);
                             }
@@ -743,7 +718,7 @@ public class CombinedDrill extends Block {
                             float amt = member.liquids.get(liquid);
                             if (amt > 0.001f) {
                                 float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.currentAmount());
-                                float transfer = Math.min(amt, canAccept);
+                                float transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0.001f)
                                     leader.liquids.add(liquid, transfer);
                             }
@@ -843,7 +818,7 @@ public class CombinedDrill extends Block {
                                     : Math.round(total * (float) itemCaps[i] / totalItemCap);
                             ideal = Math.min(ideal, remaining);
                             int canTake = Math.max(0, itemCaps[i] - allocated[i]);
-                            int share = Math.min(ideal, canTake);
+                            int share = ideal; // 不做容量硬截断：超出份额暂时超容保留，宁可超容也不丢物品
                             if (share > 0) {
                                 itemMods[i].add(item, share);
                                 allocated[i] += share;
@@ -864,7 +839,7 @@ public class CombinedDrill extends Block {
                                     : total * liquidCaps[i] / totalLiquidCap;
                             ideal = Math.min(ideal, remaining);
                             float canTake = Math.max(0f, liquidCaps[i] - allocated[i]);
-                            float share = Math.min(ideal, canTake);
+                            float share = ideal; // 不做容量硬截断：超出份额暂时超容保留，宁可超容也不丢物品
                             if (share > 0.001f) {
                                 liquidMods[i].add(liquid, share);
                                 allocated[i] += share;
@@ -944,13 +919,18 @@ public class CombinedDrill extends Block {
 
         void updateDrill() {
             CombinedDrill cb = (CombinedDrill) block;
-            if (timer(timerDump, dumpTime / timeScale))
-                dump(dominantItem != null && items.has(dominantItem) ? dominantItem : null);
+            // FIX(混合矿堵塞)：逐类型倒出池内所有矿物，不再只倒 dominant
+            if (timer(timerDump, dumpTime / timeScale)) {
+                for (Item item : content.items())
+                    if (items.get(item) > 0)
+                        dump(item);
+            }
             if (dominantItem == null)
                 return;
             timeDrilled += warmup * delta();
             float delay = getDrillTime(dominantItem);
-            if (items.total() < comboTotalItemCap && dominantItems > 0 && efficiency > 0) {
+            // FIX(per-type)：只看 dominantItem 自身余量 —— 另一种矿满不影响本矿挖掘
+            if (items.get(dominantItem) < comboTotalItemCap && dominantItems > 0 && efficiency > 0) {
                 float speed = Mathf.lerp(1f, cb.liquidBoostIntensity, optionalEfficiency) * efficiency;
                 lastDrillSpeed = (speed * dominantItems * warmup) / delay;
                 warmup = Mathf.approachDelta(warmup, speed, cb.warmupSpeed);
@@ -962,7 +942,7 @@ public class CombinedDrill extends Block {
                 warmup = Mathf.approachDelta(warmup, 0f, cb.warmupSpeed);
                 return;
             }
-            if (dominantItems > 0 && progress >= delay && items.total() < comboTotalItemCap) {
+            if (dominantItems > 0 && progress >= delay && items.get(dominantItem) < comboTotalItemCap) {
                 int amount = (int) (progress / delay);
                 for (int i = 0; i < amount; i++)
                     offload(dominantItem);
@@ -979,11 +959,16 @@ public class CombinedDrill extends Block {
                 return;
             if (invertTime > 0f)
                 invertTime -= delta() / cb.invertedTime;
-            if (timer(timerDump, dumpTime / timeScale))
-                dump(items.has(dominantItem) ? dominantItem : null);
+            // FIX(混合矿堵塞)：逐类型倒出池内所有矿物
+            if (timer(timerDump, dumpTime / timeScale)) {
+                for (Item item : content.items())
+                    if (items.get(item) > 0)
+                        dump(item);
+            }
             float drillTime = getDrillTime(dominantItem);
             smoothProgress = Mathf.lerpDelta(smoothProgress, progress / (drillTime - 20f), 0.1f);
-            if (items.total() <= comboTotalItemCap - dominantItems && dominantItems > 0 && efficiency > 0) {
+            // FIX(per-type)
+            if (items.get(dominantItem) <= comboTotalItemCap - dominantItems && dominantItems > 0 && efficiency > 0) {
                 warmup = Mathf.approachDelta(warmup, progress / drillTime, 0.01f);
                 float speed = Mathf.lerp(1f, cb.liquidBoostIntensity, optionalEfficiency) * efficiency;
                 timeDrilled += cb.speedCurve.apply(progress / drillTime) * speed;
@@ -994,7 +979,7 @@ public class CombinedDrill extends Block {
                 lastDrillSpeed = 0f;
                 return;
             }
-            if (dominantItems > 0 && progress >= drillTime && items.total() < comboTotalItemCap) {
+            if (dominantItems > 0 && progress >= drillTime && items.get(dominantItem) < comboTotalItemCap) {
                 for (int i = 0; i < dominantItems; i++)
                     offload(dominantItem);
                 invertTime = 1f;
@@ -1022,13 +1007,18 @@ public class CombinedDrill extends Block {
             if (time >= drillTime) {
                 for (Tile tile : facing) {
                     Item drop = tile == null ? null : tile.wallDrop();
-                    if (items.total() < comboTotalItemCap && drop != null)
+                    // FIX(per-type)：每种矿独立余量，某种满了继续挖别的
+                    if (drop != null && items.get(drop) < comboTotalItemCap)
                         items.add(drop, 1);
                 }
                 time %= drillTime;
             }
-            if (timer(timerDump, dumpTime / timeScale))
-                dump();
+            // FIX(混合矿堵塞)：逐类型倒出池内所有矿物
+            if (timer(timerDump, dumpTime / timeScale)) {
+                for (Item item : content.items())
+                    if (items.get(item) > 0)
+                        dump(item);
+            }
         }
 
         // Beam 辅助
@@ -1116,27 +1106,33 @@ public class CombinedDrill extends Block {
         @Override
         public boolean shouldConsume() {
             CombinedDrill cb = (CombinedDrill) block;
-            if (cb.mode == Mode.beam)
-                return items.total() < comboTotalItemCap && facingAmount > 0 && enabled;
+            // FIX(per-type)：只看对应矿种自身的余量，某种矿满不停其他矿
+            if (cb.mode == Mode.beam) {
+                if (!enabled || facingAmount <= 0)
+                    return false;
+                for (Tile t : facing) {
+                    Item drop = t == null ? null : t.wallDrop();
+                    if (drop != null && items.get(drop) < comboTotalItemCap)
+                        return true;
+                }
+                return false;
+            }
             if (cb.mode == Mode.burst)
-                return items.total() <= comboTotalItemCap - dominantItems && enabled;
-            return items.total() < comboTotalItemCap && enabled && dominantItem != null;
+                return enabled && items.get(dominantItem) <= comboTotalItemCap - dominantItems;
+            return enabled && dominantItem != null && items.get(dominantItem) < comboTotalItemCap;
         }
 
         @Override
         public boolean shouldAmbientSound() {
-            CombinedDrill cb = (CombinedDrill) block;
-            if (cb.mode == Mode.beam)
-                return efficiency > 0;
-            return efficiency > 0.01f && items.total() < comboTotalItemCap;
+            // 禁用环境音循环，避免触发 SoundControl 环境音线程在 Android 上的
+            // IllegalThreadStateException（Thread.start 崩溃）
+            return false;
         }
+
 
         @Override
         public float ambientVolume() {
-            CombinedDrill cb = (CombinedDrill) block;
-            if (cb.mode == Mode.beam)
-                return efficiency * (size * size) / 4f * Mathf.pow(progress(), 4f);
-            return efficiency * (size * size) / 4f;
+            return 0f; // 环境音已禁用
         }
 
         @Override

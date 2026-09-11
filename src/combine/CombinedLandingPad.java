@@ -20,24 +20,21 @@ import mindustry.graphics.Pal;
 import mindustry.type.Item;
 import mindustry.type.Liquid;
 import mindustry.ui.Bar;
-import mindustry.ui.ReqImage;
 import mindustry.world.Block;
-import mindustry.world.consumers.Consume;
-import mindustry.world.consumers.ConsumeItems;
-import mindustry.world.consumers.ConsumeLiquid;
-import mindustry.world.consumers.ConsumeLiquids;
-import mindustry.world.consumers.ConsumePower;
+import mindustry.world.blocks.campaign.LandingPad;
 import mindustry.world.meta.Stat;
 import mindustry.world.meta.StatUnit;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
 
 import static mindustry.Vars.*;
-import static mindustry.Vars.iconMed;
 
-import mindustry.world.blocks.defense.RegenProjector;
-
-public class CombinedRegenProjector extends RegenProjector {
+/**
+ * 组合接收台 —— 相邻同型自动组合，共享物品/液体池。
+ * 每台保留自己的落地动画与冷却；落地物品进入共享物品池，
+ * 冷却水从共享液体池扣除，池子由全体成员向外输出。
+ */
+public class CombinedLandingPad extends LandingPad {
     public boolean allowCrossTypeCombo = true;
     public float baseLiquidCapacity = 10f;
     public float displayLiquid;
@@ -45,12 +42,12 @@ public class CombinedRegenProjector extends RegenProjector {
     public Seq<Item> cachedItems = new Seq<>();
     public Seq<Liquid> cachedLiquids = new Seq<>();
 
-    public CombinedRegenProjector(String name) {
+    public CombinedLandingPad(String name) {
         super(name);
-        buildType = () -> new CombinedRegenProjectorBuild();
-        conductivePower = true;
         hasItems = true;
         hasLiquids = true;
+        solid = true;
+        update = true;
         sync = true;
     }
 
@@ -59,40 +56,19 @@ public class CombinedRegenProjector extends RegenProjector {
         super.init();
         if (liquidCapacity != 9999f) {
             baseLiquidCapacity = liquidCapacity;
-            displayLiquid = liquidCapacity;
+            displayLiquid = baseLiquidCapacity;
         }
         liquidCapacity = 9999f;
-        if (!hasLiquids)
-            displayLiquid = 0;
         hasLiquids = true;
         hasItems = true;
         conductivePower = true;
 
         cachedItems.clear();
+        for (Item item : content.items())
+            cachedItems.add(item);
         cachedLiquids.clear();
-        if (consumers != null) {
-            for (Consume cons : consumers) {
-                if (cons instanceof ConsumeItems ci) {
-                    for (var stack : ci.items) {
-                        if (!cachedItems.contains(stack.item))
-                            cachedItems.add(stack.item);
-                    }
-                } else if (cons instanceof ConsumeLiquid cl) {
-                    if (!cachedLiquids.contains(cl.liquid))
-                        cachedLiquids.add(cl.liquid);
-                } else if (cons instanceof ConsumeLiquids cls) {
-                    for (var stack : cls.liquids) {
-                        if (!cachedLiquids.contains(stack.liquid))
-                            cachedLiquids.add(stack.liquid);
-                    }
-                }
-            }
-        }
-
-        // 禁用环境音循环：避免触发 SoundControl 环境音线程在 Android 上的
-        // IllegalThreadStateException（Thread.start 崩溃）
-        ambientSound = mindustry.gen.Sounds.none;
-        ambientSoundVolume = 0f;
+        if (consumeLiquid != null && !cachedLiquids.contains(consumeLiquid))
+            cachedLiquids.add(consumeLiquid);
     }
 
     @Override
@@ -102,16 +78,15 @@ public class CombinedRegenProjector extends RegenProjector {
         stats.add(Stat.liquidCapacity, displayLiquid, StatUnit.liquidUnits);
     }
 
-    public class CombinedRegenProjectorBuild extends RegenProjectorBuild {
-
-        public CombinedRegenProjectorBuild comboLeader;
-        public Seq<CombinedRegenProjectorBuild> comboGroup = new Seq<>();
+    public class CombinedLandingPadBuild extends LandingPadBuild {
+        public CombinedLandingPadBuild comboLeader;
+        public Seq<CombinedLandingPadBuild> comboGroup = new Seq<>();
         public boolean comboDirty = true;
         public float comboTotalLiquidCap = 0f;
         public int comboTotalItemCap = 0;
         public int pendingLeaderPos = -1;
 
-        public CombinedRegenProjectorBuild leader() {
+        public CombinedLandingPadBuild leader() {
             if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null))
                 comboLeader = null;
             return comboLeader == null ? this : comboLeader;
@@ -121,28 +96,29 @@ public class CombinedRegenProjector extends RegenProjector {
             return leader() == this;
         }
 
-        public Seq<CombinedRegenProjectorBuild> group() {
-            CombinedRegenProjectorBuild l = leader();
+        public Seq<CombinedLandingPadBuild> group() {
+            CombinedLandingPadBuild l = leader();
             if (l.comboGroup == null)
                 l.comboGroup = new Seq<>();
             return l.comboGroup;
         }
 
+        // -------------------- 组合重建 --------------------
         public void rebuildCombo() {
-            Seq<CombinedRegenProjectorBuild> oldGroup = comboGroup != null ? new Seq<>(comboGroup) : new Seq<>();
+            Seq<CombinedLandingPadBuild> oldGroup = comboGroup != null ? new Seq<>(comboGroup) : new Seq<>();
             comboGroup = new Seq<>();
             comboGroup.add(this);
             IntSet visited = new IntSet();
-            Queue<CombinedRegenProjectorBuild> queue = new Queue<>();
+            Queue<CombinedLandingPadBuild> queue = new Queue<>();
             queue.add(this);
             visited.add(pos());
             while (!queue.isEmpty()) {
-                CombinedRegenProjectorBuild cur = queue.removeFirst();
+                CombinedLandingPadBuild cur = queue.removeFirst();
                 for (Building b : cur.proximity) {
-                    if (b instanceof CombinedRegenProjectorBuild o && o.team == team && o.isValid()
+                    if (b instanceof CombinedLandingPadBuild o && o.team == team && o.isValid()
                             && !visited.contains(o.pos())) {
-                        CombinedRegenProjector cb = (CombinedRegenProjector) cur.block,
-                                ob = (CombinedRegenProjector) o.block;
+                        CombinedLandingPad cb = (CombinedLandingPad) cur.block,
+                                ob = (CombinedLandingPad) o.block;
                         if (cur.block == o.block || cb.allowCrossTypeCombo || ob.allowCrossTypeCombo) {
                             visited.add(o.pos());
                             queue.addLast(o);
@@ -151,13 +127,13 @@ public class CombinedRegenProjector extends RegenProjector {
                     }
                 }
             }
-            CombinedRegenProjectorBuild newLeader = this;
-            for (CombinedRegenProjectorBuild b : comboGroup)
+            CombinedLandingPadBuild newLeader = this;
+            for (CombinedLandingPadBuild b : comboGroup)
                 if (b.isValid() && b.pos() < newLeader.pos())
                     newLeader = b;
-            Seq<CombinedRegenProjectorBuild> newGroup = new Seq<>(comboGroup);
+            Seq<CombinedLandingPadBuild> newGroup = new Seq<>(comboGroup);
             newLeader.comboGroup = newGroup;
-            for (CombinedRegenProjectorBuild b : newGroup) {
+            for (CombinedLandingPadBuild b : newGroup) {
                 if (b.isValid()) {
                     b.comboLeader = newLeader;
                     b.comboGroup = newGroup;
@@ -165,24 +141,27 @@ public class CombinedRegenProjector extends RegenProjector {
                 }
             }
             newLeader.comboLeader = null;
+
             float totalLiqCap = 0f;
             int totalItemCap = 0;
-            for (CombinedRegenProjectorBuild b : newGroup) {
+            for (CombinedLandingPadBuild b : newGroup) {
                 if (b.isValid()) {
-                    totalLiqCap += ((CombinedRegenProjector) b.block).baseLiquidCapacity;
+                    totalLiqCap += ((CombinedLandingPad) b.block).baseLiquidCapacity;
                     totalItemCap += b.block.itemCapacity;
                 }
             }
-            for (CombinedRegenProjectorBuild b : newGroup) {
+            for (CombinedLandingPadBuild b : newGroup) {
                 if (b.isValid()) {
                     b.comboTotalLiquidCap = totalLiqCap;
                     b.comboTotalItemCap = totalItemCap;
                 }
             }
+
             if (oldGroup.size > newGroup.size)
                 splitAssets(oldGroup, newGroup);
             shareModules(newLeader);
-            for (CombinedRegenProjectorBuild old : oldGroup) {
+
+            for (CombinedLandingPadBuild old : oldGroup) {
                 if (old != this && old.isValid() && !newGroup.contains(old)) {
                     old.comboLeader = null;
                     old.comboGroup = new Seq<>();
@@ -193,12 +172,13 @@ public class CombinedRegenProjector extends RegenProjector {
             }
         }
 
-        public void splitAssets(Seq<CombinedRegenProjectorBuild> oldGroup, Seq<CombinedRegenProjectorBuild> newGroup) {
-            CombinedRegenProjectorBuild oldLeader = null;
-            for (CombinedRegenProjectorBuild b : oldGroup) {
+        public void splitAssets(Seq<CombinedLandingPadBuild> oldGroup,
+                Seq<CombinedLandingPadBuild> newGroup) {
+            CombinedLandingPadBuild oldLeader = null;
+            for (CombinedLandingPadBuild b : oldGroup) {
                 if (!b.isValid())
                     continue;
-                for (CombinedRegenProjectorBuild o : oldGroup) {
+                for (CombinedLandingPadBuild o : oldGroup) {
                     if (o != b && o.isValid() && (o.items == b.items || o.liquids == b.liquids)) {
                         oldLeader = b;
                         break;
@@ -208,7 +188,7 @@ public class CombinedRegenProjector extends RegenProjector {
                     break;
             }
             if (oldLeader == null) {
-                for (CombinedRegenProjectorBuild b : oldGroup)
+                for (CombinedLandingPadBuild b : oldGroup)
                     if (b.isValid()) {
                         oldLeader = b;
                         break;
@@ -218,16 +198,19 @@ public class CombinedRegenProjector extends RegenProjector {
                 oldLeader = this;
             ItemModule oldItems = oldLeader.items;
             LiquidModule oldLiquids = oldLeader.liquids;
-            Seq<CombinedRegenProjectorBuild> kicked = new Seq<>();
-            for (CombinedRegenProjectorBuild b : oldGroup)
+            Seq<CombinedLandingPadBuild> kicked = new Seq<>();
+            for (CombinedLandingPadBuild b : oldGroup)
                 if (b.isValid() && !newGroup.contains(b))
                     kicked.add(b);
+            if (kicked.isEmpty())
+                return;
+
             int oldTotalItemCap = 0;
             float oldTotalLiquidCap = 0f;
-            for (CombinedRegenProjectorBuild b : oldGroup) {
+            for (CombinedLandingPadBuild b : oldGroup) {
                 if (b.isValid()) {
                     oldTotalItemCap += b.block.itemCapacity;
-                    oldTotalLiquidCap += ((CombinedRegenProjector) b.block).baseLiquidCapacity;
+                    oldTotalLiquidCap += ((CombinedLandingPad) b.block).baseLiquidCapacity;
                 }
             }
             int[] itemCaps = new int[kicked.size];
@@ -235,9 +218,9 @@ public class CombinedRegenProjector extends RegenProjector {
             int kickedTotalItemCap = 0;
             float kickedTotalLiquidCap = 0f;
             for (int i = 0; i < kicked.size; i++) {
-                CombinedRegenProjectorBuild b = kicked.get(i);
+                CombinedLandingPadBuild b = kicked.get(i);
                 itemCaps[i] = b.block.itemCapacity;
-                liquidCaps[i] = ((CombinedRegenProjector) b.block).baseLiquidCapacity;
+                liquidCaps[i] = ((CombinedLandingPad) b.block).baseLiquidCapacity;
                 kickedTotalItemCap += itemCaps[i];
                 kickedTotalLiquidCap += liquidCaps[i];
             }
@@ -248,8 +231,7 @@ public class CombinedRegenProjector extends RegenProjector {
                 newLiquidMods[i] = new LiquidModule();
             }
             if (oldItems != null && oldTotalItemCap > 0 && kickedTotalItemCap > 0) {
-                int[] kickedAllocated = new int[kicked.size];
-                for (Item item : cachedItems) {
+                for (Item item : content.items()) {
                     int total = oldItems.get(item);
                     if (total <= 0)
                         continue;
@@ -260,11 +242,9 @@ public class CombinedRegenProjector extends RegenProjector {
                         int ideal = (i == kicked.size - 1) ? remaining
                                 : Math.round(kickedTotalShare * (float) itemCaps[i] / kickedTotalItemCap);
                         ideal = Math.min(ideal, remaining);
-                        int canTake = Math.max(0, itemCaps[i] - kickedAllocated[i]);
-                        int share = ideal; // 不做容量硬截断：超出份额暂时超容保留，宁可超容也不丢物品
+                        int share = ideal; // 不硬截断
                         if (share > 0) {
                             newItemMods[i].add(item, share);
-                            kickedAllocated[i] += share;
                             remaining -= share;
                         }
                     }
@@ -272,8 +252,7 @@ public class CombinedRegenProjector extends RegenProjector {
                 }
             }
             if (oldLiquids != null && oldTotalLiquidCap > 0.001f && kickedTotalLiquidCap > 0.001f) {
-                float[] kickedAllocated = new float[kicked.size];
-                for (Liquid liquid : cachedLiquids) {
+                for (Liquid liquid : content.liquids()) {
                     float total = oldLiquids.get(liquid);
                     if (total <= 0.001f)
                         continue;
@@ -284,11 +263,9 @@ public class CombinedRegenProjector extends RegenProjector {
                         float ideal = (i == kicked.size - 1) ? remaining
                                 : kickedTotalShare * liquidCaps[i] / kickedTotalLiquidCap;
                         ideal = Math.min(ideal, remaining);
-                        float canTake = Math.max(0f, liquidCaps[i] - kickedAllocated[i]);
-                        float share = ideal; // 不做容量硬截断：超出份额暂时超容保留，宁可超容也不丢物品
+                        float share = ideal; // 不硬截断
                         if (share > 0.001f) {
                             newLiquidMods[i].add(liquid, share);
-                            kickedAllocated[i] += share;
                             remaining -= share;
                         }
                     }
@@ -296,32 +273,32 @@ public class CombinedRegenProjector extends RegenProjector {
                 }
             }
             if (oldItems != null)
-                for (CombinedRegenProjectorBuild b : newGroup)
+                for (CombinedLandingPadBuild b : newGroup)
                     if (b.isValid())
                         b.items = oldItems;
             if (oldLiquids != null)
-                for (CombinedRegenProjectorBuild b : newGroup)
+                for (CombinedLandingPadBuild b : newGroup)
                     if (b.isValid())
                         b.liquids = oldLiquids;
             for (int i = 0; i < kicked.size; i++) {
-                CombinedRegenProjectorBuild b = kicked.get(i);
+                CombinedLandingPadBuild b = kicked.get(i);
                 b.items = newItemMods[i];
                 b.liquids = newLiquidMods[i];
             }
         }
 
-        public void shareModules(CombinedRegenProjectorBuild leader) {
+        public void shareModules(CombinedLandingPadBuild leader) {
             int totalItemCap = leader.comboTotalItemCap;
             float totalLiquidCap = leader.comboTotalLiquidCap;
             if (leader.items == null) {
-                for (CombinedRegenProjectorBuild m : group())
+                for (CombinedLandingPadBuild m : group())
                     if (m.items != null) {
                         leader.items = m.items;
                         break;
                     }
             }
             if (leader.liquids == null) {
-                for (CombinedRegenProjectorBuild m : group())
+                for (CombinedLandingPadBuild m : group())
                     if (m.liquids != null) {
                         leader.liquids = m.liquids;
                         break;
@@ -331,46 +308,40 @@ public class CombinedRegenProjector extends RegenProjector {
             ObjectSet<LiquidModule> processedLiquids = new ObjectSet<>();
             if (leader.items != null) {
                 processedItems.add(leader.items);
-                for (CombinedRegenProjectorBuild m : group()) {
+                for (CombinedLandingPadBuild m : group()) {
                     if (m != leader && m.isValid() && m.items != null && !processedItems.contains(m.items)) {
                         processedItems.add(m.items);
                         for (Item item : content.items()) {
                             int amt = m.items.get(item);
-                            if (amt > 0) {
-                                int canAccept = Math.max(0, totalItemCap - leader.items.total());
-                                int transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
-                                if (transfer > 0)
-                                    leader.items.add(item, transfer);
-                            }
+                            if (amt > 0)
+                                leader.items.add(item, amt); // 全额并入
                         }
                     }
                 }
-                for (CombinedRegenProjectorBuild m : group())
+                for (CombinedLandingPadBuild m : group())
                     if (m.isValid())
                         m.items = leader.items;
             }
             if (leader.liquids != null) {
                 processedLiquids.add(leader.liquids);
-                for (CombinedRegenProjectorBuild m : group()) {
-                    if (m != leader && m.isValid() && m.liquids != null && !processedLiquids.contains(m.liquids)) {
+                for (CombinedLandingPadBuild m : group()) {
+                    if (m != leader && m.isValid() && m.liquids != null
+                            && !processedLiquids.contains(m.liquids)) {
                         processedLiquids.add(m.liquids);
                         for (Liquid liquid : content.liquids()) {
                             float amt = m.liquids.get(liquid);
-                            if (amt > 0.001f) {
-                                float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.currentAmount());
-                                float transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
-                                if (transfer > 0.001f)
-                                    leader.liquids.add(liquid, transfer);
-                            }
+                            if (amt > 0.001f)
+                                leader.liquids.add(liquid, amt); // 全额并入
                         }
                     }
                 }
-                for (CombinedRegenProjectorBuild m : group())
+                for (CombinedLandingPadBuild m : group())
                     if (m.isValid())
                         m.liquids = leader.liquids;
             }
         }
 
+        // -------------------- 生命周期 --------------------
         @Override
         public void created() {
             super.created();
@@ -381,21 +352,21 @@ public class CombinedRegenProjector extends RegenProjector {
         public void onProximityUpdate() {
             super.onProximityUpdate();
             comboDirty = true;
-            for (CombinedRegenProjectorBuild m : group())
+            for (CombinedLandingPadBuild m : group())
                 if (m.isValid())
                     m.comboDirty = true;
         }
 
         @Override
         public void onRemoved() {
-            Seq<CombinedRegenProjectorBuild> members = new Seq<>(group());
+            Seq<CombinedLandingPadBuild> members = new Seq<>(group());
             boolean wasLeader = isLeader();
             ItemModule oldItems = this.items;
             LiquidModule oldLiquids = this.liquids;
             if (!wasLeader) {
                 if (items != null) {
                     boolean shared = false;
-                    for (CombinedRegenProjectorBuild m : members)
+                    for (CombinedLandingPadBuild m : members)
                         if (m != this && m.isValid() && m.items == this.items) {
                             shared = true;
                             break;
@@ -405,7 +376,7 @@ public class CombinedRegenProjector extends RegenProjector {
                 }
                 if (liquids != null) {
                     boolean shared = false;
-                    for (CombinedRegenProjectorBuild m : members)
+                    for (CombinedLandingPadBuild m : members)
                         if (m != this && m.isValid() && m.liquids == this.liquids) {
                             shared = true;
                             break;
@@ -415,8 +386,8 @@ public class CombinedRegenProjector extends RegenProjector {
                 }
             }
             if (wasLeader) {
-                Seq<CombinedRegenProjectorBuild> survivors = new Seq<>();
-                for (CombinedRegenProjectorBuild b : members)
+                Seq<CombinedLandingPadBuild> survivors = new Seq<>();
+                for (CombinedLandingPadBuild b : members)
                     if (b != this && b.isValid())
                         survivors.add(b);
                 int[] itemCaps = new int[survivors.size];
@@ -424,9 +395,9 @@ public class CombinedRegenProjector extends RegenProjector {
                 int totalItemCap = 0;
                 float totalLiquidCap = 0f;
                 for (int i = 0; i < survivors.size; i++) {
-                    CombinedRegenProjectorBuild b = survivors.get(i);
+                    CombinedLandingPadBuild b = survivors.get(i);
                     itemCaps[i] = b.block.itemCapacity;
-                    liquidCaps[i] = ((CombinedRegenProjector) b.block).baseLiquidCapacity;
+                    liquidCaps[i] = ((CombinedLandingPad) b.block).baseLiquidCapacity;
                     totalItemCap += itemCaps[i];
                     totalLiquidCap += liquidCaps[i];
                 }
@@ -437,8 +408,7 @@ public class CombinedRegenProjector extends RegenProjector {
                     liquidMods[i] = new LiquidModule();
                 }
                 if (oldItems != null && totalItemCap > 0) {
-                    int[] allocated = new int[survivors.size];
-                    for (Item item : cachedItems) {
+                    for (Item item : content.items()) {
                         int total = oldItems.get(item);
                         if (total <= 0)
                             continue;
@@ -447,19 +417,16 @@ public class CombinedRegenProjector extends RegenProjector {
                             int ideal = (i == survivors.size - 1) ? remaining
                                     : Math.round(total * (float) itemCaps[i] / totalItemCap);
                             ideal = Math.min(ideal, remaining);
-                            int canTake = Math.max(0, itemCaps[i] - allocated[i]);
-                            int share = ideal; // 不做容量硬截断：超出份额暂时超容保留，宁可超容也不丢物品
+                            int share = ideal; // 不硬截断
                             if (share > 0) {
                                 itemMods[i].add(item, share);
-                                allocated[i] += share;
                                 remaining -= share;
                             }
                         }
                     }
                 }
                 if (oldLiquids != null && totalLiquidCap > 0.001f) {
-                    float[] allocated = new float[survivors.size];
-                    for (Liquid liquid : cachedLiquids) {
+                    for (Liquid liquid : content.liquids()) {
                         float total = oldLiquids.get(liquid);
                         if (total <= 0.001f)
                             continue;
@@ -468,18 +435,16 @@ public class CombinedRegenProjector extends RegenProjector {
                             float ideal = (i == survivors.size - 1) ? remaining
                                     : total * liquidCaps[i] / totalLiquidCap;
                             ideal = Math.min(ideal, remaining);
-                            float canTake = Math.max(0f, liquidCaps[i] - allocated[i]);
-                            float share = ideal; // 不做容量硬截断：超出份额暂时超容保留，宁可超容也不丢物品
+                            float share = ideal; // 不硬截断
                             if (share > 0.001f) {
                                 liquidMods[i].add(liquid, share);
-                                allocated[i] += share;
                                 remaining -= share;
                             }
                         }
                     }
                 }
                 for (int i = 0; i < survivors.size; i++) {
-                    CombinedRegenProjectorBuild b = survivors.get(i);
+                    CombinedLandingPadBuild b = survivors.get(i);
                     b.items = itemMods[i];
                     b.liquids = liquidMods[i];
                     b.comboLeader = null;
@@ -489,7 +454,7 @@ public class CombinedRegenProjector extends RegenProjector {
                     b.comboTotalItemCap = 0;
                 }
             } else {
-                CombinedRegenProjectorBuild leader = leader();
+                CombinedLandingPadBuild leader = leader();
                 if (leader != null && leader.isValid() && leader != this)
                     leader.comboDirty = true;
             }
@@ -501,11 +466,12 @@ public class CombinedRegenProjector extends RegenProjector {
             super.onRemoved();
         }
 
+        // -------------------- 核心逻辑 --------------------
         @Override
         public void updateTile() {
             if (pendingLeaderPos != -1) {
                 Building b = world.build(pendingLeaderPos);
-                if (b instanceof CombinedRegenProjectorBuild leaderBuild && leaderBuild.isValid()
+                if (b instanceof CombinedLandingPadBuild leaderBuild && leaderBuild.isValid()
                         && leaderBuild.team == team) {
                     comboLeader = leaderBuild;
                     if (leaderBuild.items != null)
@@ -520,43 +486,19 @@ public class CombinedRegenProjector extends RegenProjector {
             }
             if (isLeader() && comboDirty)
                 rebuildCombo();
-            if (liquids != null && comboTotalLiquidCap > 0.001f) {
-                float excess = liquids.currentAmount() - comboTotalLiquidCap;
-                if (excess > 0.001f) {
-                    for (Liquid l : content.liquids()) {
-                        float amt = liquids.get(l);
-                        if (amt > 0.001f) {
-                            float remove = Math.min(amt, excess);
-                            liquids.remove(l, remove);
-                            excess -= remove;
-                            if (excess <= 0.001f)
-                                break;
-                        }
-                    }
-                }
-            }
+
+            // 原版 LandingPadBuild.updateTile：等待队列、落地动画、
+            // items.set(arriving, itemCapacity) 入池、耗水、向外输出 ——
+            // items/liquids 已指向共享池，天然池化，无需改动。
             super.updateTile();
-        }
 
-        @Override
-        public boolean shouldAmbientSound() {
-            // 禁用环境音循环，避免触发 SoundControl 环境音线程在 Android 上的
-            // IllegalThreadStateException（Thread.start 崩溃）
-            return false;
-        }
-
-        @Override
-        public boolean acceptItem(Building source, Item item) {
-            if (!block.hasItems)
-                return false;
-            boolean needed = false;
-            for (CombinedRegenProjectorBuild member : group()) {
-                if (member.isValid() && member.block.consumesItem(item)) {
-                    needed = true;
-                    break;
-                }
+            // 液体超限反注入：池子超过组合总容量（旧档残留/合并超额）时，
+            // 把多余液体推回相邻液体网络，而不是截断销毁。
+            if (liquids != null && comboTotalLiquidCap > 0.001f
+                    && liquids.currentAmount() > comboTotalLiquidCap + 0.001f
+                    && liquids.current() != null) {
+                dumpLiquid(liquids.current(), 1f, -1);
             }
-            return needed && items.get(item) < getMaximumAccepted(item); // 按种类检查：每种原料各有份额，先到的不堵死其它的：不再按种类各装满一份
         }
 
         @Override
@@ -564,23 +506,15 @@ public class CombinedRegenProjector extends RegenProjector {
             return Math.max(comboTotalItemCap, 1);
         }
 
-        @Override
-        public void handleItem(Building source, Item item) {
-            items.add(item, 1);
-        }
-
+        // -------------------- 液体进出限制 --------------------
         @Override
         public boolean acceptLiquid(Building source, Liquid liquid) {
             if (!block.hasLiquids)
                 return false;
-            boolean needed = false;
-            for (CombinedRegenProjectorBuild member : group()) {
-                if (member.isValid() && member.block.consumesLiquid(liquid)) {
-                    needed = true;
-                    break;
-                }
-            }
-            return needed && liquids.get(liquid) < comboTotalLiquidCap - 0.001f;
+            // 只接受冷却液（原版 consumeLiquid 字段本身就是 Liquid），
+            // 且按组合池总量限制 —— 原版默认按 block.liquidCapacity(9999) 放行会超限
+            boolean needed = consumeLiquid != null && liquid == consumeLiquid;
+            return needed && liquids.currentAmount() < comboTotalLiquidCap - 0.001f;
         }
 
         @Override
@@ -592,12 +526,21 @@ public class CombinedRegenProjector extends RegenProjector {
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
-            // FIX: 将未接收的液体退回源端，防止因 block.liquidCapacity=9999f 导致源端过度扣除
+            // 未接收部分退回源端，防止源端因 9999 假容量被过度扣除
             float refund = amount - actual;
             if (refund > 0.001f && source != null && source.liquids != null)
                 source.liquids.add(liquid, refund);
         }
 
+        @Override
+        public void dumpLiquid(Liquid liquid, float scaling, int outputDir) {
+            float oldCap = block.liquidCapacity;
+            block.liquidCapacity = Math.max(comboTotalLiquidCap, 1f);
+            super.dumpLiquid(liquid, scaling, outputDir);
+            block.liquidCapacity = oldCap;
+        }
+
+        // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
             table.table(cont -> {
@@ -610,58 +553,68 @@ public class CombinedRegenProjector extends RegenProjector {
                         icon = Core.atlas.find("clear");
                     t.add(new Image(icon)).size(8 * 4);
                     int count = group().size;
-                    String title = count > 1 ? "[accent]组合再生投影[] x" + count + "\n" + block.getDisplayName(tile)
+                    String title = count > 1
+                            ? "[accent]组合接收台[] x" + count + "\n" + block.getDisplayName(tile)
                             : block.getDisplayName(tile);
                     t.labelWrap(title).left().width(160f).padLeft(4);
                 }).growX().left();
                 cont.row();
                 if (team != mindustry.Vars.player.team())
                     return;
-
                 Table barsTable = new Table();
                 barsTable.left();
                 barsTable.update(() -> {
                     barsTable.clearChildren();
                     barsTable.defaults().growX().height(18f).pad(4);
-                    buildComboBars(barsTable);
+                    if (!Mathf.zero(block.health, 0.001f)) {
+                        final float h = health, mh = maxHealth;
+                        barsTable.add(new Bar(
+                                () -> Core.bundle.get("stat.health", "Health") + " " + (int) Math.max(h, 0),
+                                () -> Pal.health, () -> Mathf.clamp(h / mh)));
+                        barsTable.row();
+                    }
+                    final float cd = cooldown;
+                    barsTable.add(new Bar(
+                            () -> "接收冷却 " + Strings.fixed(cd * 100f, 0) + "%",
+                            () -> Pal.accent, () -> 1f - cd));
+                    barsTable.row();
+                    if (items != null) {
+                        final int t = items.total(), c = Math.max(comboTotalItemCap, 1);
+                        barsTable.add(new Bar(() -> "物品 " + t + "/" + c, () -> Pal.items,
+                                () -> (float) t / c));
+                        barsTable.row();
+                        for (Item item : content.items()) {
+                            int total = items.get(item);
+                            if (total > 0) {
+                                final int ti = total;
+                                barsTable.add(new Bar(
+                                        () -> item.localizedName + ": " + ti + "/" + c,
+                                        () -> item.color, () -> (float) ti / c));
+                                barsTable.row();
+                            }
+                        }
+                    }
+                    LiquidModule liq = liquids;
+                    if (liq == null) {
+                        CombinedLandingPadBuild l = leader();
+                        if (l != null)
+                            liq = l.liquids;
+                    }
+                    if (liq != null) {
+                        for (Liquid liquid : cachedLiquids) {
+                            float total = liq.get(liquid);
+                            final float t = total, c = Math.max(comboTotalLiquidCap, 1f);
+                            barsTable.add(new Bar(
+                                    () -> liquid.localizedName + ": " + Strings.fixed(t, 1) + "/"
+                                            + Strings.fixed(c, 1),
+                                    () -> liquid.barColor != null ? liquid.barColor : liquid.color,
+                                    () -> t / c));
+                            barsTable.row();
+                        }
+                    }
                 });
                 cont.add(barsTable).growX().left();
                 cont.row();
-
-                // 缺少资源提示（红色斜杠图标）
-                Table missingTable = new Table();
-                missingTable.left();
-                missingTable.update(() -> {
-                    missingTable.clearChildren();
-                    missingTable.defaults().pad(2);
-                    LiquidModule sharedLiq = liquids;
-                    if (sharedLiq == null) {
-                        CombinedRegenProjectorBuild l = leader();
-                        if (l != null)
-                            sharedLiq = l.liquids;
-                    }
-                    // 缺少的液体
-                    if (sharedLiq != null) {
-                        for (Liquid liquid : cachedLiquids) {
-                            if (sharedLiq.get(liquid) < 0.001f) {
-                                missingTable.add(new ReqImage(liquid.uiIcon, () -> false)).size(iconMed);
-                            }
-                        }
-                    }
-                    // 缺少的物品
-                    if (items != null) {
-                        for (Item item : cachedItems) {
-                            if (items.get(item) < 1) {
-                                missingTable.add(new ReqImage(item.uiIcon, () -> false)).size(iconMed);
-                            }
-                        }
-                    }
-                });
-                if (missingTable.getChildren().size > 0) {
-                    cont.add(missingTable).growX().left().padTop(4);
-                    cont.row();
-                }
-
                 Table comboIO = new Table();
                 comboIO.left();
                 comboIO.update(() -> {
@@ -672,127 +625,38 @@ public class CombinedRegenProjector extends RegenProjector {
             }).width(260f).left();
         }
 
-        public void buildComboBars(Table table) {
-            if (!Mathf.zero(block.health, 0.001f)) {
-                final float h = health, mh = maxHealth;
-                table.add(new Bar(() -> Core.bundle.get("stat.health", "Health") + " " + (int) Math.max(h, 0),
-                        () -> Pal.health, () -> Mathf.clamp(h / mh)));
-                table.row();
-            }
-            float totalPower = 0f;
-            for (CombinedRegenProjectorBuild member : group()) {
-                if (member.isValid() && member.block.consPower != null)
-                    totalPower += member.block.consPower.usage;
-            }
-            if (totalPower > 0 && power != null) {
-                final float tp = totalPower;
-                table.add(new Bar(() -> "电力 " + Strings.fixed(tp * power.status * 60f, 1) + " ⚡/s", () -> Pal.power,
-                        () -> power.status));
-                table.row();
-            }
-            Seq<Item> involvedItems = new Seq<>();
-            for (CombinedRegenProjectorBuild member : group()) {
-                if (member.isValid()) {
-                    for (Item item : ((CombinedRegenProjector) member.block).cachedItems) {
-                        if (!involvedItems.contains(item))
-                            involvedItems.add(item);
-                    }
-                }
-            }
-            if (items != null) {
-                for (Item item : involvedItems) {
-                    int total = items.get(item);
-                    if (total > 0) {
-                        final int t = total, c = Math.max(comboTotalItemCap, 1);
-                        table.add(new Bar(() -> item.localizedName + ": " + t + "/" + c, () -> item.color,
-                                () -> (float) t / c));
-                        table.row();
-                    }
-                }
-            }
-            LiquidModule sharedLiq = this.liquids;
-            if (sharedLiq == null) {
-                CombinedRegenProjectorBuild l = leader();
-                if (l != null)
-                    sharedLiq = l.liquids;
-            }
-            if (sharedLiq == null) {
-                for (CombinedRegenProjectorBuild member : group()) {
-                    if (member.liquids != null) {
-                        sharedLiq = member.liquids;
-                        break;
-                    }
-                }
-            }
-            if (sharedLiq != null) {
-                // 1. 先显示 cachedLiquids 中的所有类型（即使量为0，这样"缺少的"液体可见）
-                for (Liquid liquid : cachedLiquids) {
-                    float total = sharedLiq.get(liquid);
-                    final float t = total, c = Math.max(comboTotalLiquidCap, 1f);
-                    table.add(
-                            new Bar(() -> liquid.localizedName + ": " + Strings.fixed(t, 1) + "/" + Strings.fixed(c, 1),
-                                    () -> liquid.barColor != null ? liquid.barColor : liquid.color, () -> t / c));
-                    table.row();
-                }
-                // 2. 再显示实际存在但不在 cachedLiquids 中的（捕获力墙 coolant 等动态液体）
-                for (Liquid liquid : content.liquids()) {
-                    if (cachedLiquids.contains(liquid))
-                        continue;
-                    float total = sharedLiq.get(liquid);
-                    if (total > 0.001f) {
-                        final float t = total, c = Math.max(comboTotalLiquidCap, 1f);
-                        table.add(new Bar(
-                                () -> liquid.localizedName + ": " + Strings.fixed(t, 1) + "/" + Strings.fixed(c, 1),
-                                () -> liquid.barColor != null ? liquid.barColor : liquid.color, () -> t / c));
-                        table.row();
-                    }
-                }
-            }
-        }
-
         public void buildComboIO(Table table) {
             table.left();
             table.add("[lightgray]组合体构成:").left();
             table.row();
             ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (CombinedRegenProjectorBuild member : group()) {
+            for (CombinedLandingPadBuild member : group()) {
                 if (member.isValid()) {
                     int old = blockCounts.get(member.block, 0);
                     blockCounts.put(member.block, old + 1);
                 }
             }
-            Seq<Block> sortedBlocks = new Seq<>();
+            Seq<Block> sorted = new Seq<>();
             for (Block b : blockCounts.keys())
-                sortedBlocks.add(b);
-            sortedBlocks.sort(b -> b.id);
-            boolean hasContent = false;
-            for (Block b : sortedBlocks) {
+                sorted.add(b);
+            sorted.sort(b -> b.id);
+            for (Block b : sorted) {
                 int count = blockCounts.get(b, 0);
                 if (count > 0) {
-                    hasContent = true;
                     table.add(b.localizedName + "*" + count).color(Color.white).left();
                     table.row();
                 }
             }
-            if (!hasContent) {
-                table.add("[darkGray]无").left();
-                table.row();
-            }
         }
 
-        @Override
-        public byte version() {
-            return 2;
-        }
-
+        // -------------------- 序列化 --------------------
         @Override
         public void write(Writes write) {
-            CombinedRegenProjectorBuild trueLeader = this;
-            if (comboGroup != null && comboGroup.size > 0) {
-                for (CombinedRegenProjectorBuild b : comboGroup)
+            CombinedLandingPadBuild trueLeader = this;
+            if (comboGroup != null && comboGroup.size > 0)
+                for (CombinedLandingPadBuild b : comboGroup)
                     if (b != null && b.isValid() && b.pos() < trueLeader.pos())
                         trueLeader = b;
-            }
             ItemModule savedItems = items;
             LiquidModule savedLiquids = liquids;
             if (this != trueLeader) {
@@ -828,6 +692,5 @@ public class CombinedRegenProjector extends RegenProjector {
                 comboLeader = null;
             }
         }
-
     }
 }

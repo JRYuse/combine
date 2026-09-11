@@ -377,17 +377,14 @@ public class CombinedGenerator extends ConsumeGenerator {
       }
 
       if (newLeader.items != null && totalItemCap > 0) {
-        int excess = newLeader.items.total() - totalItemCap;
-        if (excess > 0) {
-          for (Item item : cachedItems) {
-            int amt = newLeader.items.get(item);
-            if (amt > 0) {
-              int remove = Math.min(amt, excess);
-              newLeader.items.remove(item, remove);
-              excess -= remove;
-              if (excess <= 0)
-                break;
-            }
+        // FIX: 每种物品独立上限——只有单一类型自身超过上限时才截断该类型。
+        // 旧写法按池子总量截断，与按类型验收不一致：两种燃料各自顶到上限时
+        // 池子总量必然超过总容量，任何重建（包括拆除周围非组合建筑触发的
+        // onProximityUpdate -> rebuildCombo）都会把超出总量部分销毁。
+        for (Item item : content.items()) {
+          int amt = newLeader.items.get(item);
+          if (amt > totalItemCap) {
+            newLeader.items.remove(item, amt - totalItemCap);
           }
         }
       }
@@ -480,9 +477,12 @@ public class CombinedGenerator extends ConsumeGenerator {
         newLiquidMods[i] = new LiquidModule();
       }
 
+      Seq<Item> involvedItems = new Seq<>();
+      collectInvolvedTypes(oldGroup, involvedItems);
+
       if (oldItems != null && oldTotalItemCap > 0 && kickedTotalItemCap > 0) {
         int[] kickedAllocated = new int[kicked.size];
-        for (Item item : cachedItems) {
+        for (Item item : involvedItems) {
           int total = oldItems.get(item);
           if (total <= 0)
             continue;
@@ -575,10 +575,11 @@ public class CombinedGenerator extends ConsumeGenerator {
           if (member != leader && member.isValid() && member.items != null
               && !processedItems.contains(member.items)) {
             processedItems.add(member.items);
-            for (Item item : cachedItems) {
+            for (Item item : ((CombinedGenerator) member.block).cachedItems) {
               int amt = member.items.get(item);
               if (amt > 0) {
-                int canAccept = Math.max(0, totalItemCap - leader.items.total());
+                // FIX: 每种物品独立上限，余量按该类型剩余空间计算
+                int canAccept = Math.max(0, totalItemCap - leader.items.get(item));
                 int transfer = Math.min(amt, canAccept);
                 if (transfer > 0)
                   leader.items.add(item, transfer);
@@ -692,9 +693,12 @@ public class CombinedGenerator extends ConsumeGenerator {
           liquidMods[i] = new LiquidModule();
         }
 
+        Seq<Item> involvedItems = new Seq<>();
+        collectInvolvedTypes(members, involvedItems);
+
         if (oldItems != null && totalItemCap > 0) {
           int[] allocated = new int[survivors.size];
-          for (Item item : cachedItems) {
+          for (Item item : involvedItems) {
             int total = oldItems.get(item);
             if (total <= 0)
               continue;
@@ -991,7 +995,16 @@ public class CombinedGenerator extends ConsumeGenerator {
     public boolean acceptItem(Building source, Item item) {
       if (!block.hasItems)
         return false;
-      return block.consumesItem(item) && items.get(item) < getMaximumAccepted(item);
+      // 组合体任一成员需要该物品即可接受（与 CombinedCrafter 一致）
+      boolean needed = false;
+      for (CombinedGeneratorBuild member : group()) {
+        if (member.isValid() && member.block.consumesItem(item)) {
+          needed = true;
+          break;
+        }
+      }
+      // 每种物品有独立容量上限（与 UI 显示一致），不受池内其他类型占用影响
+      return needed && items.get(item) < getMaximumAccepted(item);
     }
 
     @Override
@@ -1002,6 +1015,20 @@ public class CombinedGenerator extends ConsumeGenerator {
     @Override
     public void handleItem(Building source, Item item) {
       items.add(item, 1);
+    }
+
+    /** 收集组合体各成员消耗的物品类型（并集），与 CombinedCrafter 的 collectInvolvedTypes 同款 */
+    public void collectInvolvedTypes(Seq<CombinedGeneratorBuild> group, Seq<Item> outItems) {
+      outItems.clear();
+      for (CombinedGeneratorBuild b : group) {
+        if (!b.isValid())
+          continue;
+        CombinedGenerator cb = (CombinedGenerator) b.block;
+        for (Item item : cb.cachedItems) {
+          if (!outItems.contains(item))
+            outItems.add(item);
+        }
+      }
     }
 
     @Override
@@ -1151,6 +1178,14 @@ public class CombinedGenerator extends ConsumeGenerator {
     }
 
     public void buildComboBars(Table table) {
+      if (!Mathf.zero(block.health, 0.001f)) {
+        final float h = health, mh = maxHealth;
+        table.add(new Bar(
+            () -> Core.bundle.get("stat.health", "Health") + " " + (int) Math.max(h, 0),
+            () -> Pal.health,
+            () -> Mathf.clamp(h / mh)));
+        table.row();
+      }
       float totalPower = 0f;
       for (CombinedGeneratorBuild member : group()) {
         if (member.isValid()) {
