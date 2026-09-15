@@ -169,7 +169,11 @@ public class BlockCloner {
         Object origDrawer = origDrawerF.get(original);
         if (origDrawer != null) {
           Object comboDrawer = deepCopy(origDrawer);
-          replaceLiquidDrawers(comboDrawer, new IdentityHashMap<>());
+          // FIX[污染原版]: 深拷贝失败回退为原对象时, 绝不能在原对象上做替换,
+          // 否则会原地改写 EU 原版方块的 drawer, 污染原对象
+          if (comboDrawer != origDrawer) {
+            replaceLiquidDrawers(comboDrawer, new IdentityHashMap<>());
+          }
           comboDrawerF.set(combo, comboDrawer);
         }
       }
@@ -367,6 +371,12 @@ public class BlockCloner {
 
     if (cls.getName().startsWith("arc.struct."))
       return src;
+
+    // FIX[EU 兼容]: Content(Liquid/Item/StatusEffect/UnitType/BulletType...) 与 Block
+    // 是内容注册表里的全局单例, 必须按引用共享。原实现是在字段循环里 continue 跳过,
+    // 克隆对象中这些字段全部保持构造默认值 null —— EU 匿名绘制/更新类
+    // (EUBlocks$xx$yy、DrawLA$1) 捕获的 Liquid/Color 引用即因此断裂,
+    // 分别导致 LiquidModule.get 的 liquid NPE 和 Effect.add 的 color NPE。
     if (src instanceof Block || src instanceof Content)
       return src;
 
@@ -392,10 +402,25 @@ public class BlockCloner {
           if (Modifier.isStatic(f.getModifiers()))
             continue;
           f.setAccessible(true);
-          Object val = f.get(src);
-          if (val instanceof Block || val instanceof Content)
-            continue;
-          f.set(copy, deepCopy(val, visited));
+          // FIX[全有或全无]: 原实现把整个字段循环包在一个 try 里, 任何一个字段
+          // set 抛异常都会跳到外层 catch 返回 src —— 已拷字段白拷、后续字段全部
+          // 静默丢失。改为逐字段容错: Content/Block 共享引用, 克隆失败时
+          // 也回落为共享原引用, 绝不留构造默认 null。
+          try {
+            Object val = f.get(src);
+            if (val == null)
+              continue;
+            if (val instanceof Block || val instanceof Content) {
+              f.set(copy, val);
+              continue;
+            }
+            f.set(copy, deepCopy(val, visited));
+          } catch (Throwable t) {
+            try {
+              f.set(copy, f.get(src));
+            } catch (Throwable ignored) {
+            }
+          }
         }
         c = c.getSuperclass();
       }

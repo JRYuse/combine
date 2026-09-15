@@ -80,6 +80,25 @@ public class Replacer {
       combo.techNodes.add(orig.techNode);
     }
 
+    // 4.5) 科技树目标重指向：科技树在内容初始化阶段就已构建完毕，
+    //    SectorPreset 等节点的目标（如 new Research(Blocks.combustionGenerator)）
+    //    捕获的是旧方块实例；Objectives.Research.complete() 读的是该实例的内存解锁位。
+    //    不重定向的话，研究了组合建筑旧实例依然是 locked → 目标永不完成
+    //    → 对应 sector 当会话无法解锁，只能重启让旧实例从 settings 恢复解锁位。
+    try {
+      for (mindustry.content.TechTree.TechNode n : mindustry.content.TechTree.all) {
+        for (mindustry.game.Objectives.Objective o : n.objectives) {
+          if (o instanceof mindustry.game.Objectives.Research r && r.content == orig) {
+            r.content = combo;
+          } else if (o instanceof mindustry.game.Objectives.Produce p && p.content == orig) {
+            p.content = combo;
+          }
+        }
+      }
+    } catch (Throwable t) {
+      Log.warn("[Replacer] objective rewire failed: @", t.getMessage());
+    }
+
     // 5) 解锁状态随名字保留
     if (orig.unlocked() && !combo.unlocked())
       combo.quietUnlock();

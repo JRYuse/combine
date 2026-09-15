@@ -61,6 +61,8 @@ import mindustry.world.blocks.production.Separator;
 import mindustry.world.blocks.production.WallCrafter;
 import mindustry.world.blocks.storage.CoreBlock;
 import mindustry.world.blocks.storage.StorageBlock;
+import mindustry.world.blocks.units.UnitFactory;
+import mindustry.world.blocks.units.Reconstructor;
 import mindustry.world.meta.BuildVisibility;
 
 import static combine.BlockCloner.*;
@@ -247,13 +249,16 @@ public class Main extends Mod {
       boolean isPump = isExact(b, Pump.class) && !isExact(b, SolidPump.class);
       boolean isSolidPump = isExact(b, SolidPump.class);
       boolean isWallCrafter = isExact(b, WallCrafter.class);
+      boolean isUnitFactory = isExact(b, UnitFactory.class);
+      boolean isReconstructor = isExact(b, Reconstructor.class);
 
       if (!isFactory && !isHeatCrafter && !isHeatProducer && !isSeparator && !isAttribute
           && !isDrill && !isGenerator && !isLaunchPad
           && !isRegen && !isOverdrive && !isMend && !isForce && !isStorage
           && !isLogic && !isContLiquidTurret && !isLiquidTurret && !isItemTurret
           && !isPowerTurret && !isLaserTurret
-          && !isPump && !isSolidPump && !isWallCrafter)
+          && !isPump && !isSolidPump && !isWallCrafter
+          && !isUnitFactory && !isReconstructor)
         continue;
 
       // 防止重复处理已转换类型
@@ -265,7 +270,9 @@ public class Main extends Mod {
           || b instanceof CombinedContinuousLiquidTurret || b instanceof CombinedLiquidTurret
           || b instanceof CombinedItemTurret || b instanceof CombinedTurret
           || b instanceof CombinedPump
-          || b instanceof CombinedWallCrafter)
+          || b instanceof CombinedWallCrafter
+          || b instanceof CombinedUnitFactory
+          || b instanceof CombinedReconstructor)
         continue;
 
       Block combo;
@@ -350,6 +357,12 @@ public class Main extends Mod {
         CombinedTurret ct = createCombo(b, CombinedTurret.class);
         ct.mode = isLaserTurret ? CombinedTurret.Mode.laser : CombinedTurret.Mode.power;
         combo = ct;
+      } else if (isUnitFactory) {
+        combo = createCombo(b, CombinedUnitFactory.class);
+        Log.info("[combine] unit factory combined: @", b.name);
+      } else if (isReconstructor) {
+        combo = createCombo(b, CombinedReconstructor.class);
+        Log.info("[combine] reconstructor combined: @", b.name);
       } else if (isPump) {
         combo = createCombo(b, CombinedPump.class);
       } else if (isSolidPump) {
