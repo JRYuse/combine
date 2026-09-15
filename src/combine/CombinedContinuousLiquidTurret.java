@@ -465,6 +465,30 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
       }
     }
 
+
+    
+
+    // ===== 弹药空值防护 (单副本, 全限定类型) =====
+    @Override
+    public boolean hasAmmo() {
+      if (ammo == null)
+        return false;
+      for (int i = 0; i < ammo.size; i++) {
+        mindustry.world.blocks.defense.turrets.Turret.AmmoEntry e = ammo.get(i);
+        if (e != null && e.type() != null && e.amount > 0)
+          return true;
+      }
+      return false;
+    }
+
+    @Override
+    public float ammoReloadMultiplier() {
+      if (ammo == null || ammo.size == 0)
+        return 1f;
+      mindustry.world.blocks.defense.turrets.Turret.AmmoEntry e = ammo.peek();
+      return (e == null || e.type() == null) ? 1f : e.type().reloadMultiplier;
+    }
+
     @Override
     public void updateTile() {
       if (isLeader() && comboDirty)
@@ -501,11 +525,7 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
       return ammoTypes.get(effectiveLiquid());
     }
 
-    @Override
-    public boolean hasAmmo() {
-      return ammoTypes.get(effectiveLiquid()) != null
-          && liquids.get(effectiveLiquid()) > 0.001f && activated;
-    }
+    
 
     @Override
     public mindustry.ctype.UnlockableContent getAmmoContent() {
@@ -542,7 +562,7 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
 
     @Override
     public byte version() {
-      return 4;
+      return 10;
     }
 
     @Override
@@ -554,11 +574,16 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
     @Override
     public void read(Reads read, byte revision) {
       super.read(read, revision);
-      if (revision >= 4) {
+
+      if (revision >= 10) {
+      if (revision >= 10) {
         short id = read.s();
         selected = id == -1 ? null : content.liquid(id);
       }
-    }
+
+      }
+
+}
 
     // -------------------- 液体交互 --------------------
 

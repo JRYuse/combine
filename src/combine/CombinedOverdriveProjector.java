@@ -750,7 +750,7 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
 
         @Override
         public byte version() {
-            return 2;
+            return 10;
         }
 
         @Override
@@ -780,10 +780,16 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
         @Override
         public void read(Reads read, byte revision) {
             super.read(read, revision);
-            boolean hasLeader = read.bool();
+            boolean hasLeader = false;
             int leaderPos = -1;
-            if (hasLeader)
+
+            if (revision >= 10) {
+            hasLeader = read.bool();
+                        if (hasLeader)
                 leaderPos = read.i();
+
+            }
+
             comboDirty = true;
             if (hasLeader && leaderPos != pos()) {
                 pendingLeaderPos = leaderPos;
@@ -795,7 +801,7 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
                 pendingLeaderPos = -1;
                 comboLeader = null;
             }
-        }
+}
 
     }
 }

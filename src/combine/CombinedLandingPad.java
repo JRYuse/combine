@@ -650,6 +650,11 @@ public class CombinedLandingPad extends LandingPad {
         }
 
         // -------------------- 序列化 --------------------
+    @Override
+    public byte version() {
+      return 10;
+    }
+
         @Override
         public void write(Writes write) {
             CombinedLandingPadBuild trueLeader = this;
@@ -676,10 +681,16 @@ public class CombinedLandingPad extends LandingPad {
         @Override
         public void read(Reads read, byte revision) {
             super.read(read, revision);
-            boolean hasLeader = read.bool();
+            boolean hasLeader = false;
             int leaderPos = -1;
-            if (hasLeader)
+
+            if (revision >= 10) {
+            hasLeader = read.bool();
+                        if (hasLeader)
                 leaderPos = read.i();
+
+            }
+
             comboDirty = true;
             if (hasLeader && leaderPos != pos()) {
                 pendingLeaderPos = leaderPos;
@@ -691,6 +702,6 @@ public class CombinedLandingPad extends LandingPad {
                 pendingLeaderPos = -1;
                 comboLeader = null;
             }
-        }
+}
     }
 }

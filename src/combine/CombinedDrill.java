@@ -22,6 +22,7 @@ import arc.struct.ObjectIntMap;
 import arc.struct.ObjectSet;
 import arc.struct.Queue;
 import arc.struct.Seq;
+import arc.util.Eachable;
 import arc.util.Nullable;
 import arc.util.Strings;
 import arc.util.Time;
@@ -31,6 +32,7 @@ import arc.util.io.Writes;
 import mindustry.content.Fx;
 import mindustry.content.Liquids;
 import mindustry.entities.Effect;
+import mindustry.entities.units.BuildPlan;
 import mindustry.game.Team;
 import mindustry.gen.Building;
 import mindustry.gen.Icon;
@@ -325,6 +327,24 @@ public class CombinedDrill extends Block {
             drawPlaceDrill(x, y, valid);
     }
 
+    @Override
+    public void drawPlanConfig(BuildPlan plan, Eachable<BuildPlan> list) {
+        if (mode == Mode.beam || !plan.worldContext)
+            return;
+
+        Tile tile = plan.tile();
+        if (tile == null)
+            return;
+
+        countOre(tile);
+        if (returnItem == null || !drawMineItem)
+            return;
+
+        Draw.tint(returnItem.color);
+        Draw.rect(itemRegion, plan.drawx(), plan.drawy());
+        Draw.color();
+    }
+
     void drawPlaceDrill(int x, int y, boolean valid) {
         Tile tile = world.tile(x, y);
         if (tile == null)
@@ -475,6 +495,7 @@ public class CombinedDrill extends Block {
         public CombinedDrillBuild leader() {
             if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null))
                 comboLeader = null;
+            comboDirty = true; // FIX: 失联后允许重建组合
             return comboLeader == null ? this : comboLeader;
         }
 
@@ -965,6 +986,8 @@ public class CombinedDrill extends Block {
                     if (items.get(item) > 0)
                         dump(item);
             }
+            if (dominantItem == null)
+                return;
             float drillTime = getDrillTime(dominantItem);
             smoothProgress = Mathf.lerpDelta(smoothProgress, progress / (drillTime - 20f), 0.1f);
             // FIX(per-type)
@@ -1118,7 +1141,8 @@ public class CombinedDrill extends Block {
                 return false;
             }
             if (cb.mode == Mode.burst)
-                return enabled && items.get(dominantItem) <= comboTotalItemCap - dominantItems;
+                return enabled && dominantItem != null
+                        && items.get(dominantItem) <= comboTotalItemCap - dominantItems;
             return enabled && dominantItem != null && items.get(dominantItem) < comboTotalItemCap;
         }
 
@@ -1128,7 +1152,6 @@ public class CombinedDrill extends Block {
             // IllegalThreadStateException（Thread.start 崩溃）
             return false;
         }
-
 
         @Override
         public float ambientVolume() {
@@ -1617,7 +1640,7 @@ public class CombinedDrill extends Block {
         // ---- 序列化 ----
         @Override
         public byte version() {
-            return 2;
+            return 10;
         }
 
         @Override
@@ -1663,10 +1686,13 @@ public class CombinedDrill extends Block {
         @Override
         public void read(Reads read, byte revision) {
             super.read(read, revision);
-            boolean hasLeader = read.bool();
+            boolean hasLeader = false;
             int leaderPos = -1;
-            if (hasLeader)
-                leaderPos = read.i();
+            if (revision >= 10) {
+                hasLeader = read.bool();
+                if (hasLeader)
+                    leaderPos = read.i();
+            }
             comboDirty = true;
             if (hasLeader && leaderPos != pos()) {
                 pendingLeaderPos = leaderPos;
@@ -1678,14 +1704,16 @@ public class CombinedDrill extends Block {
                 pendingLeaderPos = -1;
                 comboLeader = null;
             }
-            progress = read.f();
-            warmup = read.f();
-            timeDrilled = read.f();
-            lastDrillSpeed = read.f();
-            dominantItems = read.i();
-            int domId = read.s();
-            dominantItem = domId == -1 ? null : content.item(domId);
-            if (revision >= 2) {
+            if (revision >= 10) {
+                progress = read.f();
+                warmup = read.f();
+                timeDrilled = read.f();
+                lastDrillSpeed = read.f();
+                dominantItems = read.i();
+                int domId = read.s();
+                dominantItem = domId == -1 ? null : content.item(domId);
+            }
+            if (revision >= 10) {
                 CombinedDrill cb = (CombinedDrill) block;
                 if (cb.mode == Mode.burst) {
                     smoothProgress = read.f();

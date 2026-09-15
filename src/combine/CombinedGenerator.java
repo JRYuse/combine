@@ -167,6 +167,11 @@ public class CombinedGenerator extends ConsumeGenerator {
     if (outputLiquid != null && !cachedLiquids.contains(outputLiquid.liquid)) {
       cachedLiquids.add(outputLiquid.liquid);
     }
+
+    // FIX: 燃料手动选择（仅过滤器型消费者有意义，配置入口对所有模式无害）
+    configurable = true;
+    config(Item.class, (CombinedGeneratorBuild tile, Item i) -> tile.selectedFuel = i);
+    configClear((CombinedGeneratorBuild tile) -> tile.selectedFuel = null);
   }
 
   @Override
@@ -181,6 +186,7 @@ public class CombinedGenerator extends ConsumeGenerator {
       stats.remove(Stat.productionTime);
       stats.add(Stat.productionTime, itemDuration / 60f, StatUnit.seconds);
     } else if (hasItems && mode == Mode.impact) {
+      stats.remove(Stat.productionTime);
       stats.add(Stat.productionTime, impactItemDuration / 60f, StatUnit.seconds);
     }
 
@@ -249,6 +255,7 @@ public class CombinedGenerator extends ConsumeGenerator {
     public CombinedGeneratorBuild leader() {
       if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null)) {
         comboLeader = null;
+        comboDirty = true; // FIX: 失联后允许重建组合
       }
       return comboLeader == null ? this : comboLeader;
     }
@@ -262,6 +269,93 @@ public class CombinedGenerator extends ConsumeGenerator {
       if (l.comboGroup == null)
         l.comboGroup = new Seq<>();
       return l.comboGroup;
+    }
+
+    // ---- 燃料手动选择（FIX: 过滤器消费者不再自动偷烧第一种匹配物品） ----
+    public Item selectedFuel;
+
+    public boolean hasFilterFuelConsumer() {
+      for (Consume c : block.nonOptionalConsumers) {
+        if (c instanceof ConsumeItemFilter)
+          return true;
+      }
+      return false;
+    }
+
+    public boolean acceptsFuel(Item item) {
+      if (item == null)
+        return false;
+      for (Consume c : block.nonOptionalConsumers) {
+        if (c instanceof ConsumeItemFilter f && f.filter.get(item))
+          return true;
+      }
+      return false;
+    }
+
+    public Item firstAvailableFuel() {
+      for (Item item : content.items()) {
+        if (acceptsFuel(item) && items.get(item) > 0)
+          return item;
+      }
+      return null;
+    }
+
+    /** 当前燃料：已手动选择 → 优先所选；所选耗尽后自动切换到下一种可用燃料；未选择 → 自动 */
+    public Item currentFuel() {
+      if (selectedFuel != null && items.get(selectedFuel) > 0)
+        return selectedFuel;
+      return firstAvailableFuel();
+    }
+
+    @Override
+    public boolean shouldConsume() {
+      if (!super.shouldConsume())
+        return false;
+      if (!hasFilterFuelConsumer())
+        return true;
+      return currentFuel() != null;
+    }
+
+    // FIX[status]: 无燃料时显式 noInput。
+    // 原版 status() 里 !shouldConsume() 返回的是 noOutput 而非 noInput,
+    // 只有 efficiency<=0 分支才是 noInput, 因此这里直接覆写。
+    // 注意: currentFuel() 只认识 ConsumeItemFilter——固定 ConsumeItems 或
+    // 纯液体发电机没有过滤器, currentFuel() 恒为 null, 无条件检查会让
+    // 正常工作的发电机永远显示 noInput。
+    @Override
+    public mindustry.world.meta.BlockStatus status() {
+      if (hasFilterFuelConsumer() && currentFuel() == null)
+        return mindustry.world.meta.BlockStatus.noInput;
+      return super.status();
+    }
+
+    @Override
+    public void consume() {
+      for (Consume c : block.nonOptionalConsumers) {
+        if (c instanceof ConsumeItemFilter) {
+          Item fuel = currentFuel();
+          if (fuel != null)
+            items.remove(fuel, 1);
+        } else {
+          c.trigger(this);
+        }
+      }
+    }
+
+    @Override
+    public void buildConfiguration(Table table) {
+      if (!hasFilterFuelConsumer())
+        return;
+      Seq<Item> fuels = content.items().select(this::acceptsFuel);
+      if (fuels.size < 2)
+        return;
+      mindustry.world.blocks.ItemSelection.buildTable(CombinedGenerator.this, table, fuels,
+          () -> selectedFuel, i -> configure(i));
+    }
+
+    @Override
+    public Object config() {
+      return selectedFuel;
     }
 
     // ---- 组合热量访问 ----
@@ -280,7 +374,8 @@ public class CombinedGenerator extends ConsumeGenerator {
     public float getComboTotalHeatCap() {
       float total = 0f;
       for (CombinedGeneratorBuild member : group()) {
-        if (!member.isValid()) continue;
+        if (!member.isValid())
+          continue;
         CombinedGenerator mb = (CombinedGenerator) member.block;
         if (mb.mode == Mode.nuclear)
           total += mb.nuclearHeatOutput;
@@ -816,7 +911,8 @@ public class CombinedGenerator extends ConsumeGenerator {
       if (isLeader()) {
         float total = 0f;
         for (CombinedGeneratorBuild member : group()) {
-          if (!member.isValid()) continue;
+          if (!member.isValid())
+            continue;
           CombinedGenerator mb = (CombinedGenerator) member.block;
           if (mb.mode == Mode.nuclear)
             total += member.nuclearHeatProgress;
@@ -839,9 +935,11 @@ public class CombinedGenerator extends ConsumeGenerator {
         cb.generateEffect.at(x + Mathf.range(cb.generateEffectRange), y + Mathf.range(cb.generateEffectRange));
       }
 
-      if (filterItem != null && valid && itemDurationMultipliers.size > 0
-          && filterItem.getConsumed(this) != null) {
-        itemDurationMultiplier = itemDurationMultipliers.get(filterItem.getConsumed(this), 1);
+      // FIX: 燃料倍率按 currentFuel() 读取，与手动选择的燃料一致
+      if (valid && itemDurationMultipliers.size > 0) {
+        Item fuelNow = currentFuel();
+        if (fuelNow != null)
+          itemDurationMultiplier = itemDurationMultipliers.get(fuelNow, 1);
       }
 
       if (hasItems && valid && generateTime <= 0f) {
@@ -994,6 +1092,9 @@ public class CombinedGenerator extends ConsumeGenerator {
     @Override
     public boolean acceptItem(Building source, Item item) {
       if (!block.hasItems)
+        return false;
+      // FIX: 已手动选择燃料时，只接收所选燃料
+      if (hasFilterFuelConsumer() && selectedFuel != null && item != selectedFuel)
         return false;
       // 组合体任一成员需要该物品即可接受（与 CombinedCrafter 一致）
       boolean needed = false;
@@ -1397,7 +1498,7 @@ public class CombinedGenerator extends ConsumeGenerator {
     // -------------------- 序列化 --------------------
     @Override
     public byte version() {
-      return 3;
+      return 10;
     }
 
     @Override
@@ -1443,16 +1544,21 @@ public class CombinedGenerator extends ConsumeGenerator {
       } else if (cb.mode == Mode.heater) {
         write.f(heaterHeat);
       }
+
+      write.s(selectedFuel == null ? -1 : selectedFuel.id);
     }
 
     @Override
     public void read(Reads read, byte revision) {
       super.read(read, revision);
 
-      boolean hasLeader = read.bool();
+      boolean hasLeader = false;
       int leaderPos = -1;
-      if (hasLeader)
-        leaderPos = read.i();
+      if (revision >= 10) {
+        hasLeader = read.bool();
+        if (hasLeader)
+          leaderPos = read.i();
+      }
 
       comboDirty = true;
       if (hasLeader && leaderPos != pos()) {
@@ -1467,11 +1573,11 @@ public class CombinedGenerator extends ConsumeGenerator {
       }
 
       // 读取共享热量（version >= 3）
-      if (revision >= 3) {
+      if (revision >= 10) {
         comboHeat = read.f();
       }
 
-      if (revision >= 2) {
+      if (revision >= 10) {
         CombinedGenerator cb = (CombinedGenerator) block;
         if (cb.mode == Mode.impact) {
           impactWarmup = read.f();
@@ -1484,6 +1590,12 @@ public class CombinedGenerator extends ConsumeGenerator {
         } else if (cb.mode == Mode.heater) {
           heaterHeat = read.f();
         }
+      }
+      if (revision >= 10) {
+        short id = read.s();
+        selectedFuel = id == -1 ? null : content.item(id);
+        if (selectedFuel != null && !acceptsFuel(selectedFuel))
+          selectedFuel = null;
       }
       comboTotalLiquidCap = ((CombinedGenerator) block).baseLiquidCapacity;
       comboTotalItemCap = block.itemCapacity;

@@ -68,6 +68,7 @@ public class CombinedTurret extends Turret {
   public boolean allowCrossTypeCombo = true;
   public float baseLiquidCapacity = 10f;
   public float displayLiquid;
+  public boolean baseCapCaptured = false;
 
   public CombinedTurret(String name) {
     super(name);
@@ -80,8 +81,12 @@ public class CombinedTurret extends Turret {
   @Override
   public void init() {
     super.init();
-    baseLiquidCapacity = liquidCapacity;
-    displayLiquid = baseLiquidCapacity;
+    // FIX[双init防护]: 内容加载器可能再次 init(), 防止把 9999 假容量记成基础容量
+    if (!baseCapCaptured) {
+      baseLiquidCapacity = liquidCapacity;
+      displayLiquid = baseLiquidCapacity;
+      baseCapCaptured = true;
+    }
     // 9999 必须保留：原版 transferLiquid 按"目标方块的 liquidCapacity"限流，共享池总量超过
     // 单台容量后管道会算出负流量而彻底断流（调用方是原版代码，炮塔侧无法拦截）。
     // 超容防护 = acceptLiquid 组容量 + handleLiquid 超量退回源端 + 每帧截断。

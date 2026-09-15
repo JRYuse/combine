@@ -26,7 +26,11 @@ public class BlockCloner {
   public static <T extends Block> T createCombo(Block original, Class<T> comboClass) {
     try {
       Constructor<T> ctor = comboClass.getConstructor(String.class);
-      T combo = ctor.newInstance("c-" + original.name);
+      // 本版 ContentLoader 对重名硬抛异常且 name 为 final：先用临时唯一名构造，
+      // 由 Replacer 反射还回正式名并同 id 接管注册表（旧存档/蓝图无缝兼容）
+      String temp = "__replace__" + original.name;
+      T combo = ctor.newInstance(temp);
+      Replacer.replace(original, combo, temp);
       originalToCombo.put(original, combo);
       comboToOriginal.put(combo, original);
       return combo;
@@ -48,9 +52,8 @@ public class BlockCloner {
             || n.equals("techNode") || n.equals("techNodes")
             || n.equals("buildType")
             || n.equals("bars") || n.equals("stats")
-            || n.equals("barMap") 
-            || n.equals("drawer")
-            || n.equals("config") || n.equals("configurations"))
+            || n.equals("barMap") // 关键：防止共享 bars 容器
+            || n.equals("drawer"))
           continue;
 
         f.setAccessible(true);
@@ -63,7 +66,17 @@ public class BlockCloner {
               Log.info("[BC-COPY] @ -> @ | field=@ | val=@", from.name, to.name, n, val);
             }
 
-            toField.set(to, val);
+            // FIX[消费者串味]: 数组字段必须新建数组拷贝——直接共享引用的话,
+            // 任一克隆体/原版的 consume() 追加都会污染所有共享者(分离机被掺入
+            // 电力/冷却液消费者即此因)。元素共享无妨(消费者对象无状态), 数组必须独立
+            if (val != null && val.getClass().isArray()) {
+              int len = java.lang.reflect.Array.getLength(val);
+              Object arrCopy = java.lang.reflect.Array.newInstance(val.getClass().getComponentType(), len);
+              System.arraycopy(val, 0, arrCopy, 0, len);
+              toField.set(to, arrCopy);
+            } else {
+              toField.set(to, val);
+            }
           }
         } catch (Exception ignored) {
         }
@@ -146,7 +159,7 @@ public class BlockCloner {
     copyRegionArray(original, combo, "teamRegions");
     copyRegionArray(original, combo, "variantRegions");
 
-    
+    // 从原版深拷贝 drawer，然后替换 Liquid 绘制器
     try {
       Field comboDrawerF = findField(combo.getClass(), "drawer");
       Field origDrawerF = findField(original.getClass(), "drawer");
@@ -165,7 +178,7 @@ public class BlockCloner {
     }
   }
 
-  
+  /** 递归把 drawer 结构中的 DrawLiquidRegion/DrawLiquidTile 替换为 Combined 版本 */
   private static void replaceLiquidDrawers(Object obj, IdentityHashMap<Object, Object> visited) {
     if (obj == null)
       return;
@@ -174,14 +187,14 @@ public class BlockCloner {
     visited.put(obj, obj);
 
     if (obj instanceof DrawLiquidRegion old) {
-      
-      
+      // 这个分支理论上不会走到，因为 deepCopy 已经复制了新对象
+      // 但如果直接引用了原版对象，需要处理
       return;
     }
 
     Class<?> clazz = obj.getClass();
 
-    
+    // 数组
     if (clazz.isArray()) {
       int len = Array.getLength(obj);
       for (int i = 0; i < len; i++) {
@@ -196,7 +209,7 @@ public class BlockCloner {
       return;
     }
 
-    
+    // Seq（特别是 DrawMulti.drawers）
     if (obj instanceof Seq) {
       Seq<?> seq = (Seq<?>) obj;
       for (int i = 0; i < seq.size; i++) {
@@ -211,7 +224,7 @@ public class BlockCloner {
       return;
     }
 
-    
+    // 反射遍历字段
     while (clazz != null && clazz != Object.class) {
       for (Field f : clazz.getDeclaredFields()) {
         if (Modifier.isStatic(f.getModifiers()))
@@ -244,14 +257,14 @@ public class BlockCloner {
     }
   }
 
-  
+  /** 把单个 DrawLiquidRegion/DrawLiquidTile 替换为 Combined 版本 */
   private static Object replaceSingle(Object obj) {
     if (obj instanceof DrawLiquidRegion old) {
       DrawCombinedLiquid neo = new DrawCombinedLiquid();
       neo.drawLiquid = old.drawLiquid;
       neo.suffix = old.suffix;
       neo.alpha = old.alpha;
-      neo.liquid = old.liquid; 
+      neo.liquid = old.liquid; // 贴图引用
       return neo;
     }
     if (obj instanceof DrawLiquidTile old) {
@@ -308,7 +321,7 @@ public class BlockCloner {
     }
   }
 
-  
+  /* ==================== 深拷贝 ==================== */
 
   public static Object deepCopy(Object src) {
     return deepCopy(src, new IdentityHashMap<>());

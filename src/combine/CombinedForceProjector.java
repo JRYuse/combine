@@ -18,6 +18,7 @@ import arc.struct.ObjectIntMap;
 import arc.struct.ObjectSet;
 import arc.struct.Queue;
 import arc.struct.Seq;
+import arc.util.Log;
 import arc.util.Strings;
 import arc.util.Time;
 import arc.util.io.Reads;
@@ -147,6 +148,7 @@ public class CombinedForceProjector extends ForceProjector {
         public CombinedForceProjectorBuild leader() {
             if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null))
                 comboLeader = null;
+                    comboDirty = true; // FIX: 失联后允许重建组合
             return comboLeader == null ? this : comboLeader;
         }
 
@@ -231,15 +233,12 @@ public class CombinedForceProjector extends ForceProjector {
             while (!queue.isEmpty()) {
                 CombinedForceProjectorBuild cur = queue.removeFirst();
                 for (Building b : cur.proximity) {
+                    // FIX: 所有 CombinedForceProjector 实例直接互连，不再按 block 类型/实例区分
                     if (b instanceof CombinedForceProjectorBuild o && o.team == team && o.isValid()
                             && !visited.contains(o.pos())) {
-                        CombinedForceProjector cb = (CombinedForceProjector) cur.block,
-                                ob = (CombinedForceProjector) o.block;
-                        if (cur.block == o.block || cb.allowCrossTypeCombo || ob.allowCrossTypeCombo) {
-                            visited.add(o.pos());
-                            queue.addLast(o);
-                            comboGroup.add(o);
-                        }
+                        visited.add(o.pos());
+                        queue.addLast(o);
+                        comboGroup.add(o);
                     }
                 }
             }
@@ -301,6 +300,14 @@ public class CombinedForceProjector extends ForceProjector {
                     old.comboTotalLiquidCap = 0f;
                     old.comboTotalItemCap = 0;
                 }
+            }
+            // DIAG[bug1]: 力墙组合重建日志
+            if (newLeader.isValid()) {
+                StringBuilder sb = new StringBuilder();
+                for (CombinedForceProjectorBuild b : newGroup)
+                    if (b.isValid()) sb.append(b.block.name).append(' ');
+                Log.info("[组合工厂][力墙] 重建组合体: 领导者=@(@,@) 成员数=@ 类型=[@]",
+                    newLeader.block.name, newLeader.tileX(), newLeader.tileY(), newGroup.size, sb.toString());
             }
         }
 
@@ -479,6 +486,20 @@ public class CombinedForceProjector extends ForceProjector {
                 for (CombinedForceProjectorBuild m : group())
                     if (m.isValid())
                         m.liquids = leader.liquids;
+            }
+        }
+
+        @Override
+        public void placed() {
+            super.placed();
+            comboDirty = true;
+            for (Building b : proximity) {
+                if (b instanceof CombinedForceProjectorBuild o && o.team == team && o.isValid()) {
+                    o.comboDirty = true;
+                    CombinedForceProjectorBuild l = o.leader();
+                    if (l != null)
+                        l.comboDirty = true;
+                }
             }
         }
 
@@ -1036,7 +1057,7 @@ public class CombinedForceProjector extends ForceProjector {
         // ===== 序列化 =====
         @Override
         public byte version() {
-            return 3;
+            return 10;
         }
 
         @Override
@@ -1068,10 +1089,13 @@ public class CombinedForceProjector extends ForceProjector {
         @Override
         public void read(Reads read, byte revision) {
             super.read(read, revision);
-            boolean hasLeader = read.bool();
+            boolean hasLeader = false;
             int leaderPos = -1;
-            if (hasLeader)
-                leaderPos = read.i();
+            if (revision >= 10) {
+                hasLeader = read.bool();
+                if (hasLeader)
+                    leaderPos = read.i();
+            }
             comboDirty = true;
             if (hasLeader && leaderPos != pos()) {
                 pendingLeaderPos = leaderPos;
@@ -1083,7 +1107,7 @@ public class CombinedForceProjector extends ForceProjector {
                 pendingLeaderPos = -1;
                 comboLeader = null;
             }
-            if (revision >= 3) {
+            if (revision >= 10) {
                 setBuildup(read.f());
                 setBroken(read.bool());
             }

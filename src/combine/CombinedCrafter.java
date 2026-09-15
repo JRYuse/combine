@@ -43,6 +43,7 @@ import mindustry.world.meta.StatUnit;
 import mindustry.world.meta.StatValues;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
+import mindustry.world.modules.PowerModule;
 
 import static mindustry.Vars.*;
 import static mindustry.Vars.iconMed;
@@ -129,6 +130,13 @@ public class CombinedCrafter extends GenericCrafter {
 
     @Override
     public void init() {
+            try {
+                super.init();
+            } catch (Throwable t) {
+                Log.err("[组合工厂] super.init() 异常: @", t.toString());
+                t.printStackTrace();
+            }
+            try {
         super.init();
         baseLiquidCapacity = liquidCapacity;
         displayLiquid = liquidCapacity;
@@ -211,12 +219,21 @@ public class CombinedCrafter extends GenericCrafter {
                     cachedLiquids.add(stack.liquid);
             }
         }
+        // FIX[液条]: 原版部分机器只设单数 outputLiquid(桥接在 GenericCrafter.init 里,
+        // 若填充时机早于桥接或实例未走完整管线会漏), 这里兜底并入缓存
+        if (outputLiquid != null && !cachedLiquids.contains(outputLiquid.liquid))
+            cachedLiquids.add(outputLiquid.liquid);
 
         // 禁用环境音循环：避免触发 SoundControl 环境音线程在 Android 上的
         // IllegalThreadStateException（Thread.start 崩溃）
         ambientSound = mindustry.gen.Sounds.none;
         ambientSoundVolume = 0f;
-    }
+    
+            } catch (Throwable t) {
+                Log.err("[组合工厂] init 主体异常(已尽力完成初始化): @", t.toString());
+                t.printStackTrace();
+            }
+        }
 
     @Override
     public TextureRegion[] icons() {
@@ -334,6 +351,11 @@ public class CombinedCrafter extends GenericCrafter {
         // FIX: 读取时暂存 leader 位置，等 updateTile 时恢复共享模块
         public int pendingLeaderPos = -1;
 
+        // DIAG[bug2]: 诊断日志节流戳
+        public long diagStamp = -999999999999L;
+        public long diagStamp2 = -999999999999L;
+        public long diagStamp3 = -999999999999L;
+
         public float getComboTotalLiquidAmount() {
             return liquids != null ? liquids.currentAmount() : 0f;
         }
@@ -341,6 +363,7 @@ public class CombinedCrafter extends GenericCrafter {
         public CombinedCrafterBuild leader() {
             if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null)) {
                 comboLeader = null;
+                    comboDirty = true; // FIX: 失联后允许重建组合
             }
             return comboLeader == null ? this : comboLeader;
         }
@@ -491,6 +514,9 @@ public class CombinedCrafter extends GenericCrafter {
             CombinedCrafter cb = (CombinedCrafter) block;
             if (cb.mode != Mode.heatcrafter)
                 return 1f;
+            // FIX: heatRequirement <= 0 时 0/0=NaN，导致 "active 但不生产"
+            if (cb.heatRequirement <= 0.0001f)
+                return cb.maxEfficiency;
             return Math.min(availableHeat() / cb.heatRequirement, cb.maxEfficiency);
         }
 
@@ -833,6 +859,16 @@ public class CombinedCrafter extends GenericCrafter {
                 CombinedCrafterBuild b = kicked.get(i);
                 b.items = newItemMods[i];
                 b.liquids = newLiquidMods[i];
+                // FIX[电力共享]: 离组成员重建独立电力模块并保留原连接
+                if (b.power != null) {
+                    PowerModule oldPower = b.power;
+                    b.power = new PowerModule();
+                    if (oldPower != null) {
+                        b.power.links.addAll(oldPower.links);
+                        b.power.status = oldPower.status;
+                    }
+                    b.updatePowerGraph();
+                }
             }
         }
 
@@ -908,6 +944,26 @@ public class CombinedCrafter extends GenericCrafter {
                 }
             }
 
+            // FIX[电力共享]: 全组共用领导者的电力模块——任一成员接电即整组通电。
+            // links 存在 PowerModule 里: 先摘旧电网, 把成员自己的节点链接并入领导者模块, 再换模块
+            if (leader.power != null) {
+                for (CombinedCrafterBuild member : group()) {
+                    if (member != leader && member.isValid() && member.power != null
+                            && member.power != leader.power) {
+                        PowerModule oldPower = member.power;
+                        if (oldPower.graph != null)
+                            oldPower.graph.remove(member);
+                        for (int li = 0; li < oldPower.links.size; li++) {
+                            int link = oldPower.links.get(li);
+                            if (!leader.power.links.contains(link))
+                                leader.power.links.add(link);
+                        }
+                        member.power = leader.power;
+                        member.updatePowerGraph();
+                    }
+                }
+            }
+
             Log.info("[组合工厂] 模块共享完成: 领导者物品总数=@, 液体总数=@",
                     leader.items != null ? leader.items.total() : 0,
                     leader.liquids != null ? leader.liquids.currentAmount() : 0f);
@@ -967,6 +1023,25 @@ public class CombinedCrafter extends GenericCrafter {
                     }
                     if (shared)
                         liquids = new LiquidModule();
+                }
+                if (power != null) {
+                    boolean sharedPower = false;
+                    for (CombinedCrafterBuild member : members) {
+                        if (member != this && member.isValid() && member.power == this.power) {
+                            sharedPower = true;
+                            break;
+                        }
+                    }
+                    if (sharedPower) {
+                        // FIX[电力共享]: 换独立模块但保留电力连接(links 存在模块里, 直接 new 会丢光)
+                        PowerModule oldPower = power;
+                        power = new PowerModule();
+                        if (oldPower != null) {
+                            power.links.addAll(oldPower.links);
+                            power.status = oldPower.status;
+                        }
+                        updatePowerGraph();
+                    }
                 }
             }
 
@@ -1142,6 +1217,12 @@ public class CombinedCrafter extends GenericCrafter {
                 if (efficiency > 0)
                     return mindustry.world.meta.BlockStatus.active;
             }
+            // FIX: 非 heatcrafter 模式带热量需求的方块，缺热且效率为 0 时如实显示 noInput。
+            // 必须排除产物满的情况: 产物满时 shouldConsume=false 导致 efficiency=0,
+            // 否则会把 noOutput 误判成 noInput。
+            if (cb.mode != Mode.separator && cb.heatRequirement > 0 && shouldConsume()
+                    && availableHeat() <= 0.001f && efficiency <= 0)
+                return mindustry.world.meta.BlockStatus.noInput;
             return super.status();
         }
 
@@ -1155,7 +1236,31 @@ public class CombinedCrafter extends GenericCrafter {
                         total -= items.get(stack.item);
                     }
                 }
-                return total < comboTotalItemCap && enabled;
+                // FIX[独立储存]: 每种产物独立判断——只要有一种产物未满就继续生产。
+                // 不再统计"所有物品总量": 某一种产物(甚至混进来的非产物物品)满了
+                // 不会让整个工厂停摆/误报 nooutput; 全部产物都满才停止并显示 nooutput。
+                // DIAG[sep]: 停产判定明细 (4秒节流, 仅 leader)
+                boolean sepDecision = false;
+                if (cb.results != null) {
+                    for (ItemStack stack : cb.results) {
+                        if (items.get(stack.item) < getMaximumAccepted(stack.item)) {
+                            sepDecision = enabled;
+                            break;
+                        }
+                    }
+                }
+                if (isLeader() && System.currentTimeMillis() - diagStamp2 >= 4000L) {
+                    diagStamp2 = System.currentTimeMillis();
+                    StringBuilder sp = new StringBuilder();
+                    if (cb.results != null) {
+                        for (ItemStack stack : cb.results)
+                            sp.append(stack.item.name).append('=').append(items.get(stack.item))
+                              .append('/').append(getMaximumAccepted(stack.item)).append(' ');
+                    }
+                    Log.info("[组合工厂][判定] @(@) sep独立判定 -> @ 产物: @",
+                        tileX(), tileY(), sepDecision, sp.toString());
+                }
+                return sepDecision;
             }
 
             // Generic / Attribute
@@ -1207,6 +1312,24 @@ public class CombinedCrafter extends GenericCrafter {
                 rebuildCombo();
             }
 
+            // FIX[液体超容]: 组合体缩容(拆成员)后上限变小, 之前合法灌入的液体会搁浅超标,
+            // 堵住后续合法进液——组长把总量截回组容量(从量最大的液体开始扣)
+            if (isLeader() && liquids != null) {
+                float over = liquids.currentAmount() - comboTotalLiquidCap;
+                if (over > 0.001f) {
+                    for (Liquid l : content.liquids()) {
+                        float have = liquids.get(l);
+                        if (have <= 0.001f)
+                            continue;
+                        float remove = Math.min(have, over);
+                        liquids.remove(l, remove);
+                        over -= remove;
+                        if (over <= 0.001f)
+                            break;
+                    }
+                }
+            }
+
             // 热量自然衰减（只有 leader 执行）
             if (isLeader() && comboHeat > 0) {
                 CombinedCrafter cb = (CombinedCrafter) block;
@@ -1232,9 +1355,22 @@ public class CombinedCrafter extends GenericCrafter {
 
         private void updateGenericOrAttribute() {
             CombinedCrafter cb = (CombinedCrafter) block;
+            // DIAG[bug2]: 生产管线诊断 (4秒节流, 仅 leader)
+            if (isLeader() && System.currentTimeMillis() - diagStamp >= 4000L) {
+                diagStamp = System.currentTimeMillis();
+                float heatEff0 = cb.heatRequirement > 0 ? Math.min(availableHeat() / cb.heatRequirement, 1f) : 1f;
+                if (cb.mode == Mode.heatcrafter) heatEff0 = heatEfficiency();
+                Log.info("[组合工厂][工厂] @(@,@) eff=@ heatEff=@ prog=@ inc=@ cap=@ liqTot=@ liqShr=@",
+                    tileX(), tileY(), cb.mode, efficiency, heatEff0, progress,
+                    getProgressIncrease(craftTime), comboTotalItemCap,
+                    liquids != null ? liquids.currentAmount() : -1f,
+                    liquids != null && leader() != null ? (liquids == leader().liquids) : "null");
+            }
             // 热量需求检查（availableHeat() 只读直接相邻的热源）
             float heatEff = 1f;
-            if (cb.heatRequirement > 0) {
+            // FIX: 非 heatcrafter 模式不应用热量门 (原版 GenericCrafter 从不因 heatRequirement 停产;
+            // BlockCloner 深拷贝失败的方块可能带着非零 heatRequirement)
+            if (cb.mode == Mode.heatcrafter && cb.heatRequirement > 0) {
                 heatEff = Math.min(availableHeat() / cb.heatRequirement, 1f);
             }
             // HeatCrafter 模式：效率由热量决定
@@ -1337,9 +1473,27 @@ public class CombinedCrafter extends GenericCrafter {
             CombinedCrafter cb = (CombinedCrafter) block;
 
             // 热量需求检查
+            // FIX[separator冻结]: 分离机永远不需要热量(原版 Separator 本体不继承热量体系)。
+            // 克隆体 heatRequirement 默认 10f, 若实例未走 init 清理(如直接 new 顶替原版),
+            // 热门控会把进度冻死在 0——separator 直接不启用热门控
             float heatEfficiency = 1f;
-            if (cb.heatRequirement > 0) {
-                heatEfficiency = Math.min(availableHeat() / cb.heatRequirement, 1f);
+
+            // DIAG[sep]: separator 生产管线诊断 (4秒节流, 仅 leader)
+            if (isLeader() && System.currentTimeMillis() - diagStamp >= 4000L) {
+                diagStamp = System.currentTimeMillis();
+                StringBuilder sb = new StringBuilder();
+                if (cb.results != null) {
+                    for (ItemStack stack : cb.results)
+                        sb.append(stack.item.name).append('=').append(items.get(stack.item)).append(' ');
+                }
+                StringBuilder cs = new StringBuilder();
+                if (block.consumers != null) {
+                    for (mindustry.world.consumers.Consume cons : block.consumers)
+                        cs.append(cons.getClass().getSimpleName()).append(' ');
+                }
+                Log.info("[组合工厂][分离] @(@) hr=@ heff=@ eff=@ prog=@ inc=@ warm=@ itemsTot=@ consumers=@ 产物: @",
+                    tileX(), tileY(), cb.heatRequirement, heatEfficiency, efficiency, progress,
+                    getProgressIncrease(craftTime), warmup, items.total(), cs.toString(), sb.toString());
             }
 
             if (efficiency > 0 && heatEfficiency > 0) {
@@ -1361,14 +1515,23 @@ public class CombinedCrafter extends GenericCrafter {
             if (cb.results == null || cb.results.length == 0)
                 return;
 
+            // FIX[独立储存+概率重分配]: 已满的产物不参与抽取, 其权重按比例分摊给
+            // 其余未满产物; 全部产物已满时不消耗输入(shouldConsume 正常会拦住,
+            // 这里兜底防止抽取间隙满容导致白吞原料)
             int sum = 0;
             for (ItemStack stack : cb.results)
-                sum += stack.amount;
+                if (items.get(stack.item) < getMaximumAccepted(stack.item))
+                    sum += stack.amount;
+
+            if (sum <= 0)
+                return;
 
             int i = Mathf.randomSeed(seed++, 0, sum - 1);
             int count = 0;
             Item item = null;
             for (ItemStack stack : cb.results) {
+                if (items.get(stack.item) >= getMaximumAccepted(stack.item))
+                    continue; // FIX: 跳过已满产物
                 if (i >= count && i < count + stack.amount) {
                     item = stack.item;
                     break;
@@ -1376,9 +1539,22 @@ public class CombinedCrafter extends GenericCrafter {
                 count += stack.amount;
             }
 
+            // DIAG[sep]: 抽取与产出结果 (4秒节流, 仅 leader)
+            if (isLeader() && System.currentTimeMillis() - diagStamp2 >= 4000L) {
+                diagStamp2 = System.currentTimeMillis();
+                Log.info("[组合工厂][产出] @(@) sum=@ pick=@ pickAmt=@ pickCap=@ add后=@",
+                    tileX(), tileY(), sum,
+                    item != null ? item.name : "null",
+                    item != null ? items.get(item) : -1,
+                    item != null ? getMaximumAccepted(item) : -1,
+                    item != null ? items.get(item) + 1 : -1);
+            }
+
             consume();
             if (item != null && items.get(item) < getMaximumAccepted(item)) {
                 items.add(item, 1);
+                // FIX[区块产出统计]: 分离机产物同样补调 produced()
+                produced(item, 1);
             }
         }
 
@@ -1393,6 +1569,10 @@ public class CombinedCrafter extends GenericCrafter {
                 for (var output : outputItems) {
                     for (int i = 0; i < output.amount; i++)
                         items.add(output.item, 1);
+                    // FIX[区块产出统计]: 原版走 offload() 会自动调 produced() 计入
+                    // sector.info.handleProduction -> rawProduction；此处自写产出逻辑
+                    // 必须补调，否则区块产量被 min(production, rawProduction)=0 封顶
+                    produced(output.item, output.amount);
                 }
             }
             if (wasVisible)
@@ -1452,7 +1632,12 @@ public class CombinedCrafter extends GenericCrafter {
                         var output = mb.outputLiquids[i];
                         int dir = liquidOutputDirections.length > i ? liquidOutputDirections[i] : -1;
                         boolean isIntermediate = isLiquidConsumedInCombo(output.liquid);
-                        boolean shouldDump = !isIntermediate || shouldDumpIntermediateLiquid(output.liquid);
+                        // FIX[矿渣外流]: 旧逻辑"产率>耗率就外送"——熔炉名义产率远大于分离机
+                        // 消耗, 矿渣被当过剩产物不断导出: 共享池恒空, 只泼溅邻近方块(越远越少)。
+                        // 改为: 中间产物只在池子>=90%满容时才外送, 平时留在组内共享池
+                        boolean shouldDump = !isIntermediate
+                                || (shouldDumpIntermediateLiquid(output.liquid)
+                                        && liquids.get(output.liquid) >= comboTotalLiquidCap * 0.9f);
                         boolean forceDump = isIntermediate
                                 && liquids.get(output.liquid) >= comboTotalLiquidCap * 0.99f;
                         if (shouldDump || forceDump)
@@ -1786,10 +1971,48 @@ public class CombinedCrafter extends GenericCrafter {
                     }
                 }
             }
+            // DIAG[liquid]: 液体条渲染链路诊断 (4秒节流, 独立节拍, 仅 leader)
+            if (isLeader() && System.currentTimeMillis() - diagStamp3 >= 4000L) {
+                diagStamp3 = System.currentTimeMillis();
+                StringBuilder iv = new StringBuilder();
+                for (Liquid lq : involvedLiquids)
+                    iv.append(lq.name).append(' ');
+                StringBuilder mc = new StringBuilder();
+                for (CombinedCrafterBuild member : group()) {
+                    if (member.isValid()) {
+                        mc.append(member.block.name).append('[');
+                        for (Liquid lq : ((CombinedCrafter) member.block).cachedLiquids)
+                            mc.append(lq.name).append(',');
+                        // *=成员的liquids字段确实指向共享池 !=未共享(模块共享失效)
+                        mc.append(member.liquids == sharedLiq ? "]* " : "]! ");
+                    }
+                }
+                StringBuilder la = new StringBuilder();
+                if (sharedLiq != null) {
+                    for (Liquid lq : content.liquids()) {
+                        float amt = sharedLiq.get(lq);
+                        if (amt > 0.001f)
+                            la.append(lq.name).append('=').append(amt).append(' ');
+                    }
+                }
+                Log.info("[组合工厂][液条] @(@) involved=[@] 成员缓存=@ 共享池: [@]",
+                    tileX(), tileY(), iv.toString(), mc.toString(), la.toString());
+            }
+
+            // FIX[液条]: 缓存全空(如克隆体未走完整初始化管线)时, 回退到共享池里
+            // 实际存在的液体——只要有液体在池里就有条可显示
+            if (involvedLiquids.isEmpty() && sharedLiq != null) {
+                for (Liquid lq : content.liquids()) {
+                    if (sharedLiq.get(lq) > 0.001f && !involvedLiquids.contains(lq))
+                        involvedLiquids.add(lq);
+                }
+            }
+
             if (sharedLiq != null) {
                 for (Liquid liquid : involvedLiquids) {
                     float total = sharedLiq.get(liquid);
-                    if (total > 0.001f) {
+                    // FIX[液条]: 有参与的液体就显示——矿渣即产即耗常年接近0, 旧门槛把它隐藏了
+                    if (total > -1f) {
                         final float t = total, c = Math.max(comboTotalLiquidCap, 1f);
                         table.add(new Bar(
                                 () -> liquid.localizedName + ": " + Strings.fixed(t, 1) + "/" + Strings.fixed(c, 1),
@@ -2003,7 +2226,7 @@ public class CombinedCrafter extends GenericCrafter {
         // -------------------- 序列化 --------------------
         @Override
         public byte version() {
-            return 3;
+            return 10;
         }
 
         @Override
@@ -2057,14 +2280,19 @@ public class CombinedCrafter extends GenericCrafter {
         public void read(Reads read, byte revision) {
             super.read(read, revision);
 
-            boolean hasLeader = read.bool();
+            boolean hasLeader = false;
             int leaderPos = -1;
-            if (hasLeader)
-                leaderPos = read.i();
+            if (revision >= 10) {
+                hasLeader = read.bool();
+                if (hasLeader)
+                    leaderPos = read.i();
+            }
 
             // 读取共享热量
-            comboHeat = read.f();
-            comboHeatCap = read.f();
+            if (revision >= 10) {
+                comboHeat = read.f();
+                comboHeatCap = read.f();
+            }
 
             comboDirty = true;
 
@@ -2082,7 +2310,7 @@ public class CombinedCrafter extends GenericCrafter {
             }
 
             // 读取模式特定数据（version >= 2）
-            if (revision >= 2) {
+            if (revision >= 10) {
                 CombinedCrafter cb = (CombinedCrafter) block;
                 if (cb.mode == Mode.separator) {
                     seed = read.i();

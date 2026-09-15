@@ -493,7 +493,7 @@ public class CombinedPump extends Pump {
         // -------------------- 序列化 --------------------
         @Override
         public byte version() {
-            return 1;
+            return 10;
         }
 
         @Override
@@ -516,10 +516,16 @@ public class CombinedPump extends Pump {
         @Override
         public void read(Reads read, byte revision) {
             super.read(read, revision);
-            boolean hasLeader = read.bool();
+            boolean hasLeader = false;
             int leaderPos = -1;
-            if (hasLeader)
+
+            if (revision >= 10) {
+            hasLeader = read.bool();
+                        if (hasLeader)
                 leaderPos = read.i();
+
+            }
+
             comboDirty = true;
             if (hasLeader && leaderPos != pos()) {
                 pendingLeaderPos = leaderPos;
@@ -529,6 +535,6 @@ public class CombinedPump extends Pump {
                 pendingLeaderPos = -1;
                 comboLeader = null;
             }
-        }
+}
     }
 }

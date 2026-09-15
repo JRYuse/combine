@@ -11,15 +11,16 @@ author: "R"
 main: "combine.Main"
 
 #the mod description as seen in the mod dialog
-description: "1.2支持普通工厂，地形加成工厂，分离机，普通钻头，挖墙钻头（e星挖沙的不算)，e星的震地钻头组合，并且支持跨模组覆盖。如果你把该模组关闭，之前的建筑估计要重新解锁一遍）\n 1.3支持组合发电机\n1.4支持组合力墙，修复投影，超速，发射台\n1.5支持组合仓库\n1.6支持组合泵，接收台，挖墙钻\n1.7支持组合逻辑处理器，蓝图中建筑可被替换为组合建筑\n1.8支持组合炮台，组合抽水机，组合墙"
+description: "1.2支持普通工厂，地形加成工厂，分离机，普通钻头，挖墙钻头（e星挖沙的不算)，e星的震地钻头组合，并且支持跨模组覆盖。如果你把该模组关闭，之前的建筑估计要重新解锁一遍）\n 1.3支持组合发电机\n1.4支持组合力墙，修复投影，超速，发射台\n1.5支持组合仓库\n1.6支持组合泵，接收台，挖墙钻\n1.7支持组合逻辑处理器，蓝图中建筑可被替换为组合建筑\n1.8支持组合炮台，组合抽水机，组合墙\n1.9可以过剧情了\n2.0给核心机加了多线程建造"
 
 #the mod version
-version: 1.8
+version: 2.0
 
 #the minimum game build required to run this mod
 minGameVersion: 159
 
 #this is a java mod
 java: true
-hidden:true
+//hidden:true
+
 

@@ -39,6 +39,7 @@ public class CombinedLiquidTurret extends LiquidTurret {
   public boolean allowCrossTypeCombo = true;
   public float baseLiquidCapacity = 10f;
   public float displayLiquid;
+  public boolean baseCapCaptured = false;
 
   public CombinedLiquidTurret(String name) {
     super(name);
@@ -53,8 +54,12 @@ public class CombinedLiquidTurret extends LiquidTurret {
   @Override
   public void init() {
     super.init();
-    baseLiquidCapacity = liquidCapacity;
-    displayLiquid = baseLiquidCapacity;
+    // FIX[双init防护]: 内容加载器可能再次 init(), 防止把 9999 假容量记成基础容量
+    if (!baseCapCaptured) {
+      baseLiquidCapacity = liquidCapacity;
+      displayLiquid = baseLiquidCapacity;
+      baseCapCaptured = true;
+    }
     // 9999 必须保留：原版 transferLiquid 按"目标方块的 liquidCapacity"限流，共享池总量超过
     // 单台容量后管道会算出负流量而彻底断流（调用方是原版代码，炮塔侧无法拦截）。
     // 超容防护 = acceptLiquid 组容量 + handleLiquid 超量退回源端 + 每帧截断。
@@ -460,6 +465,29 @@ public class CombinedLiquidTurret extends LiquidTurret {
       }
     }
 
+
+    
+
+    // ===== 弹药判定: 液体炮台不使用物品弹药序列, 必须按液体池判定 =====
+    @Override
+    public boolean hasAmmo() {
+      // FIX[罢工]: 原版 LiquidTurretBuild.hasAmmo 基于 liquids; 误查恒空的 ammo 序列
+      // 会永远返回 false, 炮台永远不开火
+      if (liquids == null)
+        return false;
+      Liquid eff = effectiveLiquid();
+      if (eff == null)
+        return false;
+      BulletType type = ammoTypes.get(eff);
+      return type != null && liquids.get(eff) >= 1f / type.ammoMultiplier;
+    }
+
+    @Override
+    public float ammoReloadMultiplier() {
+      BulletType type = ammoTypes.get(effectiveLiquid());
+      return type == null ? 1f : type.reloadMultiplier;
+    }
+
     @Override
     public void updateTile() {
       if (isLeader() && comboDirty)
@@ -487,11 +515,7 @@ public class CombinedLiquidTurret extends LiquidTurret {
       return ammoTypes.get(effectiveLiquid());
     }
 
-    @Override
-    public boolean hasAmmo() {
-      BulletType type = ammoTypes.get(effectiveLiquid());
-      return type != null && liquids.get(effectiveLiquid()) >= 1f / type.ammoMultiplier;
-    }
+    
 
     @Override
     public BulletType useAmmo() {
@@ -506,7 +530,7 @@ public class CombinedLiquidTurret extends LiquidTurret {
     @Override
     public float getAmmoFraction() {
       // 原版除以 block.liquidCapacity（组合版为 9999 假容量），改为组容量
-      return liquids.get(effectiveLiquid()) / Math.max(comboTotalLiquidCap, 1f);
+      return liquids == null ? 0f : liquids.get(effectiveLiquid()) / Math.max(comboTotalLiquidCap, 1f);
     }
 
     @Override
@@ -544,7 +568,7 @@ public class CombinedLiquidTurret extends LiquidTurret {
 
     @Override
     public byte version() {
-      return 2;
+      return 10;
     }
 
     @Override
@@ -556,11 +580,16 @@ public class CombinedLiquidTurret extends LiquidTurret {
     @Override
     public void read(Reads read, byte revision) {
       super.read(read, revision);
-      if (revision >= 2) {
+
+      if (revision >= 10) {
+      if (revision >= 10) {
         short id = read.s();
         selected = id == -1 ? null : content.liquid(id);
       }
-    }
+
+      }
+
+}
 
     // -------------------- 液体交互 --------------------
 

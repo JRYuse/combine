@@ -515,7 +515,7 @@ public class CombinedSolidPump extends SolidPump {
         // -------------------- 序列化 --------------------
         @Override
         public byte version() {
-            return 1;
+            return 10;
         }
 
         @Override
@@ -538,10 +538,16 @@ public class CombinedSolidPump extends SolidPump {
         @Override
         public void read(Reads read, byte revision) {
             super.read(read, revision);
-            boolean hasLeader = read.bool();
+            boolean hasLeader = false;
             int leaderPos = -1;
-            if (hasLeader)
+
+            if (revision >= 10) {
+            hasLeader = read.bool();
+                        if (hasLeader)
                 leaderPos = read.i();
+
+            }
+
             comboDirty = true;
             if (hasLeader && leaderPos != pos()) {
                 pendingLeaderPos = leaderPos;
@@ -552,6 +558,6 @@ public class CombinedSolidPump extends SolidPump {
                 comboLeader = null;
             }
             comboTotalLiquidCap = ((CombinedSolidPump) block).baseLiquidCapacity;
-        }
+}
     }
 }

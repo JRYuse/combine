@@ -114,6 +114,7 @@ public class CombinedWallCrafter extends WallCrafter {
         public CombinedWallCrafterBuild leader() {
             if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null))
                 comboLeader = null;
+                    comboDirty = true; // FIX: 失联后允许重建组合
             return comboLeader == null ? this : comboLeader;
         }
 
@@ -538,7 +539,7 @@ public class CombinedWallCrafter extends WallCrafter {
         // -------------------- 序列化 --------------------
         @Override
         public byte version() {
-            return 2;
+            return 10;
         }
 
         @Override
@@ -562,10 +563,13 @@ public class CombinedWallCrafter extends WallCrafter {
         @Override
         public void read(Reads read, byte revision) {
             super.read(read, revision);
-            boolean hasLeader = read.bool();
+            boolean hasLeader = false;
             int leaderPos = -1;
-            if (hasLeader)
-                leaderPos = read.i();
+            if (revision >= 10) {
+                hasLeader = read.bool();
+                if (hasLeader)
+                    leaderPos = read.i();
+            }
             comboDirty = true;
             if (hasLeader && leaderPos != pos()) {
                 pendingLeaderPos = leaderPos;
@@ -575,7 +579,7 @@ public class CombinedWallCrafter extends WallCrafter {
                 pendingLeaderPos = -1;
                 comboLeader = null;
             }
-            if (revision >= 2)
+            if (revision >= 10)
                 time = read.f();
         }
     }
