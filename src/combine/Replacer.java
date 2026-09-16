@@ -104,10 +104,13 @@ public class Replacer {
       combo.quietUnlock();
 
     // 6) 蓝图库引用原地替换（只改内存，不碰文件）
-    for (mindustry.game.Schematic s : Vars.schematics.all()) {
-      for (var st : s.tiles) {
-        if (st.block == orig)
-          st.block = combo;
+    // 专用服务端没有 Vars.schematics，必须跳过（内容装配现在服务端也要跑）
+    if (Vars.schematics != null) {
+      for (mindustry.game.Schematic s : Vars.schematics.all()) {
+        for (var st : s.tiles) {
+          if (st.block == orig)
+            st.block = combo;
+        }
       }
     }
  

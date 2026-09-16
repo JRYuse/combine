@@ -347,7 +347,7 @@ public class CombinedPump extends Pump {
         // -------------------- 核心逻辑 --------------------
         @Override
         public boolean shouldConsume() {
-            return liquidDrop != null && liquids.currentAmount() < comboTotalLiquidCap - 0.01f && enabled;
+            return liquidDrop != null && ComboReflect.liquidTotal(liquids) < comboTotalLiquidCap - 0.01f && enabled;
         }
 
         @Override
@@ -369,7 +369,7 @@ public class CombinedPump extends Pump {
                 rebuildCombo();
 
             if (efficiency > 0 && liquidDrop != null) {
-                float room = Math.max(0f, comboTotalLiquidCap - liquids.currentAmount());
+                float room = Math.max(0f, comboTotalLiquidCap - ComboReflect.liquidTotal(liquids));
                 float maxPump = Math.min(room, amount * pumpAmount * edelta());
                 liquids.add(liquidDrop, maxPump);
 
@@ -413,7 +413,7 @@ public class CombinedPump extends Pump {
                     if (icon == null)
                         icon = Core.atlas.find("clear");
                     t.add(new Image(icon)).size(8 * 4);
-                    int count = group().size;
+                    int count = ComboNet.displayMembers(this, group().size).size;
                     String title = count > 1 ? "[accent]组合泵[] x" + count + "\n" + block.getDisplayName(tile)
                             : block.getDisplayName(tile);
                     t.labelWrap(title).left().width(160f).padLeft(4);
@@ -471,7 +471,7 @@ public class CombinedPump extends Pump {
             table.add("[lightgray]组合体构成:").left();
             table.row();
             ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (CombinedPumpBuild member : group()) {
+            for (Building member : ComboNet.displayMembers(this, group().size)) {
                 if (member.isValid()) {
                     int old = blockCounts.get(member.block, 0);
                     blockCounts.put(member.block, old + 1);

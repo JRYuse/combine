@@ -10,6 +10,7 @@ import arc.util.serialization.JsonReader;
 import arc.util.serialization.JsonValue;
 import java.util.IdentityHashMap;
 import mindustry.Vars;
+import mindustry.content.Items;
 import mindustry.content.TechTree;
 import mindustry.content.UnitTypes;
 import mindustry.content.TechTree.TechNode;
@@ -64,12 +65,15 @@ import mindustry.world.blocks.storage.StorageBlock;
 import mindustry.world.blocks.units.UnitFactory;
 import mindustry.world.blocks.units.Reconstructor;
 import mindustry.world.meta.BuildVisibility;
+import mindustry.type.Category;
 
 import static combine.BlockCloner.*;
 
 public class Main extends Mod {
   public static String fileName = "whitelist.json";
   static Seq<String> list = new Seq<>();
+  public static ComboConnector comboConnector;
+  public static ComboNode comboNode;
 
   static JsonReader reader = new JsonReader();
   static JsonValue json;
@@ -93,8 +97,13 @@ public class Main extends Mod {
       Block combo = Replacer.replaced.get(e.tile.block());
       if (combo != null && e.tile.build != null && !e.tile.build.dead) {
         e.tile.setBlock(combo, e.tile.team(), e.tile.build.rotation);
+        ComboNet.rebuild();
       }
     });
+
+    // 读档窗口：WorldLoadBegin → 读档语义合并（去重）；结束前不做运行期相加
+    Events.on(mindustry.game.EventType.WorldLoadBeginEvent.class, e -> ComboNet.beginWorldLoad());
+    Events.on(WorldLoadEvent.class, e -> ComboNet.rebuildLoading());
 
     Events.on(mindustry.game.EventType.UnlockEvent.class, e -> {
       if (e.content == null)
@@ -108,58 +117,132 @@ public class Main extends Mod {
 
     });
 
-    Events.on(ClientLoadEvent.class, e -> {
+    // 多线程建造武器的加载时机（客户端 + 服务端）
+    registerBuildWeaponLoad();
+
+    // 联机内容自检：入服时两端互换方块名列表，逐 id 比对（顺序/id 不一致会直接报出来）
+    ComboContentCheck.register();
+
+    // 内容装配必须客户端与（专用）服务端都执行，而且发生在同一个引导阶段：
+    // 专用服务端不会触发 ClientLoadEvent，之前只在客户端装配 —— 服务端不认识组合方块/
+    // 连接器/节点（方块 id 与客户端不一致），联机的地图里这些建筑会被服务端当成未知 id
+    // 直接变成空气，客户端进图自然什么都看不到。
+    setupContent();
+  }
+
+  /**
+   * 【建造武器 · 方法一】决定"给哪个单位挂几把建造武器"，并按原参数真正挂上。
+   *
+   * 核心机 = 核心机尺寸；建造单位按下面列出的数量（也就是它能并行造几格）。
+   * 武器参数与原来内联在 Main 里的匿名类完全相同：mirror=false, x=0, y=2, speedMulti=1。
+   * 幂等：重复调用、客户端/服务端事件都触发，都不会重复挂。
+   */
+  public static void addBuildWeapons() {
+    for (var b : Vars.content.blocks()) {
+      if (b instanceof CoreBlock c && c.unitType != null) {
+        addBuildWeapons(c.unitType, c.size);
+      }
+    }
+    addBuildWeapons(UnitTypes.poly, 2);
+    addBuildWeapons(UnitTypes.mega, 3);
+    addBuildWeapons(UnitTypes.quad, 4);
+    addBuildWeapons(UnitTypes.oct, 5);
+    addBuildWeapons(UnitTypes.nova, 1);
+    addBuildWeapons(UnitTypes.pulsar, 2);
+    addBuildWeapons(UnitTypes.quasar, 3);
+  }
+
+  /** 兼容旧调用名 */
+  public static void addBuild(UnitType unit, int amount) {
+    addBuildWeapons(unit, amount);
+  }
+
+  /**
+   * 给指定单位挂 count 把建造武器（幂等：已挂够就跳过，不会叠加）。
+   * 想改某个单位的并行数，改 {@link #addBuildWeapons()} 里的数字即可。
+   */
+  public static void addBuildWeapons(UnitType unit, int count) {
+    if (unit == null || count <= 0)
+      return;
+
+    int existing = 0;
+    for (Weapon weapon : unit.weapons) {
+      if (weapon instanceof MultiBuildWeapon)
+        existing++;
+    }
+    if (existing >= count)
+      return;
+
+    for (int i = existing; i < count; i++) {
+      MultiBuildWeapon w = new MultiBuildWeapon();
+      w.mirror = false;
+      w.x = 0f;
+      w.y = 2f;
+      w.speedMulti = 1f;
+      if (visuals()) // 专用服务端没有图集，贴图字段跳过即可，不影响建造逻辑
+        w.load();
+      unit.weapons.add(w);
+    }
+    // 已经存在的单位补挂座（新造单位的挂座由 Unit 自己按 weapons.size 补齐）
+    Groups.unit.each(un -> un.type == unit, un -> un.setupWeapons(unit));
+  }
+
+  /**
+   * 【建造武器 · 方法二】决定加载时机：客户端在 ClientLoadEvent、
+   * 服务端在 ServerLoadEvent 各挂一次 —— 联机时服务端也在模拟单位，
+   * 服务端必须同样持有建造武器，多线程建造才会真正生效。
+   */
+  void registerBuildWeaponLoad() {
+    Events.on(ClientLoadEvent.class, e -> addBuildWeapons());
+    Events.on(mindustry.game.EventType.ServerLoadEvent.class, e -> addBuildWeapons());
+  }
+
+  /** 客户端与（专用）服务端共用的内容装配。 */
+  static boolean contentSetupDone = false;
+
+  void setupContent() {
+    if (contentSetupDone)
+      return;
+    contentSetupDone = true;
+    try {
       // 包装所有存档版本读取器：继承原版 read()（免疫 R8 方法重命名），
       // 只在 readChunk/readLegacyShortChunk 注入缓冲，实体 IO 不对称不再崩图。
       // 注意判断顺序：Save11 -> LegacyRegion -> ShortChunk -> SaveVersion（子类优先）。
-      try {
-        for (mindustry.io.SaveVersion v : new arc.struct.Seq<>(mindustry.io.SaveIO.versionArray)) {
-          mindustry.io.SaveVersion w;
-          if (v instanceof mindustry.io.versions.Save11) {
-            w = new SafeW11();
-          } else if (v instanceof mindustry.io.versions.LegacyRegionSaveVersion) {
-            w = new SafeWLegacy(v.version);
-          } else if (v instanceof mindustry.io.versions.ShortChunkSaveVersion) {
-            w = new SafeWShort(v.version);
-          } else if (v instanceof mindustry.io.SaveVersion) {
-            w = new SafeWVer(v.version);
-          } else {
-            continue;
-          }
-          mindustry.io.SaveIO.versions.put(v.version, w);
+      for (mindustry.io.SaveVersion v : new arc.struct.Seq<>(mindustry.io.SaveIO.versionArray)) {
+        mindustry.io.SaveVersion w;
+        if (v instanceof mindustry.io.versions.Save11) {
+          w = new SafeW11();
+        } else if (v instanceof mindustry.io.versions.LegacyRegionSaveVersion) {
+          w = new SafeWLegacy(v.version);
+        } else if (v instanceof mindustry.io.versions.ShortChunkSaveVersion) {
+          w = new SafeWShort(v.version);
+        } else if (v instanceof mindustry.io.SaveVersion) {
+          w = new SafeWVer(v.version);
+        } else {
+          continue;
         }
-        Log.info("[combine] save versions patched (@)", mindustry.io.SaveIO.versions.size);
-      } catch (Throwable t) {
-        Log.err("[combine] failed to patch save versions", t);
+        mindustry.io.SaveIO.versions.put(v.version, w);
       }
+    } catch (Throwable t) {
+      Log.err("[combine] failed to patch save versions", t);
+    }
 
+    try {
       getWhiteList();
-      Loads.load();
       processModBlocks();
       processWalls();
+      createLinkBlocks();
       for (var entry : Replacer.replaced) {
         postInit(entry.value);
       }
-      for (var b : Vars.content.blocks()) {
-        if (b instanceof CoreBlock c) {
-          UnitType u = c.unitType;
-          for (int i = 0; i < c.size; i++) {
-            Weapon w = new MultiBuildWeapon() {
-              {
-                mirror = false;
-                x = 0f;
-                y = 2f;
-                speedMulti = 1f;
-              }
-            };
-            w.load();
-            u.weapons.add(w);
-          }
-          Groups.unit.each(un -> un.type == u, un -> un.setupWeapons(u));
+    } catch (Throwable t) {
+      Log.err("[combine] content setup failed", t);
+    }
+  }
 
-        }
-      }
-    });
+  /** 客户端才有的贴图/图标环境（专用服务器 Core.atlas 为 null）。 */
+  static boolean visuals() {
+    return !Vars.headless && arc.Core.atlas != null;
   }
 
   void getWhiteList() {
@@ -169,18 +252,64 @@ public class Main extends Mod {
       metaFile = mod.root.child(fileName);
     }
     if (metaFile == null) {
-      Log.info("has no whitelist.json");
       return;
     }
     json = reader.parse(metaFile);
     if (json == null) {
-      Log.info("whitelist.json is empty or invalid, using default empty list");
       return;
     }
     try {
       String[] array = json.asStringArray();
       list.set(array);
     } finally {
+    }
+  }
+
+  void createLinkBlocks() {
+    if (comboConnector != null)
+      return;
+
+    comboConnector = new ComboConnector("connection");
+    comboConnector.requirements(Category.distribution, BuildVisibility.shown,
+        mindustry.type.ItemStack.with(Items.copper, 40, Items.lead, 30));
+    comboConnector.localizedName = "组合连接器";
+    comboConnector.description = "连接两个组合体。连接器必须连续相邻地铺在两个组合体之间，才能共享物品、液体和电力。";
+    comboConnector.health = 90;
+    comboConnector.size = 1;
+    comboConnector.alwaysUnlocked = true;
+    comboConnector.init();
+    comboConnector.postInit();
+    if (visuals()) {
+      comboConnector.load();
+      comboConnector.loadIcon();
+    }
+
+    comboNode = new ComboNode("node");
+    comboNode.requirements(Category.distribution, BuildVisibility.shown,
+        mindustry.type.ItemStack.with(Items.copper, 80, Items.lead, 80, Items.silicon, 30));
+    comboNode.localizedName = "组合节点";
+    comboNode.description = "像电力节点一样在范围内连接组合体，共享物品、液体、电力和热量。";
+    comboNode.health = 120;
+    comboNode.size = 1;
+    comboNode.alwaysUnlocked = true;
+    comboNode.maxNodes = 3;
+    comboNode.laserRange = 6f;
+    comboNode.init();
+    comboNode.postInit();
+    if (visuals()) {
+      comboNode.load();
+      comboNode.loadIcon();
+    }
+
+    addTech(mindustry.content.Blocks.coreShard, comboConnector);
+    addTech(comboConnector, comboNode);
+  }
+
+  void addTech(mindustry.world.Block parent, mindustry.world.Block child) {
+    if (parent != null && parent.techNode != null) {
+      new TechNode(parent.techNode, child, child.requirements);
+    } else {
+      child.alwaysUnlocked = true;
     }
   }
 
@@ -359,10 +488,8 @@ public class Main extends Mod {
         combo = ct;
       } else if (isUnitFactory) {
         combo = createCombo(b, CombinedUnitFactory.class);
-        Log.info("[combine] unit factory combined: @", b.name);
       } else if (isReconstructor) {
         combo = createCombo(b, CombinedReconstructor.class);
-        Log.info("[combine] reconstructor combined: @", b.name);
       } else if (isPump) {
         combo = createCombo(b, CombinedPump.class);
       } else if (isSolidPump) {
@@ -378,7 +505,8 @@ public class Main extends Mod {
         copyFields(b, combo);
         combo.init();
         combo.postInit();
-        combo.loadIcon();
+        if (visuals())
+          combo.loadIcon();
         postInit(combo);
       } catch (Throwable th) {
         // FIX: 单个方块初始化失败不再拖垮整个模组
@@ -418,9 +546,11 @@ public class Main extends Mod {
         lw.update = true;
         lw.init();
         lw.postInit();
-        lw.loadIcon();
+        if (visuals())
+          lw.loadIcon();
         if (isShield) {
-          lw.glowRegion = arc.Core.atlas.find(b.name + "-glow");
+          if (visuals())
+            lw.glowRegion = arc.Core.atlas.find(b.name + "-glow");
           lw.stats = new mindustry.world.meta.Stats();
           lw.setStats();
           lw.setBars();

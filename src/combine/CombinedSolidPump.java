@@ -374,7 +374,7 @@ public class CombinedSolidPump extends SolidPump {
 
             liquidDrop = result;
             float fraction = Math.max(validTiles + boost + (attribute == null ? 0 : attribute.env()), 0);
-            float room = Math.max(0f, comboTotalLiquidCap - liquids.get(result));
+            float room = Math.max(0f, comboTotalLiquidCap - ComboReflect.liquidTotal(liquids));
 
             if (efficiency > 0 && room > 0.001f) {
                 float maxPump = Math.min(room, pumpAmount * delta() * fraction * efficiency);
@@ -432,7 +432,7 @@ public class CombinedSolidPump extends SolidPump {
                     if (icon == null)
                         icon = Core.atlas.find("clear");
                     t.add(new Image(icon)).size(8 * 4);
-                    int count = group().size;
+                    int count = ComboNet.displayMembers(this, group().size).size;
                     String title = count > 1
                             ? "[accent]组合固体系泵[] x" + count + "\\n" + block.getDisplayName(tile)
                             : block.getDisplayName(tile);
@@ -493,7 +493,7 @@ public class CombinedSolidPump extends SolidPump {
             table.add("[lightgray]组合体构成:").left();
             table.row();
             ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (CombinedSolidPumpBuild member : group()) {
+            for (Building member : ComboNet.displayMembers(this, group().size)) {
                 if (member.isValid()) {
                     int old = blockCounts.get(member.block, 0);
                     blockCounts.put(member.block, old + 1);

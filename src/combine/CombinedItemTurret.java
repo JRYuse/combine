@@ -164,13 +164,15 @@ public class CombinedItemTurret extends ItemTurret {
     super.setBars();
 
     // 移除原版及历史版本注册的所有 ammo 前缀条目，避免任何同名残留。
-    for (String barKey : barMap.keys()) {
+    // 注意：这里会 removeBar（改 map），必须先拷一份 key 再遍历，
+    // 否则边遍历边删会踩 arc 迭代器的 index 越界（原版 titan 炮台就必崩）。
+    for (String barKey : barMap.keys().toSeq()) {
       if (barKey.startsWith("ammo"))
         removeBar(barKey);
     }
 
     // 原版可能注册 "liquid" 或 "liquid-water"，先删除，避免和自定义液体条重复。
-    for (String barKey : barMap.keys()) {
+    for (String barKey : barMap.keys().toSeq()) {
       if (barKey.startsWith("liquid"))
         removeBar(barKey);
     }
@@ -926,7 +928,7 @@ public class CombinedItemTurret extends ItemTurret {
     
 
     @Override
-    public void display(Table table) {
+        public void display(Table table) {
       table.table(cont -> {
         cont.top().left();
         cont.defaults().growX().left();
@@ -936,7 +938,7 @@ public class CombinedItemTurret extends ItemTurret {
           if (icon == null)
             icon = Core.atlas.find("clear");
           t.add(new Image(icon)).size(8 * 4);
-          int count = group().size;
+          int count = ComboNet.displayMembers(this, group().size).size;
           String title = count > 1 ? "[accent]组合物品炮塔[] x" + count + "\n" + block.getDisplayName(tile)
               : block.getDisplayName(tile);
           t.labelWrap(title).left().width(160f).padLeft(4);
@@ -966,7 +968,7 @@ public class CombinedItemTurret extends ItemTurret {
       table.add("[lightgray]组合体构成:").left();
       table.row();
       ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-      for (CombinedItemTurretBuild member : group()) {
+      for (Building member : ComboNet.displayMembers(this, group().size)) {
         if (member.isValid()) {
           int old = blockCounts.get(member.block, 0);
           blockCounts.put(member.block, old + 1);

@@ -455,6 +455,7 @@ public class CombinedCrafter extends GenericCrafter {
                             }
                         }
                     }
+                    sum += ComboNet.heatFor(l);
                     l.comboPooledHeat = sum;
                     l.comboPooledConsumers = Math.max(consumers, 1);
                 }
@@ -641,9 +642,6 @@ public class CombinedCrafter extends GenericCrafter {
                 }
             }
 
-            Log.info("[组合工厂] 重建组合体: 领导者=@(@,@), 成员数=@, 总液容=@, 总物容=@",
-                    newLeader.block.localizedName, newLeader.tile.x, newLeader.tile.y, newGroup.size,
-                    totalLiqCap, totalItemCap);
         }
 
         public void collectInvolvedTypes(Seq<CombinedCrafterBuild> group, Seq<Item> outItems, Seq<Liquid> outLiquids) {
@@ -929,7 +927,7 @@ public class CombinedCrafter extends GenericCrafter {
                         for (Liquid liquid : content.liquids()) {
                             float amt = member.liquids.get(liquid);
                             if (amt > 0.001f) {
-                                float currentTotal = leader.liquids.currentAmount();
+                                float currentTotal = ComboReflect.liquidTotal(leader.liquids);
                                 float canAccept = Math.max(0f, totalLiquidCap - currentTotal);
                                 float transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0.001f)
@@ -964,9 +962,6 @@ public class CombinedCrafter extends GenericCrafter {
                 }
             }
 
-            Log.info("[组合工厂] 模块共享完成: 领导者物品总数=@, 液体总数=@",
-                    leader.items != null ? leader.items.total() : 0,
-                    leader.liquids != null ? leader.liquids.currentAmount() : 0f);
         }
 
         // -------------------- 生命周期 --------------------
@@ -1195,7 +1190,7 @@ public class CombinedCrafter extends GenericCrafter {
             if (outputLiquids != null) {
                 max = 0f;
                 for (var s : outputLiquids) {
-                    float value = (comboTotalLiquidCap - liquids.get(s.liquid)) / (s.amount * edelta());
+                    float value = (comboTotalLiquidCap - ComboReflect.liquidTotal(liquids)) / (s.amount * edelta());
                     scaling = Math.min(scaling, value);
                     max = Math.max(max, value);
                 }
@@ -1257,8 +1252,6 @@ public class CombinedCrafter extends GenericCrafter {
                             sp.append(stack.item.name).append('=').append(items.get(stack.item))
                               .append('/').append(getMaximumAccepted(stack.item)).append(' ');
                     }
-                    Log.info("[组合工厂][判定] @(@) sep独立判定 -> @ 产物: @",
-                        tileX(), tileY(), sepDecision, sp.toString());
                 }
                 return sepDecision;
             }
@@ -1274,7 +1267,7 @@ public class CombinedCrafter extends GenericCrafter {
             if (outputLiquids != null && !ignoreLiquidFullness) {
                 boolean allFull = true;
                 for (var output : outputLiquids) {
-                    if (liquids.get(output.liquid) >= comboTotalLiquidCap - 0.001f) {
+                    if (ComboReflect.liquidTotal(liquids) >= comboTotalLiquidCap - 0.001f) {
                         if (!dumpExtraLiquid)
                             return false;
                     } else {
@@ -1315,7 +1308,7 @@ public class CombinedCrafter extends GenericCrafter {
             // FIX[液体超容]: 组合体缩容(拆成员)后上限变小, 之前合法灌入的液体会搁浅超标,
             // 堵住后续合法进液——组长把总量截回组容量(从量最大的液体开始扣)
             if (isLeader() && liquids != null) {
-                float over = liquids.currentAmount() - comboTotalLiquidCap;
+                float over = ComboReflect.liquidTotal(liquids) - comboTotalLiquidCap;
                 if (over > 0.001f) {
                     for (Liquid l : content.liquids()) {
                         float have = liquids.get(l);
@@ -1360,11 +1353,6 @@ public class CombinedCrafter extends GenericCrafter {
                 diagStamp = System.currentTimeMillis();
                 float heatEff0 = cb.heatRequirement > 0 ? Math.min(availableHeat() / cb.heatRequirement, 1f) : 1f;
                 if (cb.mode == Mode.heatcrafter) heatEff0 = heatEfficiency();
-                Log.info("[组合工厂][工厂] @(@,@) eff=@ heatEff=@ prog=@ inc=@ cap=@ liqTot=@ liqShr=@",
-                    tileX(), tileY(), cb.mode, efficiency, heatEff0, progress,
-                    getProgressIncrease(craftTime), comboTotalItemCap,
-                    liquids != null ? liquids.currentAmount() : -1f,
-                    liquids != null && leader() != null ? (liquids == leader().liquids) : "null");
             }
             // 热量需求检查（availableHeat() 只读直接相邻的热源）
             float heatEff = 1f;
@@ -1384,7 +1372,8 @@ public class CombinedCrafter extends GenericCrafter {
                         float inc = getProgressIncrease(1f);
                         for (var output : outputLiquids) {
                             handleLiquid(this, output.liquid,
-                                    Math.min(output.amount * inc, comboTotalLiquidCap - liquids.get(output.liquid)));
+                                    Math.min(output.amount * inc,
+                                            Math.max(0f, comboTotalLiquidCap - ComboReflect.liquidTotal(liquids))));
                         }
                     }
 
@@ -1422,7 +1411,8 @@ public class CombinedCrafter extends GenericCrafter {
                         float inc = getProgressIncrease(1f);
                         for (var output : outputLiquids) {
                             handleLiquid(this, output.liquid,
-                                    Math.min(output.amount * inc, comboTotalLiquidCap - liquids.get(output.liquid)));
+                                    Math.min(output.amount * inc,
+                                            Math.max(0f, comboTotalLiquidCap - ComboReflect.liquidTotal(liquids))));
                         }
                     }
 
@@ -1450,7 +1440,8 @@ public class CombinedCrafter extends GenericCrafter {
                     float inc = getProgressIncrease(1f);
                     for (var output : outputLiquids) {
                         handleLiquid(this, output.liquid,
-                                Math.min(output.amount * inc, comboTotalLiquidCap - liquids.get(output.liquid)));
+                                Math.min(output.amount * inc,
+                                        Math.max(0f, comboTotalLiquidCap - ComboReflect.liquidTotal(liquids))));
                     }
                 }
 
@@ -1491,9 +1482,6 @@ public class CombinedCrafter extends GenericCrafter {
                     for (mindustry.world.consumers.Consume cons : block.consumers)
                         cs.append(cons.getClass().getSimpleName()).append(' ');
                 }
-                Log.info("[组合工厂][分离] @(@) hr=@ heff=@ eff=@ prog=@ inc=@ warm=@ itemsTot=@ consumers=@ 产物: @",
-                    tileX(), tileY(), cb.heatRequirement, heatEfficiency, efficiency, progress,
-                    getProgressIncrease(craftTime), warmup, items.total(), cs.toString(), sb.toString());
             }
 
             if (efficiency > 0 && heatEfficiency > 0) {
@@ -1542,12 +1530,6 @@ public class CombinedCrafter extends GenericCrafter {
             // DIAG[sep]: 抽取与产出结果 (4秒节流, 仅 leader)
             if (isLeader() && System.currentTimeMillis() - diagStamp2 >= 4000L) {
                 diagStamp2 = System.currentTimeMillis();
-                Log.info("[组合工厂][产出] @(@) sum=@ pick=@ pickAmt=@ pickCap=@ add后=@",
-                    tileX(), tileY(), sum,
-                    item != null ? item.name : "null",
-                    item != null ? items.get(item) : -1,
-                    item != null ? getMaximumAccepted(item) : -1,
-                    item != null ? items.get(item) + 1 : -1);
             }
 
             consume();
@@ -1637,9 +1619,9 @@ public class CombinedCrafter extends GenericCrafter {
                         // 改为: 中间产物只在池子>=90%满容时才外送, 平时留在组内共享池
                         boolean shouldDump = !isIntermediate
                                 || (shouldDumpIntermediateLiquid(output.liquid)
-                                        && liquids.get(output.liquid) >= comboTotalLiquidCap * 0.9f);
+                                        && ComboReflect.liquidTotal(liquids) >= comboTotalLiquidCap * 0.9f);
                         boolean forceDump = isIntermediate
-                                && liquids.get(output.liquid) >= comboTotalLiquidCap * 0.99f;
+                                && ComboReflect.liquidTotal(liquids) >= comboTotalLiquidCap * 0.99f;
                         if (shouldDump || forceDump)
                             dumpLiquid(output.liquid, 2f, dir);
                     }
@@ -1784,14 +1766,14 @@ public class CombinedCrafter extends GenericCrafter {
                     break;
                 }
             }
-            return needed && liquids.currentAmount() < comboTotalLiquidCap - 0.001f;
+            return needed && ComboReflect.liquidTotal(liquids) < comboTotalLiquidCap - 0.001f;
         }
 
         @Override
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float currentTotal = liquids.currentAmount();
+            float currentTotal = ComboReflect.liquidTotal(liquids);
             float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
@@ -1835,7 +1817,7 @@ public class CombinedCrafter extends GenericCrafter {
                     if (icon == null)
                         icon = Core.atlas.find("clear");
                     t.add(new Image(icon)).size(8 * 4);
-                    int count = group().size;
+                    int count = ComboNet.displayMembers(this, group().size).size;
                     String title = count > 1
                             ? "[accent]组合工厂[] x" + count + "\n" + block.getDisplayName(tile)
                             : block.getDisplayName(tile);
@@ -1995,8 +1977,6 @@ public class CombinedCrafter extends GenericCrafter {
                             la.append(lq.name).append('=').append(amt).append(' ');
                     }
                 }
-                Log.info("[组合工厂][液条] @(@) involved=[@] 成员缓存=@ 共享池: [@]",
-                    tileX(), tileY(), iv.toString(), mc.toString(), la.toString());
             }
 
             // FIX[液条]: 缓存全空(如克隆体未走完整初始化管线)时, 回退到共享池里
@@ -2030,7 +2010,7 @@ public class CombinedCrafter extends GenericCrafter {
             table.row();
 
             ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (CombinedCrafterBuild member : group()) {
+            for (Building member : ComboNet.displayMembers(this, group().size)) {
                 if (member.isValid()) {
                     int old = blockCounts.get(member.block, 0);
                     blockCounts.put(member.block, old + 1);

@@ -394,6 +394,14 @@ public class LinkWall extends Wall {
         if (damage <= 0f)
           return;
       }
+      // FIX[生命倍率]: 与原版 BuildingComp.damage 一致——组血池分摊前必须按
+      // state.rules.blockHealth(team) 折算伤害，否则规则里的建筑生命倍率对组合墙失效
+      float dm = Vars.state.rules.blockHealth(team);
+      if (Mathf.zero(dm)) {
+        damage = health + 1f;
+      } else {
+        damage /= dm;
+      }
       Seq<LinkWallBuild> members = new Seq<>(group());
       if (members.isEmpty())
         return;
