@@ -76,6 +76,7 @@ public class Main extends Mod {
 
   @Override
   public void init() {
+    Settings.load();
     // 施工替换：残留的旧实例引用（其他模组静态字段等）→ 组合实例。
     Events.on(BlockBuildBeginEvent.class, e -> {
       if (e.breaking)
@@ -143,8 +144,7 @@ public class Main extends Mod {
       for (var b : Vars.content.blocks()) {
         if (b instanceof CoreBlock c) {
           UnitType u = c.unitType;
-          for (int i = 0; i < c.size; i++) {
-            Weapon w = new MultiBuildWeapon() {
+            Weapon w = new TestMultiBuildWeapon() {
               {
                 mirror = false;
                 x = 0f;
@@ -154,7 +154,6 @@ public class Main extends Mod {
             };
             w.load();
             u.weapons.add(w);
-          }
           Groups.unit.each(un -> un.type == u, un -> un.setupWeapons(u));
 
         }

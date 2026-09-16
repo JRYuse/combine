@@ -1,0 +1,4 @@
+setting.combine-max-multi-build.name = 最大建造数
+setting.combine-max-multi-build.description = 多倍建造单次最多可建造数
+setting.combine-build-boost.name = 空建造位额外加速
+setting.combine-build-boost.description = 建造速度额外乘以最大建造数除以当前建造数
