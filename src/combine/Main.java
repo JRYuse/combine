@@ -150,6 +150,7 @@ public class Main extends Mod {
                 x = 0f;
                 y = 2f;
                 speedMulti = 1f;
+                maxBuild = c.size;
               }
             };
             w.load();

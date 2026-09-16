@@ -34,8 +34,8 @@ public class TestMultiBuildWeapon extends Weapon {
   public float range = 236f;
   /** 施工速度倍率。 */
   public float speedMulti = 1f;
-//  /** 同时建造/拆除的建筑数量上限。 */
-//  public int maxPlans = 45;
+  /** 同时建造/拆除的建筑数量上限。 */
+  public int maxBuild = 5;
 
   public TestMultiBuildWeapon() {
     rotate = true;
@@ -83,7 +83,7 @@ public class TestMultiBuildWeapon extends Weapon {
         check(unit, m);
 
         // 2) 补充至 maxPlans
-        if (m.plans.size < Settings.maxBuild()) {
+        if (m.plans.size < getMaxBuild()) {
           findTargets(targetUnit, unit, m);
         }
       }
@@ -95,7 +95,7 @@ public class TestMultiBuildWeapon extends Weapon {
           ConstructBlock.ConstructBuild target = m.targets.get(i);
           if (target == null) continue;
 
-          float boost = Settings.buildBoost() ? (float) Settings.maxBuild() / m.plans.size : 1;
+          float boost = Settings.buildBoost() ? (float) getMaxBuild() / m.plans.size : 1;
           float bs = 1f / target.buildCost * unit.type.buildSpeed * boost
                   * unit.buildSpeedMultiplier * state.rules.buildSpeed(unit.team) * speedMulti * Time.delta;
           if (plan.breaking) {
@@ -128,7 +128,7 @@ public class TestMultiBuildWeapon extends Weapon {
   void findTargets(Unit unit, Unit weaponUnit, BuildWeaponMount m) {
     Queue<BuildPlan> plans = unit.plans();
     //
-    for (int i = 0; i < plans.size && m.plans.size < Settings.maxBuild(); i++) {
+    for (int i = 0; i < plans.size && m.plans.size < getMaxBuild(); i++) {
       BuildPlan p = plans.get(i);
       if (m.plans.contains(p)) continue;
       if (!weaponUnit.within(p.x * 8f, p.y * 8f, range)) continue;
@@ -136,6 +136,10 @@ public class TestMultiBuildWeapon extends Weapon {
 
       tryClaimPlan(unit, m, p);
     }
+  }
+
+  int getMaxBuild() {
+      return Settings.maxBuild() < 0 ? maxBuild : Settings.maxBuild();
   }
 
   /** 尝试认领一个计划（建造或拆除）。返回是否成功认领。 */
