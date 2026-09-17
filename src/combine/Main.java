@@ -55,6 +55,7 @@ import mindustry.world.blocks.production.Drill;
 import mindustry.world.blocks.production.GenericCrafter;
 import mindustry.world.blocks.production.HeatCrafter;
 import mindustry.world.blocks.production.Incinerator;
+import mindustry.world.blocks.production.Fracker;
 import mindustry.world.blocks.production.Pump;
 import mindustry.world.blocks.production.SolidPump;
 import mindustry.world.blocks.defense.Wall;
@@ -97,9 +98,11 @@ public class Main extends Mod {
       Block combo = Replacer.replaced.get(e.tile.block());
       if (combo != null && e.tile.build != null && !e.tile.build.dead) {
         e.tile.setBlock(combo, e.tile.team(), e.tile.build.rotation);
-        // 置脏即可：一次放置会触发多个事件，ComboNet 每帧最多重建一次（见 markDirty 注释）
-        ComboNet.markDirty();
       }
+      // 置脏即可：一次放置会触发多个事件，ComboNet 每帧最多重建一次（见 markDirty 注释）。
+      // 这里**无条件**置脏：拆掉一台机器、放个传送带……都可能让"本地组合体/共享池"的分组变化，
+      // 而 ComboNet 的全局拆池（同一份模块被多个组件共用时按容量拆开）必须有机会跑。
+      ComboNet.markDirty();
     });
 
     // 读档窗口：WorldLoadBegin → 读档语义合并（去重）；结束前不做运行期相加
@@ -407,6 +410,8 @@ public class Main extends Mod {
       boolean isLaserTurret = isExact(b, LaserTurret.class);
       boolean isPump = isExact(b, Pump.class) && !isExact(b, SolidPump.class);
       boolean isSolidPump = isExact(b, SolidPump.class);
+      // 抽油机（Fracker / oil-extractor）：SolidPump 的子类，会"吃物品"换油，单独走 CombinedFracker
+      boolean isFracker = isExact(b, Fracker.class);
       boolean isWallCrafter = isExact(b, WallCrafter.class);
       boolean isUnitFactory = isExact(b, UnitFactory.class);
       boolean isReconstructor = isExact(b, Reconstructor.class);
@@ -416,7 +421,7 @@ public class Main extends Mod {
           && !isRegen && !isOverdrive && !isMend && !isForce && !isStorage
           && !isLogic && !isContLiquidTurret && !isLiquidTurret && !isItemTurret
           && !isPowerTurret && !isLaserTurret
-          && !isPump && !isSolidPump && !isWallCrafter
+          && !isPump && !isSolidPump && !isFracker && !isWallCrafter
           && !isUnitFactory && !isReconstructor)
         continue;
 
@@ -429,6 +434,7 @@ public class Main extends Mod {
           || b instanceof CombinedContinuousLiquidTurret || b instanceof CombinedLiquidTurret
           || b instanceof CombinedItemTurret || b instanceof CombinedTurret
           || b instanceof CombinedPump
+          || b instanceof CombinedFracker
           || b instanceof CombinedWallCrafter
           || b instanceof CombinedUnitFactory
           || b instanceof CombinedReconstructor)
@@ -522,6 +528,10 @@ public class Main extends Mod {
         combo = createCombo(b, CombinedReconstructor.class);
       } else if (isPump) {
         combo = createCombo(b, CombinedPump.class);
+      } else if (isFracker) {
+        // Fracker 是 SolidPump 子类，但会"吃物品"换油（原版 FrackerBuild 的 accumulator/consume），
+        // 所以单独用 CombinedFracker：液体池 + 物品池都按整组共享
+        combo = createCombo(b, CombinedFracker.class);
       } else if (isSolidPump) {
         combo = createCombo(b, CombinedSolidPump.class);
       } else if (isWallCrafter) {
