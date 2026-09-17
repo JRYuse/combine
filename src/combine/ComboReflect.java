@@ -2,12 +2,17 @@ package combine;
 
 import arc.struct.Seq;
 import mindustry.gen.Building;
+import mindustry.type.Item;
+import mindustry.type.Liquid;
 import mindustry.world.Block;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+
+import static mindustry.Vars.content;
+import static mindustry.Vars.state;
 
 /**
  * 反射访问所有 Combined* / IUnitCombo 建筑共有的组合字段。
@@ -40,9 +45,12 @@ public class ComboReflect {
         Seq<Building> out = new Seq<>();
         if(b == null) return out;
 
+        // 注意用 add 而不是 addUnique：各组合类自己的 group() 已经是去重的集合，
+        // 这里只是过滤 isValid。addUnique 在 Seq 上是线性查找，对 N 台一组的组合体
+        // 就是 O(N²) —— 信息面板每帧都要调这个，几百台一组时会明显掉帧。
         if(b instanceof IUnitCombo u){
             for(IUnitCombo m : u.group()){
-                if(m instanceof Building bl && bl.isValid()) out.addUnique(bl);
+                if(m instanceof Building bl && bl.isValid()) out.add(bl);
             }
             if(out.isEmpty()) out.add(b);
             return out;
@@ -51,7 +59,7 @@ public class ComboReflect {
         Object r = call(b, "group");
         if(r instanceof Seq<?> seq){
             for(Object o : seq){
-                if(o instanceof Building bl && bl.isValid()) out.addUnique(bl);
+                if(o instanceof Building bl && bl.isValid()) out.add(bl);
             }
         }
         if(out.isEmpty()) out.add(b);
@@ -199,7 +207,6 @@ public class ComboReflect {
         Field f = findField(obj.getClass(), name);
         if(f == null) return;
         try{
-            f.setAccessible(true);
             f.setInt(obj, value);
         }catch(Throwable ignored){
         }
@@ -209,7 +216,6 @@ public class ComboReflect {
         Field f = findField(obj.getClass(), name);
         if(f == null) return;
         try{
-            f.setAccessible(true);
             f.setFloat(obj, value);
         }catch(Throwable ignored){
         }
@@ -219,7 +225,6 @@ public class ComboReflect {
         Field f = findField(obj.getClass(), name);
         if(f == null) return;
         try{
-            f.setAccessible(true);
             f.setBoolean(obj, value);
         }catch(Throwable ignored){
         }
@@ -234,7 +239,6 @@ public class ComboReflect {
         Field f = findField(obj.getClass(), name);
         if(f == null) return null;
         try{
-            f.setAccessible(true);
             return f.get(obj);
         }catch(Throwable ignored){
             return null;
@@ -245,7 +249,6 @@ public class ComboReflect {
         Method m = findMethod(obj.getClass(), name);
         if(m == null) return null;
         try{
-            m.setAccessible(true);
             return m.invoke(obj);
         }catch(Throwable ignored){
             return null;
@@ -256,7 +259,6 @@ public class ComboReflect {
         Method m = findMethod(obj.getClass(), name, types);
         if(m == null) return null;
         try{
-            m.setAccessible(true);
             return m.invoke(obj, value);
         }catch(Throwable ignored){
             return null;
@@ -264,29 +266,202 @@ public class ComboReflect {
     }
 
     public static Field findField(Class<?> clazz, String name){
+        // FIX[放置卡顿]: 字段查找必须缓存（按 Class 分层，避免每次拼字符串 key）。
+        // isComboBuild() 走的是 hasField("comboGroup")，而 ComboNet.rebuild 里
+        // "每栋建筑 × 每趟循环" 都要问一次；原实现每次都逐层 getDeclaredField，
+        // 每层 miss 还会抛一次 NoSuchFieldException（构造异常很贵）——
+        // 几百栋建筑时单趟 rebuild 就能吃掉好几毫秒，放在组合体旁边放连接器/节点
+        // 那一下的疯狂掉帧就是这么来的。
+        java.util.concurrent.ConcurrentHashMap<String, Field> perClass = fieldCache.get(clazz);
+        if(perClass == null){
+            perClass = new java.util.concurrent.ConcurrentHashMap<>();
+            fieldCache.put(clazz, perClass);
+        }
+        Field cached = perClass.get(name);
+        if(cached != null) return cached;
+        java.util.Set<String> missing = missingFieldCache.get(clazz);
+        if(missing != null && missing.contains(name)) return null;
+
         Class<?> c = clazz;
         while(c != null && c != Object.class){
             try{
-                return c.getDeclaredField(name);
+                Field f = c.getDeclaredField(name);
+                // 缓存时就 setAccessible：反射调用点每次 setAccessible 很贵，
+                // 而 rebuild 里这些调用是"每建筑 × 每字段"量级的。
+                try{ f.setAccessible(true); }catch(Throwable ignored){}
+                perClass.put(name, f);
+                return f;
             }catch(NoSuchFieldException ignored){
                 c = c.getSuperclass();
             }
         }
+        if(missing == null){
+            missing = java.util.concurrent.ConcurrentHashMap.newKeySet();
+            missingFieldCache.put(clazz, missing);
+        }
+        missing.add(name);
         return null;
     }
 
+    private static final java.util.concurrent.ConcurrentHashMap<Class<?>, java.util.concurrent.ConcurrentHashMap<String, Field>> fieldCache =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    /** 记下"这个类确实没有这个字段"（ConcurrentHashMap 不允许 null 值，所以单独放）。 */
+    private static final java.util.concurrent.ConcurrentHashMap<Class<?>, java.util.Set<String>> missingFieldCache =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
     public static Method findMethod(Class<?> clazz, String name, Class<?>... types){
+        // 反射查找必须缓存：leader()/group()/preUpdate() 这些桥接方法在
+        //   "每 tick × 每建筑 × 每条搬运请求" 的路径上被调用，
+        // 每次都走一遍 getDeclaredMethod + setAccessible 会直接把帧数吃掉。
+        StringBuilder key = new StringBuilder(name).append('(');
+        if(types != null)
+            for(Class<?> t : types) key.append(t.getName()).append(',');
+        key.append(')');
+        String k = key.toString();
+
+        java.util.concurrent.ConcurrentHashMap<String, Method> perClass = methodCache.get(clazz);
+        if(perClass == null){
+            perClass = new java.util.concurrent.ConcurrentHashMap<>();
+            methodCache.put(clazz, perClass);
+        }
+        Method cached = perClass.get(k);
+        if(cached != null) return cached;
+        // 注意：ConcurrentHashMap 不允许 null 值，所以"找不到"必须记在单独的集合里 ——
+        // 之前把 null 直接 put 进去，一查询没有该方法类的类（例如组合仓库，
+        // 它没有 leader()/group() 方法，靠下面的兜底返回自身）就 NPE 崩客户端。
+        java.util.Set<String> missing = missingMethodCache.get(clazz);
+        if(missing != null && missing.contains(k)) return null;
+
         Class<?> c = clazz;
         while(c != null && c != Object.class){
             try{
                 Method m = types == null || types.length == 0
                     ? c.getDeclaredMethod(name)
                     : c.getDeclaredMethod(name, types);
+                try{ m.setAccessible(true); }catch(Throwable ignored){}
+                perClass.put(k, m);
                 return m;
             }catch(NoSuchMethodException ignored){
                 c = c.getSuperclass();
             }
         }
+        if(missing == null){
+            missing = java.util.concurrent.ConcurrentHashMap.newKeySet();
+            missingMethodCache.put(clazz, missing);
+        }
+        missing.add(k);
         return null;
     }
+
+    private static final java.util.concurrent.ConcurrentHashMap<Class<?>, java.util.concurrent.ConcurrentHashMap<String, Method>> methodCache =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    /** 记下"这个类确实没有这个方法"，避免每次重走父类查找。 */
+    private static final java.util.concurrent.ConcurrentHashMap<Class<?>, java.util.Set<String>> missingMethodCache =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
+    // -------------------- 组级"谁消耗什么"缓存 --------------------
+
+    /**
+     * 组级消耗表缓存（key = 组 leader 的 pos）。
+     *
+     * 每个组合建筑的 acceptItem/acceptLiquid 都要回答"组里有没有人吃这个物品/液体"，
+     * 原先每次都现遍历整组 —— N 台一组的基地里，每条搬运请求都是 O(N)，
+     * 物品一流动就变成每 tick O(N²)，直接卡成幻灯片。
+     * 这里按 tick 缓存一次（同 tick 内组结构变化由 rebuild 后下一 tick 生效，
+     * 消耗表滞后一帧无害），查询变成 O(1)。
+     */
+    private static long consumeTick = Long.MIN_VALUE;
+    private static final arc.struct.IntMap<boolean[]> consumedItemCache = new arc.struct.IntMap<>();
+    private static final arc.struct.IntMap<boolean[]> consumedLiquidCache = new arc.struct.IntMap<>();
+
+    /** 组内是否有成员消耗该物品（含跨类型组合）。 */
+    public static boolean groupConsumesItem(Building self, Item item){
+        if(item == null) return false;
+        boolean[] table = consumedTable(self, true);
+        return table != null && item.id < table.length && table[item.id];
+    }
+
+    /** 组内是否有成员消耗该液体（含跨类型组合）。 */
+    public static boolean groupConsumesLiquid(Building self, Liquid liquid){
+        if(liquid == null) return false;
+        boolean[] table = consumedTable(self, false);
+        return table != null && liquid.id < table.length && table[liquid.id];
+    }
+
+    private static boolean[] consumedTable(Building self, boolean items){
+        if(self == null || state == null) return null;
+        if(consumeTick != state.updateId){
+            consumeTick = state.updateId;
+            consumedItemCache.clear();
+            consumedLiquidCache.clear();
+            neededItemCache.clear();
+        }
+        Building leader = leader(self);
+        if(leader == null) return null;
+        arc.struct.IntMap<boolean[]> cache = items ? consumedItemCache : consumedLiquidCache;
+        boolean[] table = cache.get(leader.pos());
+        if(table != null) return table;
+
+        table = new boolean[items ? content.items().size : content.liquids().size];
+        for(Building m : group(leader)){
+            if(m == null || !m.isValid() || m.block == null) continue;
+            boolean[] filter = items ? m.block.itemFilter : m.block.liquidFilter;
+            if(filter == null) continue;
+            for(int i = 0; i < filter.length && i < table.length; i++)
+                if(filter[i]) table[i] = true;
+        }
+        cache.put(leader.pos(), table);
+        return table;
+    }
+
+    /**
+     * 组内"需要"该物品：普通 filter 消耗 + 单位工厂/蓝图方块的动态配方需求。
+     * （原版 consumesItem 认不出 ConsumeItemDynamic，单位工厂要看 plans 里的需求。）
+     */
+    public static boolean groupNeedsItem(Building self, Item item){
+        if(item == null || self == null || state == null) return false;
+        if(consumeTick != state.updateId){
+            consumeTick = state.updateId;
+            consumedItemCache.clear();
+            consumedLiquidCache.clear();
+            neededItemCache.clear();
+        }
+        Building leader = leader(self);
+        if(leader == null) return false;
+        boolean[] table = neededItemCache.get(leader.pos());
+        if(table == null){
+            table = new boolean[content.items().size];
+            for(Building m : group(leader)){
+                if(m == null || !m.isValid() || m.block == null) continue;
+                boolean[] filter = m.block.itemFilter;
+                if(filter != null)
+                    for(int i = 0; i < filter.length && i < table.length; i++)
+                        if(filter[i]) table[i] = true;
+                // 单位工厂：配方需求是运行期动态的
+                if(m instanceof mindustry.world.blocks.units.UnitFactory.UnitFactoryBuild
+                    && m.block instanceof mindustry.world.blocks.units.UnitFactory uf){
+                    for(mindustry.world.blocks.units.UnitFactory.UnitPlan plan : uf.plans){
+                        for(mindustry.type.ItemStack stack : plan.requirements){
+                            if(stack.item != null && stack.item.id < table.length)
+                                table[stack.item.id] = true;
+                        }
+                    }
+                }
+                // 蓝图方块：正在造什么就吃那台的建造需求
+                if(m instanceof mindustry.world.blocks.payloads.Constructor.ConstructorBuild cb){
+                    Block recipe = cb.recipe();
+                    if(recipe != null && recipe.requirements != null){
+                        for(mindustry.type.ItemStack stack : recipe.requirements){
+                            if(stack.item != null && stack.item.id < table.length)
+                                table[stack.item.id] = true;
+                        }
+                    }
+                }
+            }
+            neededItemCache.put(leader.pos(), table);
+        }
+        return item.id < table.length && table[item.id];
+    }
+
+    private static final arc.struct.IntMap<boolean[]> neededItemCache = new arc.struct.IntMap<>();
 }

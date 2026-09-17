@@ -88,11 +88,20 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
     public class CombinedUnitFactoryBuild extends UnitFactoryBuild implements IUnitCombo {
 
         @Override
+        public boolean shouldAmbientSound() {
+            // FIX[声音线程崩溃]: MindustryX 的环境音在独立 AudioThread（20fps）上调用
+            // shouldAmbientSound()，原版默认实现转调 shouldConsume()；
+            // 组合建筑这一路会读库存/遍历共享序列，跨线程相撞就是 NoSuchElementException。
+            // 组合建筑统一禁用环境音循环（与 CombinedCrafter/CombinedDrill 等一致）。
+            return false;
+        }
+
+        @Override
         public boolean acceptItem(Building source, Item item) {
             if (!block.hasItems)
                 return false;
             // FIX[跨类输入]: consumesItem 认不出 ConsumeItemDynamic（单位工厂），用 groupNeedsItem
-            return IUnitCombo.groupNeedsItem(group(), item)
+            return ComboReflect.groupNeedsItem(this, item)
                     && items.get(item) < getMaximumAccepted(item);
         }
 
@@ -100,23 +109,15 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
         public boolean acceptLiquid(Building source, Liquid liquid) {
             if (!block.hasLiquids)
                 return false;
-            boolean needed = false;
-            for (IUnitCombo m : group()) {
-                Building mb = (Building) m;
-                if (mb.isValid() && mb.block.consumesLiquid(liquid)) {
-                    needed = true;
-                    break;
-                }
-            }
-            return needed && liquids != null && ComboReflect.liquidTotal(liquids) < comboTotalLiquidCap - 0.001f;
+            boolean needed = ComboReflect.groupConsumesLiquid(this, liquid);
+            return needed && liquids != null && liquids.get(liquid) < comboTotalLiquidCap - 0.001f;
         }
 
         @Override
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float currentTotal = ComboReflect.liquidTotal(liquids);
-            float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
+            float canAccept = Math.max(0f, comboTotalLiquidCap - liquids.get(liquid));
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
@@ -304,6 +305,11 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combinedunitfactory:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             table.table(cont -> {
                 cont.top().left();
                 cont.defaults().growX().left();
@@ -352,7 +358,7 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
                 });
                 cont.add(localIO).growX().left();
             }).width(260f).left();
-        }
+                }
 
         public void buildComboBars(Table table) {
             if (!Mathf.zero(block.health, 0.001f)) {

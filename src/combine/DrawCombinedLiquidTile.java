@@ -1,6 +1,5 @@
 package combine;
 
-import combine.CombinedCrafter.CombinedCrafterBuild;
 import mindustry.gen.Building;
 import mindustry.type.Liquid;
 import mindustry.world.Block;
@@ -27,13 +26,16 @@ public class DrawCombinedLiquidTile extends DrawBlock {
 
   @Override
   public void draw(Building build) {
-
-    if (build instanceof CombinedCrafterBuild ccb) {
-      Liquid drawn = drawLiquid != null ? drawLiquid : build.liquids.current();
-      float a = ccb.liquids.get(drawn) / Math.max(ccb.comboTotalItemCap, 1);
-      LiquidBlock.drawTiledFrames(build.block.size, build.x, build.y, padLeft, padRight, padTop, padBottom, drawn,
-          a * alpha);
-    }
+    // 同上：按"这种液体自己的组上限"算比例，且对所有组合建筑生效
+    if (build == null || build.liquids == null)
+      return;
+    Liquid drawn = drawLiquid != null ? drawLiquid : build.liquids.current();
+    if (drawn == null)
+      return;
+    float cap = Math.max(ComboNet.effectiveLiquidCap(build), 1f);
+    float a = build.liquids.get(drawn) / cap;
+    LiquidBlock.drawTiledFrames(build.block.size, build.x, build.y, padLeft, padRight, padTop, padBottom, drawn,
+        a * alpha);
   }
 
   @Override

@@ -346,8 +346,16 @@ public class CombinedPump extends Pump {
 
         // -------------------- 核心逻辑 --------------------
         @Override
+        public boolean shouldAmbientSound() {
+            // FIX[声音线程崩溃]: MindustryX 的环境音在独立 AudioThread（20fps）上调用
+            // shouldAmbientSound()，原版默认实现转调 shouldConsume()；
+            // 组合建筑这一路会读库存/遍历共享序列，跨线程相撞就是
+            // NoSuchElementException。组合建筑统一禁用环境音循环。
+            return false;
+        }
+
         public boolean shouldConsume() {
-            return liquidDrop != null && ComboReflect.liquidTotal(liquids) < comboTotalLiquidCap - 0.01f && enabled;
+            return liquidDrop != null && liquids.get(liquidDrop) < comboTotalLiquidCap - 0.01f && enabled;
         }
 
         @Override
@@ -369,7 +377,7 @@ public class CombinedPump extends Pump {
                 rebuildCombo();
 
             if (efficiency > 0 && liquidDrop != null) {
-                float room = Math.max(0f, comboTotalLiquidCap - ComboReflect.liquidTotal(liquids));
+                float room = Math.max(0f, comboTotalLiquidCap - liquids.get(liquidDrop));
                 float maxPump = Math.min(room, amount * pumpAmount * edelta());
                 liquids.add(liquidDrop, maxPump);
 
@@ -404,6 +412,11 @@ public class CombinedPump extends Pump {
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combinedpump:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             table.table(cont -> {
                 cont.top().left();
                 cont.defaults().growX().left();
@@ -464,7 +477,7 @@ public class CombinedPump extends Pump {
                 });
                 cont.add(comboIO).growX().left();
             }).width(260f).left();
-        }
+                }
 
         public void buildComboIO(Table table) {
             table.left();

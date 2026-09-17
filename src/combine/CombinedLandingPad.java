@@ -494,10 +494,11 @@ public class CombinedLandingPad extends LandingPad {
 
             // 液体超限反注入：池子超过组合总容量（旧档残留/合并超额）时，
             // 把多余液体推回相邻液体网络，而不是截断销毁。
-            if (liquids != null && comboTotalLiquidCap > 0.001f
-                    && ComboReflect.liquidTotal(liquids) > comboTotalLiquidCap + 0.001f
-                    && liquids.current() != null) {
-                dumpLiquid(liquids.current(), 1f, -1);
+            if (liquids != null && comboTotalLiquidCap > 0.001f) {
+                for (Liquid l : content.liquids()) {
+                    if (liquids.get(l) > comboTotalLiquidCap + 0.001f)
+                        dumpLiquid(l, 1f, -1);
+                }
             }
         }
 
@@ -514,15 +515,14 @@ public class CombinedLandingPad extends LandingPad {
             // 只接受冷却液（原版 consumeLiquid 字段本身就是 Liquid），
             // 且按组合池总量限制 —— 原版默认按 block.liquidCapacity(9999) 放行会超限
             boolean needed = consumeLiquid != null && liquid == consumeLiquid;
-            return needed && ComboReflect.liquidTotal(liquids) < comboTotalLiquidCap - 0.001f;
+            return needed && liquids.get(liquid) < comboTotalLiquidCap - 0.001f;
         }
 
         @Override
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float currentTotal = ComboReflect.liquidTotal(liquids);
-            float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
+            float canAccept = Math.max(0f, comboTotalLiquidCap - liquids.get(liquid));
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
@@ -543,6 +543,11 @@ public class CombinedLandingPad extends LandingPad {
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combinedlandingpad:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             table.table(cont -> {
                 cont.top().left();
                 cont.defaults().growX().left();
@@ -623,7 +628,7 @@ public class CombinedLandingPad extends LandingPad {
                 });
                 cont.add(comboIO).growX().left();
             }).width(260f).left();
-        }
+                }
 
         public void buildComboIO(Table table) {
             table.left();

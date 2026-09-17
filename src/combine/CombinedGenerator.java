@@ -275,8 +275,11 @@ public class CombinedGenerator extends ConsumeGenerator {
     public Item selectedFuel;
 
     public boolean hasFilterFuelConsumer() {
-      for (Consume c : block.nonOptionalConsumers) {
-        if (c instanceof ConsumeItemFilter)
+      // 不用迭代器：这些方法可能被环境音线程调用（见 shouldAmbientSound），
+      // 共享 Seq 的迭代器在主线程改动时会抛 NoSuchElementException。
+      Consume[] arr = block.nonOptionalConsumers;
+      for (int i = 0; i < arr.length; i++) {
+        if (arr[i] instanceof ConsumeItemFilter)
           return true;
       }
       return false;
@@ -285,16 +288,32 @@ public class CombinedGenerator extends ConsumeGenerator {
     public boolean acceptsFuel(Item item) {
       if (item == null)
         return false;
-      for (Consume c : block.nonOptionalConsumers) {
-        if (c instanceof ConsumeItemFilter f && f.filter.get(item))
+      Consume[] arr = block.nonOptionalConsumers;
+      for (int i = 0; i < arr.length; i++) {
+        if (arr[i] instanceof ConsumeItemFilter f && f.filter.get(item))
           return true;
       }
       return false;
     }
 
+    /** 所有物品的快照：只在物品总数变化时重建，遍历它不碰共享 Seq 的迭代器。 */
+    private static Item[] itemSnapshot;
+
+    private static Item[] allItems() {
+      Seq<Item> items = content.items();
+      Item[] snap = itemSnapshot;
+      if (snap == null || snap.length != items.size) {
+        snap = items.toArray(Item.class);
+        itemSnapshot = snap;
+      }
+      return snap;
+    }
+
     public Item firstAvailableFuel() {
-      for (Item item : content.items()) {
-        if (acceptsFuel(item) && items.get(item) > 0)
+      Item[] all = allItems();
+      for (int i = 0; i < all.length; i++) {
+        Item item = all[i];
+        if (item != null && acceptsFuel(item) && items.get(item) > 0)
           return item;
       }
       return null;
@@ -306,6 +325,17 @@ public class CombinedGenerator extends ConsumeGenerator {
         return selectedFuel;
       return firstAvailableFuel();
     }
+
+
+        @Override
+        public boolean shouldAmbientSound() {
+            // FIX[声音线程崩溃]: MindustryX 的环境音是在独立 AudioThread 上（20fps）调用
+            // shouldAmbientSound() 的，原版默认实现直接转调 shouldConsume()——
+            // 组合建筑这一路会读库存/遍历共享序列，跨线程一撞就是
+            // NoSuchElementException（崩在 firstAvailableFuel 之类的地方）。
+            // 组合建筑统一禁用环境音循环（和 CombinedCrafter/CombinedDrill 等一致）。
+            return false;
+        }
 
     @Override
     public boolean shouldConsume() {
@@ -331,11 +361,23 @@ public class CombinedGenerator extends ConsumeGenerator {
 
     @Override
     public void consume() {
+      // FIX[双倍烧料]: 一台发电机上通常挂着**多个** ConsumeItemFilter 子类消费者，
+      // 例如燃烧发电机 = ConsumeItemFlammable（可燃物，真正扣料）
+      //              + ConsumeItemExplode（爆炸物检测，原版 trigger() 是空实现，不扣料）；
+      // 放射性发电机 = ConsumeItemRadioactive（扣料）。
+      // 原实现对"每个"过滤器消费者都执行一次 items.remove(fuel, 1)，
+      // 于是有几个过滤器就每次燃烧扣几份燃料 —— 燃烧发电机正好双倍烧煤。
+      // 现在每次燃烧只扣一份：优先扣玩家手动选择的燃料，否则扣当前可用的燃料。
+      boolean fuelConsumed = false;
       for (Consume c : block.nonOptionalConsumers) {
         if (c instanceof ConsumeItemFilter) {
+          if (fuelConsumed)
+            continue;
           Item fuel = currentFuel();
-          if (fuel != null)
+          if (fuel != null) {
             items.remove(fuel, 1);
+            fuelConsumed = true;
+          }
         } else {
           c.trigger(this);
         }
@@ -484,17 +526,11 @@ public class CombinedGenerator extends ConsumeGenerator {
         }
       }
       if (newLeader.liquids != null && totalLiqCap > 0.001f) {
-        float excess = ComboReflect.liquidTotal(newLeader.liquids) - totalLiqCap;
-        if (excess > 0.001f) {
-          for (Liquid liquid : cachedLiquids) {
-            float amt = newLeader.liquids.get(liquid);
-            if (amt > 0.001f) {
-              float remove = Math.min(amt, excess);
-              newLeader.liquids.remove(liquid, remove);
-              excess -= remove;
-              if (excess <= 0.001f)
-                break;
-            }
+        // 上限是"每种液体各自"的：把每种超标液体各自截回组容量
+        for (Liquid liquid : cachedLiquids) {
+          float amt = newLeader.liquids.get(liquid);
+          if (amt > totalLiqCap + 0.001f) {
+            newLeader.liquids.remove(liquid, amt - totalLiqCap);
           }
         }
       }
@@ -697,7 +733,7 @@ public class CombinedGenerator extends ConsumeGenerator {
             for (Liquid liquid : cachedLiquids) {
               float amt = member.liquids.get(liquid);
               if (amt > 0.001f) {
-                float canAccept = Math.max(0f, totalLiquidCap - ComboReflect.liquidTotal(leader.liquids));
+                float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.get(liquid));
                 float transfer = Math.min(amt, canAccept);
                 if (transfer > 0.001f)
                   leader.liquids.add(liquid, transfer);
@@ -942,7 +978,13 @@ public class CombinedGenerator extends ConsumeGenerator {
           itemDurationMultiplier = itemDurationMultipliers.get(fuelNow, 1);
       }
 
-      if (hasItems && valid && generateTime <= 0f) {
+      // FIX[一拥而上]: 燃烧周期只由 leader 执行，并把周期时间按组内台数均分。
+      // 原来每台各自跑周期：一旦池子里有燃料，所有"欠周期"的成员会在同一 tick 各抓 1 个
+      // —— 喂 n 个燃料就被立刻吞掉 n 个（n = 组内发电机台数），而不是按使用时间慢慢烧。
+      // 现在整组当成"一台大机器"：总烧料速率仍然是 N 倍（周期/itemDuration 变 N 倍频），
+      // 但燃料是均匀消耗的，最多只有 1 个是周期起步时被立刻用掉（与原版单台一致）。
+      boolean burnCycle = hasItems && valid && isLeader();
+      if (burnCycle && generateTime <= 0f) {
         consume();
         cb.consumeEffect.at(x + Mathf.range(cb.generateEffectRange), y + Mathf.range(cb.generateEffectRange));
         generateTime = 1f;
@@ -951,17 +993,45 @@ public class CombinedGenerator extends ConsumeGenerator {
       if (outputLiquid != null) {
         float cap = comboLiquidCapacity();
         float added = Math.min(productionEfficiency * delta() * outputLiquid.amount,
-            Math.max(0f, cap - ComboReflect.liquidTotal(liquids)));
+            Math.max(0f, cap - liquids.get(outputLiquid.liquid)));
         liquids.add(outputLiquid.liquid, added);
         dumpLiquid(outputLiquid.liquid);
 
-        if (cb.explodeOnFull && ComboReflect.liquidTotal(liquids) >= cap - 0.01f) {
+        if (cb.explodeOnFull && liquids.get(outputLiquid.liquid) >= cap - 0.01f) {
           kill();
           Events.fire(new GeneratorPressureExplodeEvent(this));
         }
       }
 
-      generateTime -= delta() / (cb.itemDuration * itemDurationMultiplier);
+      if (burnCycle) {
+        generateTime -= delta() / (cb.itemDuration * itemDurationMultiplier / groupSize());
+      }
+    }
+
+    /** 组内有效成员数（最少 1），用于把整组的烧料速率摊到 leader 的燃烧周期上。 */
+    public int groupSize() {
+      CombinedGeneratorBuild l = leader();
+      Seq<CombinedGeneratorBuild> g = l.comboGroup;
+      if (g == null)
+        return 1;
+      int n = 0;
+      for (CombinedGeneratorBuild m : g)
+        if (m != null && m.isValid())
+          n++;
+      return Math.max(n, 1);
+    }
+
+    /**
+     * 共享池语义：只要组里还有成员在燃烧周期内，整组都算"正在运行"，
+     * 否则非 leader 成员（自己不跑周期）会因为 generateTime<=0 被判定成没在运行，
+     * 导致发电量抖成 1/N。
+     */
+    @Override
+    public boolean consumeTriggerValid() {
+      if (generateTime > 0f)
+        return true;
+      CombinedGeneratorBuild l = leader();
+      return l != this && l.generateTime > 0f;
     }
 
     // ---- Impact 模式 ----
@@ -978,7 +1048,8 @@ public class CombinedGenerator extends ConsumeGenerator {
           Events.fire(Trigger.impactPower);
         }
 
-        if (timer(timerUse, cb.impactItemDuration / timeScale)) {
+        // 同上：冲击反应堆的烧料周期也交给 leader，按台数均分
+        if (isLeader() && timer(timerUse, cb.impactItemDuration / timeScale / groupSize())) {
           consume();
         }
       } else {
@@ -998,8 +1069,11 @@ public class CombinedGenerator extends ConsumeGenerator {
       if (fuel > 0 && enabled) {
         nuclearHeat += fullness * cb.nuclearHeating * Math.min(delta(), 4f);
 
-        if (timer(timerUse,
-            cb.itemDuration / (timeScale + (nuclearHeat > 0 ? 1f * nuclearHeat * cb.nuclearHeatConsumeRate : 0f)))) {
+        // 同 consume 模式：烧料周期只由 leader 执行，周期按台数均分（整组总速率不变，
+        // 但不会出现"喂 n 个燃料立刻被 n 台一起吞掉"）
+        if (isLeader() && timer(timerUse,
+            cb.itemDuration / (timeScale + (nuclearHeat > 0 ? 1f * nuclearHeat * cb.nuclearHeatConsumeRate : 0f))
+                / groupSize())) {
           consume();
         }
       } else {
@@ -1097,13 +1171,7 @@ public class CombinedGenerator extends ConsumeGenerator {
       if (hasFilterFuelConsumer() && selectedFuel != null && item != selectedFuel)
         return false;
       // 组合体任一成员需要该物品即可接受（与 CombinedCrafter 一致）
-      boolean needed = false;
-      for (CombinedGeneratorBuild member : group()) {
-        if (member.isValid() && member.block.consumesItem(item)) {
-          needed = true;
-          break;
-        }
-      }
+      boolean needed = ComboReflect.groupConsumesItem(this, item);
       // 每种物品有独立容量上限（与 UI 显示一致），不受池内其他类型占用影响
       return needed && items.get(item) < getMaximumAccepted(item);
     }
@@ -1228,6 +1296,11 @@ public class CombinedGenerator extends ConsumeGenerator {
     // -------------------- 显示面板 --------------------
     @Override
     public void display(Table table) {
+      // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+      ComboUi.safe("combinedgenerator:display", () -> displayInner(table));
+    }
+
+    void displayInner(Table table) {
       table.table(cont -> {
         cont.top().left();
         cont.defaults().growX().left();
@@ -1276,7 +1349,7 @@ public class CombinedGenerator extends ConsumeGenerator {
         });
         cont.add(localIO).growX().left();
       }).width(260f).left();
-    }
+        }
 
     public void buildComboBars(Table table) {
       if (!Mathf.zero(block.health, 0.001f)) {

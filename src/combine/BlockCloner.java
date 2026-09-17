@@ -15,6 +15,7 @@ import mindustry.world.draw.DrawMulti;
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.IdentityHashMap;
 
@@ -387,6 +388,12 @@ public class BlockCloner {
     if (cls.getName().startsWith("arc.struct."))
       return src;
 
+    // lambda / 合成类：JDK 里是隐藏类，反射读写字段会被模块系统拒绝（"some fields could not
+    // be written"），而它们只保存捕获的不可变环境（DrawPart 的 PartProgress/数值等），
+    // 与原实现一样按共享处理即可 —— 不再让它走一遍注定失败的复制。
+    if (cls.isSynthetic() || cls.getName().contains("$$Lambda"))
+      return src;
+
     // FIX[EU 兼容]: Content(Liquid/Item/StatusEffect/UnitType/BulletType...) 与 Block
     // 是内容注册表里的全局单例, 必须按引用共享。原实现是在字段循环里 continue 跳过,
     // 克隆对象中这些字段全部保持构造默认值 null —— EU 匿名绘制/更新类
@@ -396,21 +403,22 @@ public class BlockCloner {
       return src;
 
     try {
-      Object copy;
-      try {
-        copy = cls.getDeclaredConstructor().newInstance();
-      } catch (NoSuchMethodException ex) {
-        Constructor<?> ctor = cls.getDeclaredConstructors()[0];
-        ctor.setAccessible(true);
-        Class<?>[] ptypes = ctor.getParameterTypes();
-        Object[] args = new Object[ptypes.length];
-        for (int i = 0; i < ptypes.length; i++)
-          args[i] = defaultValue(ptypes[i]);
-        copy = ctor.newInstance(args);
+      // FIX[匿名类抽屉]: drawer 结构里大量匿名内部类（例如 sublimate / malign 的 drawer，
+      // 编译名 Blocks$314$1 / Blocks$321$2）的构造器第一个参数是外部实例 $this$0，
+      // 后面跟着捕获变量：无参构造不存在，按"默认参数"造实例会在构造器里直接 NPE
+      // （Cannot assign field "heatColor" because "this.this$0" is null），
+      // 于是整个 drawer 只能退回共享原版对象。改成先 Unsafe 直接分配实例（绕过构造器，
+      // $this$0 与捕获变量随后由字段拷贝填满），最后才退回"默认参数构造器"的老办法。
+      Object copy = allocateInstance(cls);
+      if (copy == null) {
+        deepCopyFallbacks++;
+        lastFallbackReason = cls.getName() + ": no usable constructor";
+        return src;
       }
 
       visited.put(src, copy);
 
+      boolean complete = true;
       Class<?> c = cls;
       while (c != null && c != Object.class) {
         for (Field f : c.getDeclaredFields()) {
@@ -426,23 +434,163 @@ public class BlockCloner {
             if (val == null)
               continue;
             if (val instanceof Block || val instanceof Content) {
-              f.set(copy, val);
+              if (!setField(copy, f, val))
+                complete = false;
               continue;
             }
-            f.set(copy, deepCopy(val, visited));
+            if (!setField(copy, f, deepCopy(val, visited)))
+              complete = false;
           } catch (Throwable t) {
             try {
-              f.set(copy, f.get(src));
+              if (!setField(copy, f, f.get(src)))
+                complete = false;
             } catch (Throwable ignored) {
+              complete = false;
             }
           }
         }
         c = c.getSuperclass();
       }
+      // 字段没写全（例如某些平台不允许反射写 final 字段）时宁可继续共享原对象，
+      // 也不能留一个半成品抽屉（会画出错图，甚至直接 NPE）。
+      if (!complete) {
+        visited.remove(src);
+        deepCopyFallbacks++;
+        lastFallbackReason = cls.getName() + ": some fields could not be written";
+        return src;
+      }
       return copy;
-    } catch (Exception e) {
-      Log.warn("Deep copy fallback for " + cls.getName() + ": " + e.getMessage());
+    } catch (Throwable e) {
+      // 不再逐类刷屏：只记数量，由 logFallbackSummary() 在内容装配结束后汇总一行。
+      deepCopyFallbacks++;
+      lastFallbackReason = cls.getName() + ": " + e;
       return src;
+    }
+  }
+
+  /**
+   * 造一个空实例（字段全默认，随后由拷贝循环填满）。
+   *
+   * 顺序：无参构造 → Unsafe.allocateInstance → 唯一构造器 + 默认参数（老逻辑）。
+   * 匿名内部类只有 Unsafe 这条路走得通 —— 这就是原本几十行 "Deep copy fallback" 的来源。
+   */
+  private static Object allocateInstance(Class<?> cls) {
+    try {
+      Constructor<?> ctor = cls.getDeclaredConstructor();
+      ctor.setAccessible(true);
+      return ctor.newInstance();
+    } catch (Throwable ignored) {
+    }
+
+    Object unsafe = unsafe();
+    if (unsafe != null) {
+      try {
+        return unsafeCall(unsafe, "allocateInstance", new Class<?>[] { Class.class }, new Object[] { cls });
+      } catch (Throwable ignored) {
+      }
+    }
+
+    try {
+      Constructor<?>[] ctors = cls.getDeclaredConstructors();
+      if (ctors.length == 1) {
+        Constructor<?> ctor = ctors[0];
+        ctor.setAccessible(true);
+        Class<?>[] ptypes = ctor.getParameterTypes();
+        Object[] args = new Object[ptypes.length];
+        for (int i = 0; i < ptypes.length; i++)
+          args[i] = defaultValue(ptypes[i]);
+        return ctor.newInstance(args);
+      }
+    } catch (Throwable ignored) {
+    }
+    return null;
+  }
+
+  /** 写字段：反射失败（final 字段等平台限制）时退到 Unsafe 直接写内存。 */
+  private static boolean setField(Object target, Field f, Object value) {
+    try {
+      f.set(target, value);
+      return true;
+    } catch (Throwable ignored) {
+    }
+
+    Object unsafe = unsafe();
+    if (unsafe == null)
+      return false;
+    try {
+      long offset = (Long) unsafeCall(unsafe, "objectFieldOffset",
+          new Class<?>[] { Field.class }, new Object[] { f });
+      Class<?> t = f.getType();
+      if (!t.isPrimitive()) {
+        unsafeCall(unsafe, "putObject", new Class<?>[] { Object.class, long.class, Object.class },
+            new Object[] { target, offset, value });
+      } else if (t == int.class) {
+        unsafeCall(unsafe, "putInt", new Class<?>[] { Object.class, long.class, int.class },
+            new Object[] { target, offset, ((Number) value).intValue() });
+      } else if (t == long.class) {
+        unsafeCall(unsafe, "putLong", new Class<?>[] { Object.class, long.class, long.class },
+            new Object[] { target, offset, ((Number) value).longValue() });
+      } else if (t == float.class) {
+        unsafeCall(unsafe, "putFloat", new Class<?>[] { Object.class, long.class, float.class },
+            new Object[] { target, offset, ((Number) value).floatValue() });
+      } else if (t == double.class) {
+        unsafeCall(unsafe, "putDouble", new Class<?>[] { Object.class, long.class, double.class },
+            new Object[] { target, offset, ((Number) value).doubleValue() });
+      } else if (t == short.class) {
+        unsafeCall(unsafe, "putShort", new Class<?>[] { Object.class, long.class, short.class },
+            new Object[] { target, offset, ((Number) value).shortValue() });
+      } else if (t == byte.class) {
+        unsafeCall(unsafe, "putByte", new Class<?>[] { Object.class, long.class, byte.class },
+            new Object[] { target, offset, ((Number) value).byteValue() });
+      } else if (t == boolean.class) {
+        unsafeCall(unsafe, "putBoolean", new Class<?>[] { Object.class, long.class, boolean.class },
+            new Object[] { target, offset, value });
+      } else {
+        return false;
+      }
+      return true;
+    } catch (Throwable ignored) {
+      return false;
+    }
+  }
+
+  /* ============ Unsafe：全部走反射，避免编译期依赖与安卓 dex 引用问题 ============ */
+
+  private static Object unsafeObject;
+  private static boolean unsafeResolved;
+
+  private static Object unsafe() {
+    if (!unsafeResolved) {
+      unsafeResolved = true;
+      try {
+        Class<?> uc = Class.forName("sun.misc.Unsafe");
+        Field f = uc.getDeclaredField("theUnsafe");
+        f.setAccessible(true);
+        unsafeObject = f.get(null);
+      } catch (Throwable t) {
+        unsafeObject = null;
+      }
+    }
+    return unsafeObject;
+  }
+
+  private static Object unsafeCall(Object unsafe, String name, Class<?>[] types, Object[] args)
+      throws Exception {
+    Method m = unsafe.getClass().getMethod(name, types);
+    return m.invoke(unsafe, args);
+  }
+
+  /** 深拷贝回退计数（仅用于启动日志汇总，避免每个匿名类各刷一行）。 */
+  private static int deepCopyFallbacks = 0;
+  private static String lastFallbackReason = "";
+
+  /** 内容装配结束后调用；没有回退就不打日志。 */
+  public static void logFallbackSummary() {
+    if (deepCopyFallbacks > 0) {
+      Log.warn("[combine] deep copy fell back to sharing @ object(s); last: @",
+          deepCopyFallbacks, lastFallbackReason);
+      deepCopyFallbacks = 0;
+      lastFallbackReason = "";
     }
   }
 

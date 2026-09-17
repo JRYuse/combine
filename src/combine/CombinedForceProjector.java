@@ -300,12 +300,6 @@ public class CombinedForceProjector extends ForceProjector {
                     old.comboTotalItemCap = 0;
                 }
             }
-            // DIAG[bug1]: 力墙组合重建日志
-            if (newLeader.isValid()) {
-                StringBuilder sb = new StringBuilder();
-                for (CombinedForceProjectorBuild b : newGroup)
-                    if (b.isValid()) sb.append(b.block.name).append(' ');
-            }
         }
 
         public void splitAssets(Seq<CombinedForceProjectorBuild> oldGroup, Seq<CombinedForceProjectorBuild> newGroup) {
@@ -472,7 +466,7 @@ public class CombinedForceProjector extends ForceProjector {
                         for (Liquid liquid : content.liquids()) {
                             float amt = m.liquids.get(liquid);
                             if (amt > 0.001f) {
-                                float canAccept = Math.max(0f, totalLiquidCap - ComboReflect.liquidTotal(leader.liquids));
+                                float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.get(liquid));
                                 float transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0.001f)
                                     leader.liquids.add(liquid, transfer);
@@ -816,13 +810,7 @@ public class CombinedForceProjector extends ForceProjector {
         public boolean acceptItem(Building source, Item item) {
             if (!block.hasItems)
                 return false;
-            boolean needed = false;
-            for (CombinedForceProjectorBuild member : group()) {
-                if (member.isValid() && member.block.consumesItem(item)) {
-                    needed = true;
-                    break;
-                }
-            }
+            boolean needed = ComboReflect.groupConsumesItem(this, item);
             return needed && items.get(item) < getMaximumAccepted(item); // 按种类检查：每种原料各有份额，先到的不堵死其它的：不再按种类各装满一份
         }
 
@@ -840,13 +828,7 @@ public class CombinedForceProjector extends ForceProjector {
         public boolean acceptLiquid(Building source, Liquid liquid) {
             if (!block.hasLiquids)
                 return false;
-            boolean needed = false;
-            for (CombinedForceProjectorBuild member : group()) {
-                if (member.isValid() && member.block.consumesLiquid(liquid)) {
-                    needed = true;
-                    break;
-                }
-            }
+            boolean needed = ComboReflect.groupConsumesLiquid(this, liquid);
             return needed && liquids.get(liquid) < comboTotalLiquidCap - 0.001f;
         }
 
@@ -854,8 +836,7 @@ public class CombinedForceProjector extends ForceProjector {
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float currentTotal = ComboReflect.liquidTotal(liquids);
-            float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
+            float canAccept = Math.max(0f, comboTotalLiquidCap - liquids.get(liquid));
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
@@ -868,6 +849,11 @@ public class CombinedForceProjector extends ForceProjector {
         // ===== 显示面板 =====
         @Override
         public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combinedforceprojector:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             table.table(cont -> {
                 cont.top().left();
                 cont.defaults().growX().left();
@@ -935,7 +921,7 @@ public class CombinedForceProjector extends ForceProjector {
                 });
                 cont.add(comboIO).growX().left();
             }).width(260f).left();
-        }
+                }
 
         public void buildComboBars(Table table) {
             if (!Mathf.zero(block.health, 0.001f)) {

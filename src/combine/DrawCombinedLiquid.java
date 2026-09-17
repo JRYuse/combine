@@ -2,7 +2,6 @@ package combine;
 
 import arc.Core;
 import arc.graphics.g2d.TextureRegion;
-import combine.CombinedCrafter.CombinedCrafterBuild;
 import mindustry.gen.Building;
 import mindustry.graphics.Drawf;
 import mindustry.type.Liquid;
@@ -24,13 +23,17 @@ public class DrawCombinedLiquid extends DrawBlock {
 
   @Override
   public void draw(Building build) {
-    if (build instanceof CombinedCrafterBuild ccb) {
-      Liquid drawn = drawLiquid != null ? drawLiquid : build.liquids.current();
-      float a = ccb.liquids.get(drawn) / Math.max(ccb.comboTotalItemCap, 1);
-      Drawf.liquid(liquid, build.x, build.y,
-          a * alpha,
-          drawn.color);
-    }
+    // FIX[液体遮挡]: 这里原来是除以 comboTotalItemCap（物品容量），液体比例永远算不对，
+    // 液体层几乎画不出来。改成"这种液体自己的组上限"（每种液体独立储存，容量=各成员之和），
+    // 并且不再要求必须是组合工厂 —— 钻头/泵等带液体的组合体也要画。
+    if (build == null || build.liquids == null)
+      return;
+    Liquid drawn = drawLiquid != null ? drawLiquid : build.liquids.current();
+    if (drawn == null)
+      return;
+    float cap = Math.max(ComboNet.effectiveLiquidCap(build), 1f);
+    float a = build.liquids.get(drawn) / cap;
+    Drawf.liquid(liquid, build.x, build.y, a * alpha, drawn.color);
   }
 
   @Override

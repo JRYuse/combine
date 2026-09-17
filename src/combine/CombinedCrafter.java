@@ -118,6 +118,20 @@ public class CombinedCrafter extends GenericCrafter {
     public Seq<Item> cachedItems = new Seq<>();
     public Seq<Liquid> cachedLiquids = new Seq<>();
 
+    /**
+     * 组合建筑的搬运节奏（单位：tick）。
+     *
+     * 原版 {@code Block.dumpTime = 5}（每 5 tick 搬 1 个），单点最多 12 个/秒。
+     * 但接收方自己的插入窗口比这更细：管道(duct) 15/s、钛传送带 12/s、塑料传送带更快，
+     * 它们的窗口只有 4~5 tick，而 5 tick 的搬运粒度和窗口一旦相位错开就会整轮错过——
+     * 实测组合体(16 台压机)外送：普通传送带 4.2/s(满)、钛传送带只有 9.3/s、管道只有 13.0/s，
+     * 表现出来就是「输出速度慢、塞不满传送带」。
+     *
+     * 组合体内部本来就共用一个池子，所以把搬运改成每 tick 尝试一次：
+     * 实际能搬多快由接收方（传送带/管道/容器）自己的接收上限决定，不再被 5 tick 的粒度拖住。
+     */
+    public static float comboDumpInterval = 1f;
+
     public CombinedCrafter(String name) {
         super(name);
         conductivePower = true;
@@ -351,10 +365,23 @@ public class CombinedCrafter extends GenericCrafter {
         // FIX: 读取时暂存 leader 位置，等 updateTile 时恢复共享模块
         public int pendingLeaderPos = -1;
 
-        // DIAG[bug2]: 诊断日志节流戳
-        public long diagStamp = -999999999999L;
-        public long diagStamp2 = -999999999999L;
-        public long diagStamp3 = -999999999999L;
+        /**
+         * 组级聚合缓存（只有 leader 持有，每 tick 只算一次，组重建时失效）。
+         *
+         * 原来"这个物品/液体组里有没有人要""组内产率/耗率是多少"这类问题，
+         * 每一处调用都现遍历一遍整组；而这些调用点在 acceptItem/acceptLiquid/
+         * dumpOutputs 里，都是每 tick（每个成员、每个搬运请求、每种产出）都会跑的，
+         * 于是整组 N 台就是 O(N²)——上百台的组合体一放下去就疯狂掉帧。
+         * 现在按 tick 缓存一次聚合结果，查询 O(1)。
+         */
+        public boolean[] comboConsumedItems, comboConsumedLiquids;
+        public float[] comboItemProduceRate, comboItemConsumeRate, comboLiquidProduceRate, comboLiquidConsumeRate;
+        public int[] comboItemNeedPerCraft;
+        public float[] comboLiquidNeedPerCraft;
+        public long comboAggregateTick = Long.MIN_VALUE;
+        /** heat() 的组内产热总和缓存（每 tick 一次，否则邻居读取是 O(N²)） */
+        public long comboProducerHeatTick = Long.MIN_VALUE;
+        public float comboProducerHeatSum = 0f;
 
         public float getComboTotalLiquidAmount() {
             return liquids != null ? liquids.currentAmount() : 0f;
@@ -493,12 +520,18 @@ public class CombinedCrafter extends GenericCrafter {
             CombinedCrafter cb = (CombinedCrafter) block;
             if (cb.mode != Mode.heatproducer)
                 return 0f;
-            float sum = 0f;
-            for (CombinedCrafterBuild m : group()) {
-                if (m.isValid() && ((CombinedCrafter) m.block).mode == Mode.heatproducer)
-                    sum += m.producerHeat;
+            // 邻居每 tick 都会来读 heat()，原先每次都遍历整组 → O(N²)；按 tick 缓存一次
+            CombinedCrafterBuild l = leader();
+            if (l.comboProducerHeatTick != state.updateId) {
+                l.comboProducerHeatTick = state.updateId;
+                float sum = 0f;
+                for (CombinedCrafterBuild m : l.group()) {
+                    if (m.isValid() && ((CombinedCrafter) m.block).mode == Mode.heatproducer)
+                        sum += m.producerHeat;
+                }
+                l.comboProducerHeatSum = sum;
             }
-            return sum;
+            return l.comboProducerHeatSum;
         }
 
         public float heatFrac() {
@@ -628,6 +661,13 @@ public class CombinedCrafter extends GenericCrafter {
 
             if (oldGroup.size > newGroup.size) {
                 splitAssets(oldGroup, newGroup);
+            }
+
+            // 组结构变了：聚合缓存必须失效（否则本 tick 内还会用旧组成员的产/耗数据）
+            newLeader.invalidateComboAggregate();
+            for (CombinedCrafterBuild b : oldGroup) {
+                if (b.comboAggregateTick != Long.MIN_VALUE)
+                    b.invalidateComboAggregate();
             }
 
             shareModules(newLeader);
@@ -927,8 +967,7 @@ public class CombinedCrafter extends GenericCrafter {
                         for (Liquid liquid : content.liquids()) {
                             float amt = member.liquids.get(liquid);
                             if (amt > 0.001f) {
-                                float currentTotal = ComboReflect.liquidTotal(leader.liquids);
-                                float canAccept = Math.max(0f, totalLiquidCap - currentTotal);
+                                float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.get(liquid));
                                 float transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0.001f)
                                     leader.liquids.add(liquid, transfer);
@@ -1190,7 +1229,7 @@ public class CombinedCrafter extends GenericCrafter {
             if (outputLiquids != null) {
                 max = 0f;
                 for (var s : outputLiquids) {
-                    float value = (comboTotalLiquidCap - ComboReflect.liquidTotal(liquids)) / (s.amount * edelta());
+                    float value = (comboTotalLiquidCap - liquids.get(s.liquid)) / (s.amount * edelta());
                     scaling = Math.min(scaling, value);
                     max = Math.max(max, value);
                 }
@@ -1234,7 +1273,6 @@ public class CombinedCrafter extends GenericCrafter {
                 // FIX[独立储存]: 每种产物独立判断——只要有一种产物未满就继续生产。
                 // 不再统计"所有物品总量": 某一种产物(甚至混进来的非产物物品)满了
                 // 不会让整个工厂停摆/误报 nooutput; 全部产物都满才停止并显示 nooutput。
-                // DIAG[sep]: 停产判定明细 (4秒节流, 仅 leader)
                 boolean sepDecision = false;
                 if (cb.results != null) {
                     for (ItemStack stack : cb.results) {
@@ -1242,15 +1280,6 @@ public class CombinedCrafter extends GenericCrafter {
                             sepDecision = enabled;
                             break;
                         }
-                    }
-                }
-                if (isLeader() && System.currentTimeMillis() - diagStamp2 >= 4000L) {
-                    diagStamp2 = System.currentTimeMillis();
-                    StringBuilder sp = new StringBuilder();
-                    if (cb.results != null) {
-                        for (ItemStack stack : cb.results)
-                            sp.append(stack.item.name).append('=').append(items.get(stack.item))
-                              .append('/').append(getMaximumAccepted(stack.item)).append(' ');
                     }
                 }
                 return sepDecision;
@@ -1267,7 +1296,13 @@ public class CombinedCrafter extends GenericCrafter {
             if (outputLiquids != null && !ignoreLiquidFullness) {
                 boolean allFull = true;
                 for (var output : outputLiquids) {
-                    if (ComboReflect.liquidTotal(liquids) >= comboTotalLiquidCap - 0.001f) {
+                    // FIX[进水即停摆]: 这里必须只看"这一种产出液体"在池里的量，而不是全池总量。
+                    // 组合体的池子是共享的，输入液体（例如低温液混合机的水）很容易把池子灌满；
+                    // 原先用全池总量判断"产出满了" → efficiency 被强制为 0 → 连输入也不再消耗
+                    // → 池子永远是满的 → 永久停摆（表现就是：接上导管后机器不工作，
+                    //  水进不去/被原样顶回管道里，看起来像"把该输入的液体输出出去了"）。
+                    // 按原版语义逐种产出液体判断：只有产出液体自己占满池子容量才停。
+                    if (liquids.get(output.liquid) >= comboTotalLiquidCap - 0.001f) {
                         if (!dumpExtraLiquid)
                             return false;
                     } else {
@@ -1305,20 +1340,14 @@ public class CombinedCrafter extends GenericCrafter {
                 rebuildCombo();
             }
 
-            // FIX[液体超容]: 组合体缩容(拆成员)后上限变小, 之前合法灌入的液体会搁浅超标,
-            // 堵住后续合法进液——组长把总量截回组容量(从量最大的液体开始扣)
+            // FIX[液体超容]: 上限是"每种液体各自"的（和物品一致）。
+            // 组合体缩容(拆成员)后上限变小, 之前合法灌入的液体可能每种都超标,
+            // 组长把每种液体各自截回组容量（互不挤占）。
             if (isLeader() && liquids != null) {
-                float over = ComboReflect.liquidTotal(liquids) - comboTotalLiquidCap;
-                if (over > 0.001f) {
-                    for (Liquid l : content.liquids()) {
-                        float have = liquids.get(l);
-                        if (have <= 0.001f)
-                            continue;
-                        float remove = Math.min(have, over);
-                        liquids.remove(l, remove);
-                        over -= remove;
-                        if (over <= 0.001f)
-                            break;
+                for (Liquid l : content.liquids()) {
+                    float have = liquids.get(l);
+                    if (have > comboTotalLiquidCap + 0.001f) {
+                        liquids.remove(l, have - comboTotalLiquidCap);
                     }
                 }
             }
@@ -1348,12 +1377,6 @@ public class CombinedCrafter extends GenericCrafter {
 
         private void updateGenericOrAttribute() {
             CombinedCrafter cb = (CombinedCrafter) block;
-            // DIAG[bug2]: 生产管线诊断 (4秒节流, 仅 leader)
-            if (isLeader() && System.currentTimeMillis() - diagStamp >= 4000L) {
-                diagStamp = System.currentTimeMillis();
-                float heatEff0 = cb.heatRequirement > 0 ? Math.min(availableHeat() / cb.heatRequirement, 1f) : 1f;
-                if (cb.mode == Mode.heatcrafter) heatEff0 = heatEfficiency();
-            }
             // 热量需求检查（availableHeat() 只读直接相邻的热源）
             float heatEff = 1f;
             // FIX: 非 heatcrafter 模式不应用热量门 (原版 GenericCrafter 从不因 heatRequirement 停产;
@@ -1373,7 +1396,7 @@ public class CombinedCrafter extends GenericCrafter {
                         for (var output : outputLiquids) {
                             handleLiquid(this, output.liquid,
                                     Math.min(output.amount * inc,
-                                            Math.max(0f, comboTotalLiquidCap - ComboReflect.liquidTotal(liquids))));
+                                            Math.max(0f, comboTotalLiquidCap - liquids.get(output.liquid))));
                         }
                     }
 
@@ -1412,7 +1435,7 @@ public class CombinedCrafter extends GenericCrafter {
                         for (var output : outputLiquids) {
                             handleLiquid(this, output.liquid,
                                     Math.min(output.amount * inc,
-                                            Math.max(0f, comboTotalLiquidCap - ComboReflect.liquidTotal(liquids))));
+                                            Math.max(0f, comboTotalLiquidCap - liquids.get(output.liquid))));
                         }
                     }
 
@@ -1441,7 +1464,7 @@ public class CombinedCrafter extends GenericCrafter {
                     for (var output : outputLiquids) {
                         handleLiquid(this, output.liquid,
                                 Math.min(output.amount * inc,
-                                        Math.max(0f, comboTotalLiquidCap - ComboReflect.liquidTotal(liquids))));
+                                        Math.max(0f, comboTotalLiquidCap - liquids.get(output.liquid))));
                     }
                 }
 
@@ -1468,21 +1491,6 @@ public class CombinedCrafter extends GenericCrafter {
             // 克隆体 heatRequirement 默认 10f, 若实例未走 init 清理(如直接 new 顶替原版),
             // 热门控会把进度冻死在 0——separator 直接不启用热门控
             float heatEfficiency = 1f;
-
-            // DIAG[sep]: separator 生产管线诊断 (4秒节流, 仅 leader)
-            if (isLeader() && System.currentTimeMillis() - diagStamp >= 4000L) {
-                diagStamp = System.currentTimeMillis();
-                StringBuilder sb = new StringBuilder();
-                if (cb.results != null) {
-                    for (ItemStack stack : cb.results)
-                        sb.append(stack.item.name).append('=').append(items.get(stack.item)).append(' ');
-                }
-                StringBuilder cs = new StringBuilder();
-                if (block.consumers != null) {
-                    for (mindustry.world.consumers.Consume cons : block.consumers)
-                        cs.append(cons.getClass().getSimpleName()).append(' ');
-                }
-            }
 
             if (efficiency > 0 && heatEfficiency > 0) {
                 progress += getProgressIncrease(craftTime) * heatEfficiency;
@@ -1527,11 +1535,6 @@ public class CombinedCrafter extends GenericCrafter {
                 count += stack.amount;
             }
 
-            // DIAG[sep]: 抽取与产出结果 (4秒节流, 仅 leader)
-            if (isLeader() && System.currentTimeMillis() - diagStamp2 >= 4000L) {
-                diagStamp2 = System.currentTimeMillis();
-            }
-
             consume();
             if (item != null && items.get(item) < getMaximumAccepted(item)) {
                 items.add(item, 1);
@@ -1567,13 +1570,19 @@ public class CombinedCrafter extends GenericCrafter {
             CombinedCrafter cb = (CombinedCrafter) block;
 
             if (cb.mode == Mode.separator) {
-                if (timer(timerDump, dumpTime / timeScale)) {
+                // FIX[搬运粒度]: 用 comboDumpInterval(1 tick) 代替原版 dumpTime(5 tick)，
+                // 否则高速传送带/管道的单个插入点永远等不到下一次搬运（见字段注释）。
+                if (timer(timerDump, comboDumpInterval / timeScale)) {
                     if (cb.results != null) {
                         for (ItemStack result : cb.results) {
                             boolean isIntermediate = isConsumedInCombo(result.item);
-                            boolean shouldDump = !isIntermediate || shouldDumpIntermediate(result.item);
+                            // 同上：有人吃的料只在它自己这一格 >=90% 满时才外送
+                            float resultAmt = items.get(result.item);
+                            boolean shouldDump = !isIntermediate
+                                    || (shouldDumpIntermediate(result.item)
+                                            && resultAmt >= getMaximumAccepted(result.item) * 0.9f);
                             boolean forceDump = isIntermediate
-                                    && items.get(result.item) >= getMaximumAccepted(result.item) * 0.99f;
+                                    && resultAmt >= getMaximumAccepted(result.item) * 0.99f;
                             if (shouldDump || forceDump) {
                                 dump(result.item);
                             }
@@ -1584,164 +1593,205 @@ public class CombinedCrafter extends GenericCrafter {
             }
 
             // Generic / Attribute 的原有逻辑
-            if (timer(timerDump, dumpTime / timeScale)) {
-                for (CombinedCrafterBuild member : group()) {
-                    if (!member.isValid())
-                        continue;
-                    CombinedCrafter mb = (CombinedCrafter) member.block;
-                    if (mb.mode == Mode.separator)
-                        continue; // 混合组合体时跳过 separator 成员
-                    if (mb.outputItems != null) {
-                        for (ItemStack output : mb.outputItems) {
-                            boolean isIntermediate = isConsumedInCombo(output.item);
-                            boolean shouldDump = !isIntermediate || shouldDumpIntermediate(output.item);
-                            boolean forceDump = isIntermediate
-                                    && items.get(output.item) >= getMaximumAccepted(output.item) * 0.99f;
-                            if (shouldDump || forceDump)
-                                dump(output.item);
-                        }
+            if (timer(timerDump, comboDumpInterval / timeScale)) {
+                // 只处理自己这一格的产出：原来每台设备都遍历整组，N 台就是每 tick N² 次搬运，
+                // 大组合体放下去直接帧数崩盘；组内共享同一个池，逐台各搬自己的产出即可。
+                if (cb.outputItems != null) {
+                    for (ItemStack output : cb.outputItems) {
+                        if (output.item == null)
+                            continue;
+                        boolean isIntermediate = isConsumedInCombo(output.item);
+                        // FIX[原料被当产出倒出去]: 组内有人吃的料（含"上游产的 + 下游当原料用的"），
+                        // 只在**它自己**在这一格的池子里 >=90% 满时才外送 —— 和液体那套完全一致。
+                        // 原先只看"产率>耗率"(needPerCraft*2 就能触发)，结果像 大型硅厂 这种
+                        // "隔壁有产煤机 + 自己烧煤"的组合会把作为原料的 coal 当成品倒到输出带上。
+                        float itemAmt = items.get(output.item);
+                        boolean shouldDump = !isIntermediate
+                                || (shouldDumpIntermediate(output.item)
+                                        && itemAmt >= getMaximumAccepted(output.item) * 0.9f);
+                        boolean forceDump = isIntermediate
+                                && itemAmt >= getMaximumAccepted(output.item) * 0.99f;
+                        if (shouldDump || forceDump)
+                            dump(output.item);
                     }
                 }
             }
-            for (CombinedCrafterBuild member : group()) {
-                if (!member.isValid())
-                    continue;
-                CombinedCrafter mb = (CombinedCrafter) member.block;
-                if (mb.mode == Mode.separator)
-                    continue;
-                if (mb.outputLiquids != null) {
-                    for (int i = 0; i < mb.outputLiquids.length; i++) {
-                        var output = mb.outputLiquids[i];
-                        int dir = liquidOutputDirections.length > i ? liquidOutputDirections[i] : -1;
-                        boolean isIntermediate = isLiquidConsumedInCombo(output.liquid);
-                        // FIX[矿渣外流]: 旧逻辑"产率>耗率就外送"——熔炉名义产率远大于分离机
-                        // 消耗, 矿渣被当过剩产物不断导出: 共享池恒空, 只泼溅邻近方块(越远越少)。
-                        // 改为: 中间产物只在池子>=90%满容时才外送, 平时留在组内共享池
-                        boolean shouldDump = !isIntermediate
-                                || (shouldDumpIntermediateLiquid(output.liquid)
-                                        && ComboReflect.liquidTotal(liquids) >= comboTotalLiquidCap * 0.9f);
-                        boolean forceDump = isIntermediate
-                                && ComboReflect.liquidTotal(liquids) >= comboTotalLiquidCap * 0.99f;
-                        if (shouldDump || forceDump)
-                            dumpLiquid(output.liquid, 2f, dir);
-                    }
+            // 液体同理：只外送自己这一格的产出液体（组内共享池、方向取本格配置）
+            if (cb.outputLiquids != null) {
+                for (int i = 0; i < cb.outputLiquids.length; i++) {
+                    var output = cb.outputLiquids[i];
+                    if (output.liquid == null)
+                        continue;
+                    int dir = liquidOutputDirections.length > i ? liquidOutputDirections[i] : -1;
+                    boolean isIntermediate = isLiquidConsumedInCombo(output.liquid);
+                    // FIX[矿渣外流]: 旧逻辑"产率>耗率就外送"——熔炉名义产率远大于分离机
+                    // 消耗, 矿渣被当过剩产物不断导出: 共享池恒空, 只泼溅邻近方块(越远越少)。
+                    // 改为: 中间产物只在池子>=90%满容时才外送, 平时留在组内共享池
+                    // 阈值看"这种产出液体自己"占了多少容量（每种液体独立储存）
+                    float liqAmt = liquids.get(output.liquid);
+                    boolean shouldDump = !isIntermediate
+                            || (shouldDumpIntermediateLiquid(output.liquid)
+                                    && liqAmt >= comboTotalLiquidCap * 0.9f);
+                    boolean forceDump = isIntermediate
+                            && liqAmt >= comboTotalLiquidCap * 0.99f;
+                    if (shouldDump || forceDump)
+                        dumpLiquid(output.liquid, 2f, dir);
                 }
             }
         }
 
         // -------------------- 中间产物判断 --------------------
-        public boolean isConsumedInCombo(Item item) {
-            for (CombinedCrafterBuild member : group()) {
-                if (member.isValid() && member.block.consumesItem(item))
-                    return true;
-            }
-            return false;
+        /** 组结构变化（重建/成员增删）后让聚合缓存失效。 */
+        public void invalidateComboAggregate() {
+            comboAggregateTick = Long.MIN_VALUE;
+            comboProducerHeatTick = Long.MIN_VALUE;
         }
 
-        public boolean isLiquidConsumedInCombo(Liquid liquid) {
-            for (CombinedCrafterBuild member : group()) {
-                if (member.isValid() && member.block.consumesLiquid(liquid))
-                    return true;
-            }
-            return false;
-        }
+        /** 刷新 leader 上的组级聚合；每 tick 至多算一次，之后所有查询都是 O(1)。 */
+        public void ensureComboAggregate() {
+            if (comboAggregateTick == state.updateId)
+                return;
+            comboAggregateTick = state.updateId;
 
-        public boolean shouldDumpIntermediate(Item item) {
-            float produceRate = 0f, consumeRate = 0f;
-            int needPerCraftTotal = 0;
+            int itemN = content.items().size, liquidN = content.liquids().size;
+            if (comboConsumedItems == null || comboConsumedItems.length < itemN) {
+                comboConsumedItems = new boolean[itemN];
+                comboItemProduceRate = new float[itemN];
+                comboItemConsumeRate = new float[itemN];
+                comboItemNeedPerCraft = new int[itemN];
+            }
+            if (comboConsumedLiquids == null || comboConsumedLiquids.length < liquidN) {
+                comboConsumedLiquids = new boolean[liquidN];
+                comboLiquidProduceRate = new float[liquidN];
+                comboLiquidConsumeRate = new float[liquidN];
+                comboLiquidNeedPerCraft = new float[liquidN];
+            }
+            java.util.Arrays.fill(comboConsumedItems, false);
+            java.util.Arrays.fill(comboItemProduceRate, 0f);
+            java.util.Arrays.fill(comboItemConsumeRate, 0f);
+            java.util.Arrays.fill(comboItemNeedPerCraft, 0);
+            java.util.Arrays.fill(comboConsumedLiquids, false);
+            java.util.Arrays.fill(comboLiquidProduceRate, 0f);
+            java.util.Arrays.fill(comboLiquidConsumeRate, 0f);
+            java.util.Arrays.fill(comboLiquidNeedPerCraft, 0f);
+
             for (CombinedCrafterBuild member : group()) {
                 if (!member.isValid())
                     continue;
                 CombinedCrafter mb = (CombinedCrafter) member.block;
+
+                // 谁在消耗什么（等价于原先逐成员 block.consumesItem/consumesLiquid）
+                if (mb.itemFilter != null)
+                    for (int i = 0; i < Math.min(mb.itemFilter.length, comboConsumedItems.length); i++)
+                        if (mb.itemFilter[i])
+                            comboConsumedItems[i] = true;
+                if (mb.liquidFilter != null)
+                    for (int i = 0; i < Math.min(mb.liquidFilter.length, comboConsumedLiquids.length); i++)
+                        if (mb.liquidFilter[i])
+                            comboConsumedLiquids[i] = true;
 
                 // Generic / Attribute 产出
                 if (mb.mode != Mode.separator && mb.outputItems != null) {
                     for (ItemStack out : mb.outputItems) {
-                        if (out.item == item)
-                            produceRate += out.amount / mb.craftTime * 60f;
+                        if (out.item != null && out.item.id < comboItemProduceRate.length)
+                            comboItemProduceRate[out.item.id] += out.amount / mb.craftTime * 60f;
                     }
                 }
                 // Separator 产出（按概率估算）
                 if (mb.mode == Mode.separator && mb.results != null) {
-                    for (ItemStack out : mb.results) {
-                        if (out.item == item) {
-                            int totalAmount = 0;
-                            for (ItemStack r : mb.results)
-                                totalAmount += r.amount;
-                            if (totalAmount > 0) {
-                                produceRate += (out.amount / (float) totalAmount) / mb.craftTime * 60f;
-                            }
+                    int totalAmount = 0;
+                    for (ItemStack r : mb.results)
+                        totalAmount += r.amount;
+                    if (totalAmount > 0) {
+                        for (ItemStack out : mb.results) {
+                            if (out.item != null && out.item.id < comboItemProduceRate.length)
+                                comboItemProduceRate[out.item.id] += (out.amount / (float) totalAmount) / mb.craftTime * 60f;
                         }
+                    }
+                }
+
+                // 液体产出
+                if (mb.outputLiquids != null) {
+                    for (LiquidStack out : mb.outputLiquids) {
+                        if (out.liquid != null && out.liquid.id < comboLiquidProduceRate.length)
+                            comboLiquidProduceRate[out.liquid.id] += out.amount * 60f;
                     }
                 }
 
                 // 输入（所有模式通用）
-                if (member.block.consumers != null) {
-                    for (Consume cons : member.block.consumers) {
+                if (mb.consumers != null) {
+                    for (Consume cons : mb.consumers) {
                         if (cons instanceof ConsumeItems ci) {
                             for (ItemStack in : ci.items) {
-                                if (in.item == item) {
-                                    consumeRate += in.amount / mb.craftTime * 60f;
-                                    needPerCraftTotal += in.amount;
+                                if (in.item != null && in.item.id < comboItemConsumeRate.length) {
+                                    comboItemConsumeRate[in.item.id] += in.amount / mb.craftTime * 60f;
+                                    comboItemNeedPerCraft[in.item.id] += in.amount;
                                 }
                             }
-                        }
-                    }
-                }
-            }
-            if (needPerCraftTotal > 0 && items.get(item) < needPerCraftTotal * 2)
-                return false;
-            return produceRate > consumeRate * (1f + ((CombinedCrafter) block).safetyBuffer);
-        }
-
-        public boolean shouldDumpIntermediateLiquid(Liquid liquid) {
-            float produceRate = 0f, consumeRate = 0f;
-            float needPerCraftTotal = 0f;
-            for (CombinedCrafterBuild member : group()) {
-                if (!member.isValid())
-                    continue;
-                CombinedCrafter mb = (CombinedCrafter) member.block;
-                if (mb.outputLiquids != null) {
-                    for (LiquidStack out : mb.outputLiquids) {
-                        if (out.liquid == liquid)
-                            produceRate += out.amount * 60f;
-                    }
-                }
-                if (member.block.consumers != null) {
-                    for (Consume cons : member.block.consumers) {
-                        if (cons instanceof ConsumeLiquids cl) {
+                        } else if (cons instanceof ConsumeLiquids cl) {
                             for (LiquidStack in : cl.liquids) {
-                                if (in.liquid == liquid) {
-                                    consumeRate += in.amount * 60f;
-                                    needPerCraftTotal += in.amount;
+                                if (in.liquid != null && in.liquid.id < comboLiquidConsumeRate.length) {
+                                    comboLiquidConsumeRate[in.liquid.id] += in.amount * 60f;
+                                    comboLiquidNeedPerCraft[in.liquid.id] += in.amount;
                                 }
                             }
                         } else if (cons instanceof ConsumeLiquid cl) {
-                            if (cl.liquid == liquid) {
-                                consumeRate += cl.amount * 60f;
-                                needPerCraftTotal += cl.amount;
+                            if (cl.liquid != null && cl.liquid.id < comboLiquidConsumeRate.length) {
+                                comboLiquidConsumeRate[cl.liquid.id] += cl.amount * 60f;
+                                comboLiquidNeedPerCraft[cl.liquid.id] += cl.amount;
                             }
                         }
                     }
                 }
             }
+        }
+
+        public boolean isConsumedInCombo(Item item) {
+            if (item == null)
+                return false;
+            CombinedCrafterBuild l = leader();
+            l.ensureComboAggregate();
+            return item.id < l.comboConsumedItems.length && l.comboConsumedItems[item.id];
+        }
+
+        public boolean isLiquidConsumedInCombo(Liquid liquid) {
+            if (liquid == null)
+                return false;
+            CombinedCrafterBuild l = leader();
+            l.ensureComboAggregate();
+            return liquid.id < l.comboConsumedLiquids.length && l.comboConsumedLiquids[liquid.id];
+        }
+
+        public boolean shouldDumpIntermediate(Item item) {
+            if (item == null)
+                return false;
+            CombinedCrafterBuild l = leader();
+            l.ensureComboAggregate();
+            int needPerCraftTotal = item.id < l.comboItemNeedPerCraft.length ? l.comboItemNeedPerCraft[item.id] : 0;
+            if (needPerCraftTotal > 0 && items.get(item) < needPerCraftTotal * 2)
+                return false;
+            return l.comboItemProduceRate[item.id] > l.comboItemConsumeRate[item.id]
+                    * (1f + ((CombinedCrafter) block).safetyBuffer);
+        }
+
+        public boolean shouldDumpIntermediateLiquid(Liquid liquid) {
+            if (liquid == null)
+                return false;
+            CombinedCrafterBuild l = leader();
+            l.ensureComboAggregate();
+            float needPerCraftTotal = liquid.id < l.comboLiquidNeedPerCraft.length ? l.comboLiquidNeedPerCraft[liquid.id] : 0f;
             if (needPerCraftTotal > 0.001f && liquids.get(liquid) < needPerCraftTotal * 2f)
                 return false;
-            return produceRate > consumeRate * (1f + ((CombinedCrafter) block).safetyBuffer);
+            return l.comboLiquidProduceRate[liquid.id] > l.comboLiquidConsumeRate[liquid.id]
+                    * (1f + ((CombinedCrafter) block).safetyBuffer);
         }
 
         // -------------------- 物品/液体交互 --------------------
         @Override
         public boolean acceptItem(Building source, Item item) {
-            if (!block.hasItems)
+            if (!block.hasItems || item == null)
                 return false;
-            boolean needed = false;
-            for (CombinedCrafterBuild member : group()) {
-                if (member.isValid() && member.block.consumesItem(item)) {
-                    needed = true;
-                    break;
-                }
-            }
+            boolean needed = isConsumedInCombo(item);
             return needed && items.get(item) < getMaximumAccepted(item); // 按种类检查：每种原料各有份额，先到的不堵死其它的：不再按种类各装满一份
         }
 
@@ -1757,24 +1807,17 @@ public class CombinedCrafter extends GenericCrafter {
 
         @Override
         public boolean acceptLiquid(Building source, Liquid liquid) {
-            if (!block.hasLiquids)
+            if (!block.hasLiquids || liquid == null)
                 return false;
-            boolean needed = false;
-            for (CombinedCrafterBuild member : group()) {
-                if (member.isValid() && member.block.consumesLiquid(liquid)) {
-                    needed = true;
-                    break;
-                }
-            }
-            return needed && ComboReflect.liquidTotal(liquids) < comboTotalLiquidCap - 0.001f;
+            boolean needed = isLiquidConsumedInCombo(liquid);
+            return needed && liquids.get(liquid) < comboTotalLiquidCap - 0.001f;
         }
 
         @Override
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float currentTotal = ComboReflect.liquidTotal(liquids);
-            float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
+            float canAccept = Math.max(0f, comboTotalLiquidCap - liquids.get(liquid));
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
@@ -1807,6 +1850,11 @@ public class CombinedCrafter extends GenericCrafter {
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combinedcrafter:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             table.table(cont -> {
                 cont.top().left();
                 cont.defaults().growX().left();
@@ -1855,7 +1903,7 @@ public class CombinedCrafter extends GenericCrafter {
                 });
                 cont.add(localIO).growX().left();
             }).width(260f).left();
-        }
+                }
 
         public void buildComboBars(Table table) {
             CombinedCrafter cb = (CombinedCrafter) block;
@@ -1953,32 +2001,6 @@ public class CombinedCrafter extends GenericCrafter {
                     }
                 }
             }
-            // DIAG[liquid]: 液体条渲染链路诊断 (4秒节流, 独立节拍, 仅 leader)
-            if (isLeader() && System.currentTimeMillis() - diagStamp3 >= 4000L) {
-                diagStamp3 = System.currentTimeMillis();
-                StringBuilder iv = new StringBuilder();
-                for (Liquid lq : involvedLiquids)
-                    iv.append(lq.name).append(' ');
-                StringBuilder mc = new StringBuilder();
-                for (CombinedCrafterBuild member : group()) {
-                    if (member.isValid()) {
-                        mc.append(member.block.name).append('[');
-                        for (Liquid lq : ((CombinedCrafter) member.block).cachedLiquids)
-                            mc.append(lq.name).append(',');
-                        // *=成员的liquids字段确实指向共享池 !=未共享(模块共享失效)
-                        mc.append(member.liquids == sharedLiq ? "]* " : "]! ");
-                    }
-                }
-                StringBuilder la = new StringBuilder();
-                if (sharedLiq != null) {
-                    for (Liquid lq : content.liquids()) {
-                        float amt = sharedLiq.get(lq);
-                        if (amt > 0.001f)
-                            la.append(lq.name).append('=').append(amt).append(' ');
-                    }
-                }
-            }
-
             // FIX[液条]: 缓存全空(如克隆体未走完整初始化管线)时, 回退到共享池里
             // 实际存在的液体——只要有液体在池里就有条可显示
             if (involvedLiquids.isEmpty() && sharedLiq != null) {

@@ -739,7 +739,7 @@ public class CombinedDrill extends Block {
                         for (Liquid liquid : content.liquids()) {
                             float amt = member.liquids.get(liquid);
                             if (amt > 0.001f) {
-                                float canAccept = Math.max(0f, totalLiquidCap - ComboReflect.liquidTotal(leader.liquids));
+                                float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.get(liquid));
                                 float transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0.001f)
                                     leader.liquids.add(liquid, transfer);
@@ -915,18 +915,10 @@ public class CombinedDrill extends Block {
 
             // FIX: 每帧强制截断超出的液体
             if (liquids != null && comboTotalLiquidCap > 0.001f) {
-                float excess = ComboReflect.liquidTotal(liquids) - comboTotalLiquidCap;
-                if (excess > 0.001f) {
-                    for (Liquid l : content.liquids()) {
-                        float amt = liquids.get(l);
-                        if (amt > 0.001f) {
-                            float remove = Math.min(amt, excess);
-                            liquids.remove(l, remove);
-                            excess -= remove;
-                            if (excess <= 0.001f)
-                                break;
-                        }
-                    }
+                for (Liquid l : content.liquids()) {
+                    float amt = liquids.get(l);
+                    if (amt > comboTotalLiquidCap + 0.001f)
+                        liquids.remove(l, amt - comboTotalLiquidCap);
                 }
             }
 
@@ -942,7 +934,8 @@ public class CombinedDrill extends Block {
         void updateDrill() {
             CombinedDrill cb = (CombinedDrill) block;
             // FIX(混合矿堵塞)：逐类型倒出池内所有矿物，不再只倒 dominant
-            if (timer(timerDump, dumpTime / timeScale)) {
+            // FIX[搬运粒度]: 组合体共用池子，按每 tick 搬运，别被原版 5 tick 的粒度卡住
+            if (timer(timerDump, CombinedCrafter.comboDumpInterval / timeScale)) {
                 for (Item item : content.items())
                     if (items.get(item) > 0)
                         dump(item);
@@ -982,7 +975,8 @@ public class CombinedDrill extends Block {
             if (invertTime > 0f)
                 invertTime -= delta() / cb.invertedTime;
             // FIX(混合矿堵塞)：逐类型倒出池内所有矿物
-            if (timer(timerDump, dumpTime / timeScale)) {
+            // FIX[搬运粒度]: 组合体共用池子，按每 tick 搬运，别被原版 5 tick 的粒度卡住
+            if (timer(timerDump, CombinedCrafter.comboDumpInterval / timeScale)) {
                 for (Item item : content.items())
                     if (items.get(item) > 0)
                         dump(item);
@@ -1038,7 +1032,8 @@ public class CombinedDrill extends Block {
                 time %= drillTime;
             }
             // FIX(混合矿堵塞)：逐类型倒出池内所有矿物
-            if (timer(timerDump, dumpTime / timeScale)) {
+            // FIX[搬运粒度]: 组合体共用池子，按每 tick 搬运，别被原版 5 tick 的粒度卡住
+            if (timer(timerDump, CombinedCrafter.comboDumpInterval / timeScale)) {
                 for (Item item : content.items())
                     if (items.get(item) > 0)
                         dump(item);
@@ -1102,22 +1097,15 @@ public class CombinedDrill extends Block {
         public boolean acceptLiquid(Building source, Liquid liquid) {
             if (!block.hasLiquids)
                 return false;
-            boolean needed = false;
-            for (CombinedDrillBuild member : group()) {
-                if (member.isValid() && member.block.consumesLiquid(liquid)) {
-                    needed = true;
-                    break;
-                }
-            }
-            return needed && liquids != null && ComboReflect.liquidTotal(liquids) < comboTotalLiquidCap - 0.001f;
+            boolean needed = ComboReflect.groupConsumesLiquid(this, liquid);
+            return needed && liquids != null && liquids.get(liquid) < comboTotalLiquidCap - 0.001f;
         }
 
         @Override
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float currentTotal = ComboReflect.liquidTotal(liquids);
-            float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
+            float canAccept = Math.max(0f, comboTotalLiquidCap - liquids.get(liquid));
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
@@ -1372,6 +1360,11 @@ public class CombinedDrill extends Block {
         // ---- 显示面板 ----
         @Override
         public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combineddrill:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             table.table(cont -> {
                 cont.top().left();
                 cont.defaults().growX().left();
@@ -1420,7 +1413,7 @@ public class CombinedDrill extends Block {
                 });
                 cont.add(localIO).growX().left();
             }).width(260f).left();
-        }
+                }
 
         public void buildComboBars(Table table) {
             if (!Mathf.zero(block.health, 0.001f)) {

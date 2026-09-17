@@ -359,7 +359,7 @@ public class CombinedTurret extends Turret {
             for (Liquid liquid : content.liquids()) {
               float amt = m.liquids.get(liquid);
               if (amt > 0.001f) {
-                float canAccept = Math.max(0f, totalLiqCap - ComboReflect.liquidTotal(leader.liquids));
+                float canAccept = Math.max(0f, totalLiqCap - leader.liquids.get(liquid));
                 float transfer = Math.min(amt, canAccept);
                 if (transfer > 0.001f)
                   leader.liquids.add(liquid, transfer);
@@ -378,17 +378,11 @@ public class CombinedTurret extends Turret {
       LiquidModule liq = leader.liquids;
       if (liq == null || leader.comboTotalLiquidCap <= 0.001f)
         return;
-      float excess = ComboReflect.liquidTotal(liq) - leader.comboTotalLiquidCap;
-      if (excess <= 0.001f)
-        return;
+      // 每种液体各自截到组容量（不是全池总量）
       for (Liquid l : content.liquids()) {
         float amt = liq.get(l);
-        if (amt > 0.001f) {
-          float remove = Math.min(amt, excess);
-          liq.remove(l, remove);
-          excess -= remove;
-          if (excess <= 0.001f)
-            break;
+        if (amt > leader.comboTotalLiquidCap + 0.001f) {
+          liq.remove(l, amt - leader.comboTotalLiquidCap);
         }
       }
     }
@@ -595,6 +589,14 @@ public class CombinedTurret extends Turret {
     }
 
     @Override
+    public boolean shouldAmbientSound() {
+        // FIX[声音线程崩溃]: MindustryX 的环境音在独立 AudioThread（20fps）上调用
+        // shouldAmbientSound()，原版默认实现转调 shouldConsume()；
+        // 组合建筑这一路会读库存/遍历共享序列，跨线程相撞就是
+        // NoSuchElementException。组合建筑统一禁用环境音循环。
+        return false;
+    }
+
     public boolean shouldConsume() {
       if (laser()) {
         if (bullets.any() || isActive())
@@ -676,16 +678,9 @@ public class CombinedTurret extends Turret {
     public boolean acceptLiquid(Building source, Liquid liquid) {
       if (!block.hasLiquids)
         return false;
-      boolean needed = false;
-      for (CombinedTurretBuild m : group()) {
-        if (!m.isValid())
-          continue;
-        mindustry.world.consumers.ConsumeLiquidBase cl = ((mindustry.world.blocks.defense.turrets.Turret) m.block).coolant;
-        if (m.block.consumesLiquid(liquid) || (cl != null && cl.consumes(liquid))) {
-          needed = true;
-          break;
-        }
-      }
+      // ConsumeLiquidFilter.apply 会把所有合格冷却液写进 liquidFilter，
+      // 所以组级消耗表已经覆盖了 coolant，不必再逐个成员问 cl.consumes()
+      boolean needed = ComboReflect.groupConsumesLiquid(this, liquid);
       return needed && liquids != null && liquids.get(liquid) < perLiquidCap() - 0.001f;
     }
 
@@ -697,8 +692,7 @@ public class CombinedTurret extends Turret {
     public void handleLiquid(Building source, Liquid liquid, float amount) {
       if (amount <= 0.001f)
         return;
-      float currentTotal = ComboReflect.liquidTotal(liquids);
-      float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
+      float canAccept = Math.max(0f, comboTotalLiquidCap - liquids.get(liquid));
       float actual = Math.min(amount, canAccept);
       if (actual > 0.001f)
         liquids.add(liquid, actual);
@@ -712,6 +706,11 @@ public class CombinedTurret extends Turret {
 
     @Override
     public void display(Table table) {
+      // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+      ComboUi.safe("combinedturret:display", () -> displayInner(table));
+    }
+
+    void displayInner(Table table) {
       table.table(cont -> {
         cont.top().left();
         cont.defaults().growX().left();
@@ -744,7 +743,7 @@ public class CombinedTurret extends Turret {
         });
         cont.add(comboIO).growX().left();
       }).width(260f).left();
-    }
+        }
 
     public void buildComboIO(Table table) {
       table.left();
