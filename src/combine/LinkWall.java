@@ -124,6 +124,8 @@ public class LinkWall extends Wall {
     public LinkWallBuild linkLeader;
     public boolean linksDirty = true;
     public int seqSize = 1;
+    /** 上一次"是否允许组合"的判定结果：队伍里玩家有变动时自动重算一次。 */
+    public boolean groupAllowedLast = true;
     public boolean open = false;
 
     // ===== 相位盾（shield 模式）运行时状态 =====
@@ -161,19 +163,27 @@ public class LinkWall extends Wall {
     /**
      * 这面墙要不要参与"组合"（连成一组、共享一个血池）。
      *
-     * 只有**有玩家的队伍**才组合：纯 AI 势力（战役/进攻图里的敌方等，队伍里没有玩家）
-     * 的组合墙保持原版单格行为 —— 否则"组=一整面墙"的血池会把敌方整片墙的血叠在一起，
-     * 既不平衡，也容易出现"打一处、整片一起掉/一起死"的怪现象。
-     * PvP 里两边都有玩家，会各自照常组合。
+     * 判据是"这个队伍里**有没有玩家**"，而不是队伍名、也不是 Team.isOnlyAI()：
+     *   · Team.isOnlyAI() 只在"有波次/进攻模式/战役"里成立 —— 沙盒、自定义这些模式里
+     *     敌方队伍会被算成"不是 AI"，照样组合（实测就是这样漏的）；
+     *   · 按队伍名硬编码（只让 sharded 组合）又会破坏 PvP。
+     * 所以：队伍里有玩家（PvP 两边、联机各方、玩家自己切到的队伍）→ 组合；
+     * 纯 AI 势力的墙保持原版单格行为（血池不叠、不被"打一处整片掉"）。
      */
     public boolean groupAllowed() {
-      return team != null && !team.isOnlyAI();
+      if (team == null)
+        return false;
+      if (!team.data().players.isEmpty())
+        return true;
+      // 兜底：本地玩家所在的队伍（专用服务器上没有本地玩家，返回 null）
+      return Vars.player != null && Vars.player.team() == team;
     }
 
     public void rebuildLinks() {
       Seq<LinkWallBuild> found = new Seq<>();
       // 不组合的队伍：自己就是一组（组员只有自己 → 伤害/治疗/门开关都退回原版单格行为）
-      if (!groupAllowed()) {
+      groupAllowedLast = groupAllowed();
+      if (!groupAllowedLast) {
         links = found;
         found.add(this);
         linkLeader = null;
@@ -226,6 +236,10 @@ public class LinkWall extends Wall {
     public void updateTile() {
       super.updateTile();
       if (linksDirty && !dead())
+        rebuildLinks();
+      // 队伍里玩家来了/走了（PvP 换边、联机加入等）→ 判定变了就重算一次：
+      // 该组合的重新连起来，不该组合的拆回单格
+      if (!linksDirty && !dead() && groupAllowedLast != groupAllowed())
         rebuildLinks();
       // FIX[shield]: 相位盾回复/破盾计时/盾半径动画（原版 ShieldWallBuild.updateTile 移植）
       if (isShield()) {

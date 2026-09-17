@@ -229,13 +229,16 @@ public class MultiBuildWeapon extends Weapon {
     if (weaponUnit.isPlayer())
       return null;
 
-    // FIX[敌方自动重建]: 纯 AI 势力（战役/进攻图里的敌方队伍，队伍里没有玩家）
+    // FIX[敌方自动重建]: 队伍里没有玩家的势力（战役/进攻图里的敌方、沙盒里随便放的敌方队）
     // 只能"帮着造所跟随单位的队列"，不能去认领下面那两条"主动找活"的来源 ——
     // 因为它们的队伍计划表(team.data().plans)正是 BaseBuilderAI 排的基地蓝图
     // （含被摧毁建筑的原地重建）。每把挂座认领一格 = 敌方多线程重建基地，
     // 表现就是玩家报的"敌方建造机自动重建被摧毁的敌方建筑"。
     // 2.1 及之前根本没有这两条来源，所以没有这个现象；玩家队伍（含联机多方）保持原样。
-    if (weaponUnit.team != null && weaponUnit.team.isOnlyAI())
+    // 判据用"队伍里有没有玩家"，不用 Team.isOnlyAI()：后者只在有波次/进攻/战役时成立，
+    // 沙盒、自定义模式里敌方队伍会被算成"不是 AI"，照样会去认领。
+    if (weaponUnit.team != null && weaponUnit.team.data().players.isEmpty()
+        && (mindustry.Vars.player == null || mindustry.Vars.player.team() != weaponUnit.team))
       return null;
 
     // 附近同队单位的队列（玩家排好的预设、其它工程车正在排的活都在这）
