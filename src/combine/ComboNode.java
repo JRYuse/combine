@@ -123,10 +123,74 @@ public class ComboNode extends Block {
             && (ComboReflect.isComboBuild(b) || CoopCombo.eligible(b.block));
     }
 
+    /**
+     * 一台机器所属的「组合体」代表 —— 用来做连线去重：**一个组合体只需要一根线**。
+     *
+     * 组合节点以前是"最近的 maxNodes 台机器各连一根"，于是旁边站着一个三台的组合体时，
+     * 三根线全连到同一个组合体上，别的组合体反而连不上。
+     *
+     * - 协作组合（js/java 子类）和各种 Combined* 方块：组长就是代表（ComboReflect.leader）；
+     * - 组合仓库/容器：它们走自己那套"相邻成组"的并仓，这里按相邻同类做个小 BFS 找代表。
+     */
+    public static Building groupRep(Building b){
+        if(b == null) return null;
+        if(b.block instanceof CombinedStorageBlock){
+            Building rep = null;
+            for(Building m : storageGroupMembers(b)){
+                if(rep == null || m.pos() < rep.pos()) rep = m;
+            }
+            return rep != null ? rep : b;
+        }
+        Building l = ComboReflect.leader(b);
+        return l == null ? b : l;
+    }
+
+    /** 一个组合体的全部成员（画蓝框、算包围盒用）。 */
+    public static Seq<Building> groupMembers(Building b){
+        if(b == null) return new Seq<>();
+        if(b.block instanceof CombinedStorageBlock) return storageGroupMembers(b);
+        return ComboReflect.group(b);
+    }
+
+    /** 组合仓库/容器的"相邻成组"（和 CombinedStorageBlock 自己的并仓规则一致）。 */
+    private static Seq<Building> storageGroupMembers(Building b){
+        Seq<Building> out = new Seq<>();
+        try{
+            arc.struct.ObjectSet<Building> seen = new arc.struct.ObjectSet<>();
+            arc.struct.Queue<Building> queue = new arc.struct.Queue<>();
+            queue.addLast(b);
+            seen.add(b);
+            boolean merge = ((CombinedStorageBlock.CombinedStorageBuild) b).coreMergeStorage();
+            while(!queue.isEmpty()){
+                Building cur = queue.removeFirst();
+                out.add(cur);
+                if(!merge || cur.proximity == null) continue;
+                for(Building nb : cur.proximity){
+                    if(nb instanceof CombinedStorageBlock.CombinedStorageBuild other
+                        && other.team == b.team && other.coreMergeStorage() && ComboReflect.inWorld(other)
+                        && seen.add(other)){
+                        queue.addLast(other);
+                    }
+                }
+            }
+        }catch(Throwable ignored){
+        }
+        if(out.isEmpty()) out.add(b);
+        return out;
+    }
+
     public boolean linkValid(Building tile, Building link, boolean checkMaxNodes){
         if(tile == null || link == null || tile == link || !link.isValid() || tile.team != link.team) return false;
         if(!linkTarget(link)) return false;
-        if(checkMaxNodes && link instanceof ComboNodeBuild node && node.links.size >= maxNodes) return false;
+        if(checkMaxNodes && tile instanceof ComboNodeBuild node){
+            if(node.links.size >= maxNodes) return false;
+            // 同一个组合体连一根就够：再连它别的成员只是白占连线数
+            Building rep = groupRep(link);
+            for(int i = 0; i < node.links.size; i++){
+                Building ex = world.build(node.links.get(i));
+                if(ex != null && ex.isValid() && groupRep(ex) == rep) return false;
+            }
+        }
         if(PowerNode.insulated(tile, link)) return false;
         return overlaps(tile, link, laserRange * tilesize);
     }
@@ -161,8 +225,24 @@ public class ComboNode extends Block {
     void drawLinkHints(int tileX, int tileY){
         try{
             if(player == null || player.team() == null) return;
+            // 一个组合体只画一个框：画在每个成员上会变成一串框，看不出"这是一组"
+            arc.struct.ObjectSet<Building> done = new arc.struct.ObjectSet<>();
             for(Building other : potentialLinks(tileX, tileY, player.team(), null)){
-                Drawf.square(other.x, other.y, other.block.size * tilesize / 2f + 2f, Pal.place);
+                Building rep = groupRep(other);
+                if(rep == null || !done.add(rep)) continue;
+                float minx = other.x, maxx = other.x, miny = other.y, maxy = other.y;
+                float half = 0f;
+                for(Building m : groupMembers(rep)){
+                    if(m == null || !m.isValid()) continue;
+                    minx = Math.min(minx, m.x);
+                    maxx = Math.max(maxx, m.x);
+                    miny = Math.min(miny, m.y);
+                    maxy = Math.max(maxy, m.y);
+                    half = Math.max(half, m.block.size * tilesize / 2f);
+                }
+                if(half <= 0f) half = Math.max(other.block.size, 1) * tilesize / 2f;
+                Drawf.square((minx + maxx) / 2f, (miny + maxy) / 2f,
+                    Math.max((maxx - minx) / 2f, (maxy - miny) / 2f) + half + 2f, Pal.place);
             }
         }catch(Throwable ignored){
         }
@@ -179,7 +259,8 @@ public class ComboNode extends Block {
         if(tile == null) return out;
 
         float wx = tileX * tilesize + offset, wy = tileY * tilesize + offset;
-        for(Building other : Groups.build){
+        // 用 ComboNet 的完整名单：组合仓库/容器是 update=false，不在 Groups.build 里
+        for(Building other : ComboNet.allComboBuildings()){
             if(other == null || !other.isValid() || other.team != team || other == self) continue;
             if(!linkTarget(other)) continue;
             if(!arc.math.geom.Intersector.overlaps(new arc.math.geom.Circle(wx, wy, laserRange * tilesize),
@@ -200,37 +281,42 @@ public class ComboNode extends Block {
         public void placed(){
             super.placed();
             if(!net.client() && links.size == 0){
-                Seq<Building> candidates = new Seq<>();
-                for(Building other : Groups.build){
-                    if(other != this && other.team == team && linkTarget(other)
-                        && linkValid(this, other, true) && !links.contains(other.pos())){
-                        candidates.add(other);
-                    }
-                }
-                candidates.sort((a, b) -> Float.compare(a.dst2(this), b.dst2(this)));
-                for(int i = 0; i < candidates.size && i < maxNodes; i++){
-                    configureAny(candidates.get(i).pos());
-                }
+                for(Building c : autoLinkCandidates()) configureAny(c.pos());
             }
             ComboNet.markDirty();
             CoopCombo.markDirty();
+        }
+
+        /**
+         * 自动连线的候选：**每个组合体只取一台**（最近的那台），最多 maxNodes 个组合体。
+         * 以前是"最近的三台机器"，导致旁边一个三台组合体会把三根线全吃掉。
+         */
+        public Seq<Building> autoLinkCandidates(){
+            Seq<Building> candidates = new Seq<>();
+            for(Building other : ComboNet.allComboBuildings()){
+                if(other != this && other.team == team && linkTarget(other)
+                    && linkValid(this, other, true) && !links.contains(other.pos())){
+                    candidates.add(other);
+                }
+            }
+            if(candidates.isEmpty()) return candidates;
+            candidates.sort((a, b) -> Float.compare(a.dst2(this), b.dst2(this)));
+            arc.struct.ObjectSet<Building> groups = new arc.struct.ObjectSet<>();
+            Seq<Building> out = new Seq<>();
+            for(Building c : candidates){
+                if(out.size >= maxNodes) break;
+                Building rep = groupRep(c);
+                if(rep != null && groups.add(rep)) out.add(c);
+            }
+            return out;
         }
 
         @Override
         public boolean onConfigureBuildTapped(Building other){
             if(other == this){
                 if(links.size == 0){
-                    Seq<Building> candidates = new Seq<>();
-                    for(Building b : Groups.build){
-                        if(b != this && b.team == team && linkTarget(b)
-                            && linkValid(this, b, true) && !links.contains(b.pos())){
-                            candidates.add(b);
-                        }
-                    }
-                    candidates.sort((a, b) -> Float.compare(a.dst2(this), b.dst2(this)));
                     Seq<Point2> points = new Seq<>();
-                    for(int i = 0; i < candidates.size && i < maxNodes; i++){
-                        Building b = candidates.get(i);
+                    for(Building b : autoLinkCandidates()){
                         points.add(new Point2(b.tileX() - tile.x, b.tileY() - tile.y));
                     }
                     configure(points.toArray(Point2.class));

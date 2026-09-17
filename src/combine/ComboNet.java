@@ -85,6 +85,28 @@ public class ComboNet {
         rebuild();
     }
 
+    /**
+     * 当前世界里所有「可能与组合逻辑有关」的建筑。
+     *
+     * 注意不能只看 {@code Groups.build}：组合仓库/容器、以及各种 mod 的仓库方块都是
+     * {@code update = false}，Mindustry 根本不把它们放进 Groups.build。组合节点找连接目标、
+     * 蓝框预览、网络重建都得用这份完整名单（否则"节点连不上旁边的组合仓库"）。
+     */
+    public static Seq<Building> allComboBuildings(){
+        Seq<Building> all = new Seq<>();
+        ObjectSet<Building> set = new ObjectSet<>();
+        for(Building b : Groups.build){
+            if(ComboReflect.inWorld(b) && set.add(b)) all.add(b);
+        }
+        for(CombinedStorageBlock.CombinedStorageBuild sb : CombinedStorageBlock.trackedSet()){
+            if(ComboReflect.inWorld(sb) && set.add(sb)) all.add(sb);
+        }
+        for(Building cb : CoopCombo.trackedBuildings()){
+            if(ComboReflect.inWorld(cb) && set.add(cb)) all.add(cb);
+        }
+        return all;
+    }
+
     public static void rebuild(){
         rebuild(null, false);
     }
@@ -443,18 +465,8 @@ public class ComboNet {
         try{
             Seq<Building> all = new Seq<>();
             ObjectSet<Building> allSet = new ObjectSet<>();
-            for(Building b : Groups.build.copy()){
-                if(ComboReflect.inWorld(b) && b != excluded && allSet.add(b)) all.add(b);
-            }
-            // 组合仓库/容器是 update=false，不会进 Groups.build —— 但它们在连接器/节点网络里
-            // 同样要算成员（否则"js 工厂 ↔ 组合仓库"这种网络永远合不到一个池子里）。
-            for(CombinedStorageBlock.CombinedStorageBuild sb : CombinedStorageBlock.trackedSet()){
-                if(ComboReflect.inWorld(sb) && sb != excluded && allSet.add(sb)) all.add(sb);
-            }
-            // 协作组合登记表：里面既有 update=true 的机器，也有各种 update=false 的 mod 仓库/容器，
-            // 后者同样不在 Groups.build 里，必须一起补进来才能同池。
-            for(Building cb : CoopCombo.trackedBuildings()){
-                if(ComboReflect.inWorld(cb) && cb != excluded && allSet.add(cb)) all.add(cb);
+            for(Building b : allComboBuildings()){
+                if(b != excluded && allSet.add(b)) all.add(b);
             }
             _tA = System.nanoTime();
 
