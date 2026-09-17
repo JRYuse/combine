@@ -72,6 +72,11 @@ public class CombinedStorageBlock extends StorageBlock {
     Events.on(EventType.BlockBuildEndEvent.class, e -> dirty = true);
   }
 
+  /** 组合连接器/节点网络要用：仓库不在 Groups.build 里，得把这个登记表交出去。 */
+  public static ObjectSet<CombinedStorageBuild> trackedSet() {
+    return tracked;
+  }
+
   /** 外部也可以主动叫一次。 */
   public static void markDirty() {
     dirty = true;

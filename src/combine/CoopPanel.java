@@ -272,20 +272,10 @@ public class CoopPanel {
 
   /** 这一组的所有成员（同 CoopCombo 的分组规则：同队 + 相邻 + 可组合）。 */
   public static Seq<Building> members(Building start) {
-    Seq<Building> out = new Seq<>();
-    if (start == null || !start.isValid()) return out;
-    arc.struct.ObjectSet<Building> seen = new arc.struct.ObjectSet<>();
-    arc.struct.Queue<Building> queue = new arc.struct.Queue<>();
-    queue.addLast(start);
-    seen.add(start);
-    while (!queue.isEmpty()) {
-      Building cur = queue.removeFirst();
-      out.add(cur);
-      for (Building nb : cur.proximity) {
-        if (CoopCombo.linkablePublic(cur, nb) && seen.add(nb)) queue.addLast(nb);
-      }
-    }
-    return out;
+    // 整张网络：协作组合组 + 通过连接器/节点接上的原版组合方块（由 ComboNet 统计）
+    Seq<Building> net = ComboNet.componentMembers(start);
+    if (net != null && net.size > 0) return net;
+    return CoopCombo.coopGroup(start);
   }
 
   /** 面板文字版摘要（测试用；也是排查时的现成工具）。 */

@@ -71,6 +71,13 @@ public class ComboNet {
         dirty = true;
     }
 
+    /** 是否正在 rebuild 内部（防止 CoopCombo → ComboNet → CoopCombo 的重入）。 */
+    public static boolean rebuilding(){
+        return inRebuild;
+    }
+
+    private static boolean inRebuild = false;
+
     /** 每帧一次的收口：只有真的脏了才重建。 */
     private static void flush(){
         if(!dirty) return;
@@ -306,6 +313,16 @@ public class ComboNet {
 
     private static void rebuild(Building excluded, boolean loading){
         if(world == null || Groups.build == null) return;
+        if(inRebuild) return;
+        inRebuild = true;
+        try{
+            rebuildInner(excluded, loading);
+        }finally{
+            inRebuild = false;
+        }
+    }
+
+    private static void rebuildInner(Building excluded, boolean loading){
         long _t0 = System.nanoTime(), _tA = _t0, _tB = _t0, _tC = _t0, _tD = _t0, _tE = _t0, _tF = _t0;
 
         // 网络结构变了：显示用的连通分量缓存立刻作废（同帧内别拿旧网络画面板）
@@ -317,8 +334,19 @@ public class ComboNet {
 
         try{
             Seq<Building> all = new Seq<>();
+            ObjectSet<Building> allSet = new ObjectSet<>();
             for(Building b : Groups.build.copy()){
-                if(b != null && b.isValid() && b != excluded) all.add(b);
+                if(b != null && b.isValid() && b != excluded && allSet.add(b)) all.add(b);
+            }
+            // 组合仓库/容器是 update=false，不会进 Groups.build —— 但它们在连接器/节点网络里
+            // 同样要算成员（否则"js 工厂 ↔ 组合仓库"这种网络永远合不到一个池子里）。
+            for(CombinedStorageBlock.CombinedStorageBuild sb : CombinedStorageBlock.trackedSet()){
+                if(sb != null && sb.isValid() && sb != excluded && allSet.add(sb)) all.add(sb);
+            }
+            // 协作组合登记表：里面既有 update=true 的机器，也有各种 update=false 的 mod 仓库/容器，
+            // 后者同样不在 Groups.build 里，必须一起补进来才能同池。
+            for(Building cb : CoopCombo.trackedBuildings()){
+                if(cb != null && cb.isValid() && cb != excluded && allSet.add(cb)) all.add(cb);
             }
             _tA = System.nanoTime();
 

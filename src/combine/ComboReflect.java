@@ -28,6 +28,9 @@ public class ComboReflect {
         if(b == null) return false;
         if(b instanceof IUnitCombo) return true;
         if(b.block instanceof CombinedStorageBlock) return true;
+        // 协作组合（继承原版类、自己写了新功能的 js/java 方块）也当成组合方块：
+        // 这样 ComboNet 的池子合并/拆分、连接器/节点、信息面板都能一视同仁。
+        if(CoopCombo.eligible(b.block)) return true;
         return hasField(b, "comboGroup") || hasField(b, "comboLeader");
     }
 
@@ -37,6 +40,7 @@ public class ComboReflect {
             IUnitCombo l = u.leader();
             return l instanceof Building bl ? bl : b;
         }
+        if(CoopCombo.eligible(b.block)) return CoopCombo.coopLeader(b);
         Object r = call(b, "leader");
         return r instanceof Building bl ? bl : b;
     }
@@ -56,6 +60,7 @@ public class ComboReflect {
             return out;
         }
 
+        if(CoopCombo.eligible(b.block)) return CoopCombo.coopGroup(b);
         Object r = call(b, "group");
         if(r instanceof Seq<?> seq){
             for(Object o : seq){
@@ -69,6 +74,9 @@ public class ComboReflect {
     /** 用于容量计算的本机容量，绝不要读 comboTotal*（跨组合并后会变成全局值）。 */
     public static int baseItemCap(Building b){
         if(b == null || b.items == null || b.block == null) return 0;
+        // 协作组合的方块容量是"放大后"的（组容量），统计组容量时必须用放大前的基础值
+        Integer coopBase = CoopCombo.coopBaseItemCap(b);
+        if(coopBase != null) return coopBase;
         return b.block.itemCapacity;
     }
 
@@ -86,6 +94,8 @@ public class ComboReflect {
     /** 用于容量计算的本机液体容量。 */
     public static float baseLiquidCap(Building b){
         if(b == null || b.liquids == null || b.block == null) return 0f;
+        Float coopBase = CoopCombo.coopBaseLiquidCap(b);
+        if(coopBase != null) return coopBase;
         Float base = getFloat(b.block, "baseLiquidCapacity");
         if(base != null && base > 0f) return base;
         return Math.max(b.block.liquidCapacity, 0f);
