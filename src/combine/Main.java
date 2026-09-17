@@ -164,6 +164,9 @@ public class Main extends Mod {
     // 跨组合体网络（连接器/节点）：每帧最多重建一次，避免放一个连接器就重建 5~10 遍
     ComboNet.register();
 
+    // "不组合"名单（设置界面里切换的）从 Core.settings 读回来
+    CoopCombo.loadBlacklist();
+
     // 协作组合（机制本体在 CoopCombo 里）：给"继承原版类但写了新功能的方块"（isExact 过滤掉
     // 的那些子类 / JS 模组方块）用另一条路组合 —— 不替换方块、不动它们的 build 类，
     // 只把相邻同类机器的库存模块接在一起，因此它们自己的配方/配置/更新逻辑全部保留。
@@ -171,6 +174,10 @@ public class Main extends Mod {
     // 同一帧里 CoopCombo/组合仓库再按整张网络算容量与面板，"放下去"和"生效"还是同一帧。
     // （协作分组自己变了的时候，CoopCombo.rebuild 会同步调 ComboNet.rebuild，不靠这个顺序。）
     CoopCombo.register();
+
+    // 设置里的"建筑组合开关"界面（客户端才有 UI，服务端自动跳过）
+    combine.ui.ComboBlockList.register();
+    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
 
     // 组合仓库并仓（机制本体在 CombinedStorageBlock 里）：没连核心时像其它组合建筑一样
     // 共用物品模块（容量相加），连到核心时整块并进核心给核心扩容（任意深度链式）

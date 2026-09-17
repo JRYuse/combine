@@ -12,6 +12,7 @@ import combine.production.CombinedCrafter;
 import combine.storage.CombinedStorageBlock.CombinedStorageBuild;
 import combine.storage.CombinedStorageBlock;
 import combine.util.ComboReflect;
+import arc.Core;
 import arc.Events;
 import arc.struct.ObjectMap;
 import arc.struct.ObjectSet;
@@ -240,24 +241,105 @@ public class CoopCombo {
     eligibleCache.clear();
   }
 
+  // ==================== "不组合"名单的持久化（设置界面用） ====================
+
+  /** 手动标记"不组合"的方块名存在 Core.settings 的这个键里（用 | 分隔）。 */
+  public static final String BLACKLIST_KEY = "combine.blockBlacklist";
+  private static boolean blacklistLoaded = false;
+
+  /** 从 Core.settings 读回名单（启动时调一次，之后靠 ensure 兜底）。 */
+  public static void loadBlacklist() {
+    blacklistLoaded = true;
+    blacklist.clear();
+    if (Core.settings == null)
+      return;
+    String raw = Core.settings.getString(BLACKLIST_KEY, "");
+    for (String s : raw.split("\\|")) {
+      if (!s.isEmpty())
+        blacklist.add(s);
+    }
+    clearEligibilityCache();
+  }
+
+  private static void ensureBlacklistLoaded() {
+    if (!blacklistLoaded)
+      loadBlacklist();
+  }
+
+  /** 把名单写回 Core.settings。 */
+  public static void saveBlacklist() {
+    StringBuilder sb = new StringBuilder();
+    for (String s : blacklist) {
+      if (sb.length() > 0)
+        sb.append('|');
+      sb.append(s);
+    }
+    if (Core.settings != null) {
+      Core.settings.put(BLACKLIST_KEY, sb.toString());
+      Core.settings.saveValues();
+    }
+    clearEligibilityCache();
+  }
+
+  /** 设置界面用：把某个方块标成"不组合/可组合"，返回是否真的变了。 */
+  public static boolean setBlocked(String name, boolean blocked) {
+    if (name == null)
+      return false;
+    ensureBlacklistLoaded();
+    boolean changed = blocked ? blacklist.add(name) : blacklist.remove(name);
+    if (changed) {
+      saveBlacklist();
+      markDirty();   // 立刻重算分组（不用等下一次方块变化）
+    }
+    return changed;
+  }
+
+  /** 这个方块名是不是被手动标成"不组合"。 */
+  public static boolean isBlocked(String name) {
+    ensureBlacklistLoaded();
+    return name != null && blacklist.contains(name);
+  }
+
+  /** 手动"不组合"的名单（拷贝）。 */
+  public static arc.struct.Seq<String> blockedNames() {
+    ensureBlacklistLoaded();
+    arc.struct.Seq<String> out = new arc.struct.Seq<>();
+    for (String s : blacklist)
+      out.add(s);
+    out.sort();
+    return out;
+  }
+
   public static boolean eligible(Block b) {
     if (b == null) return false;
+    ensureBlacklistLoaded();
     Boolean cached = eligibleCache.get(b);
     if (cached != null) return cached;
-    boolean r = computeEligible(b);
+    boolean r = computeEligible(b, false);
     eligibleCache.put(b, r);
     return r;
   }
 
-  private static boolean computeEligible(Block b) {
+  /**
+   * 设置界面用：忽略"手动不组合"名单，只看这个方块**本来**能不能组合。
+   * （界面上要能把它重新勾回"可组合"，所以列清单时不能受手动名单影响）
+   */
+  public static boolean eligibleByClass(Block b) {
+    if (b == null) return false;
+    ensureBlacklistLoaded();
+    return computeEligible(b, true);
+  }
+
+  private static boolean computeEligible(Block b, boolean ignoreManualBlacklist) {
     if (!enabled) return false;
-    // 【不组合名单】传输类等明确不该组合的类（含 js/java 子类）直接排除
-    if (NoCombo.blocked(b)) return false;
+    // 【不组合名单】传输类等明确不该组合的类（含 js/java 子类）直接排除；
+    // 界面上列清单（ignoreManualBlacklist=true）时只看类名单，手动屏蔽的也要能列出来再勾回去
+    if (ignoreManualBlacklist ? NoCombo.blockedByClass(b) : NoCombo.blocked(b)) return false;
     if (b.getClass().getName().startsWith("combine.")) return false;
     // 原版方块一律不碰：combine 该替换的已经替换掉了，剩下没被替换的原版方块
     // （例如 oil-extractor/Fracker 这类"子类但不是匿名类"的）保持原样，别顺手把它们也连起来。
     if (b.getClass().getName().startsWith("mindustry.")) return false;
-    if (blacklist.contains(b.name)) return false;
+    if (!ignoreManualBlacklist && blacklist.contains(b.name)) return false;
     if (b instanceof CoreBlock) return false;
     if (!b.hasItems && !b.hasLiquids) return false;
     return familyOk(b);

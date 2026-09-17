@@ -42,18 +42,56 @@ public class NoCombo {
       mindustry.world.blocks.distribution.Sorter.class,
       mindustry.world.blocks.distribution.OverflowGate.class,
       mindustry.world.blocks.distribution.DirectionalUnloader.class,
-      mindustry.world.blocks.distribution.MassDriver.class
+      mindustry.world.blocks.distribution.MassDriver.class,
+
+      // ——— mindustry.world.blocks.liquid（液体运输：导管、液体路由器、液体桥…）———
+      // 加 LiquidBlock 一个就覆盖了 Conduit/ArmoredConduit/LiquidJunction/LiquidRouter/LiquidBridge，
+      // 也覆盖模组里继承它们写的"液体分流器""气体泵"这类方块（VE 里就有好几个）
+      mindustry.world.blocks.liquid.LiquidBlock.class,
+      mindustry.world.blocks.liquid.Conduit.class,
+      mindustry.world.blocks.liquid.ArmoredConduit.class,
+      mindustry.world.blocks.liquid.LiquidJunction.class,
+      mindustry.world.blocks.liquid.LiquidRouter.class,
+      mindustry.world.blocks.liquid.LiquidBridge.class,
+
+      // ——— 载荷运输（只列真正"搬运"的，别把工厂/重构厂也算进去）———
+      mindustry.world.blocks.payloads.PayloadConveyor.class,
+      mindustry.world.blocks.payloads.PayloadRouter.class,
+      mindustry.world.blocks.payloads.PayloadMassDriver.class,
+      mindustry.world.blocks.payloads.PayloadLoader.class,
+      mindustry.world.blocks.payloads.PayloadUnloader.class,
+      mindustry.world.blocks.payloads.PayloadSource.class,
+      mindustry.world.blocks.payloads.PayloadVoid.class,
+
+      // ——— 装卸器（类在 storage 包里，但语义是运输）———
+      mindustry.world.blocks.storage.Unloader.class
 
   );
 
-  /** 这个方块（或其父类）是不是在"不组合"名单里。 */
+  /**
+   * 这个方块是不是"不组合"：
+   *   · 类在 {@link #classes} 里（含 js/java 子类）；
+   *   · 或者被玩家在设置界面里手动标了"不组合"（见 {@link CoopCombo#isBlocked}）。
+   * 两条路径都走这里：方块替换（Main.processModBlocks / processWalls）和协作组合。
+   */
   public static boolean blocked(Block b) {
+    return blockedByClass(b) || CoopCombo.isBlocked(b.name);
+  }
+
+  /** 只看"类名单"（不含玩家手动屏蔽）。 */
+  public static boolean blockedByClass(Block b) {
     if (b == null)
       return false;
     for (int i = 0; i < classes.size; i++) {
       Class<?> c = classes.get(i);
-      if (c != null && c.isInstance(b))
-        return true;
+      if (c == null || !c.isInstance(b))
+        continue;
+      // 例外：LiquidBlock 既是导管/液体路由器的基类，也是**生产型水泵**（Pump/SolidPump/Fracker）的基类。
+      // 水泵是"产液体"的生产建筑，必须照旧参与组合，不能跟着液体运输一起被排除。
+      if (c == mindustry.world.blocks.liquid.LiquidBlock.class
+          && b instanceof mindustry.world.blocks.production.Pump)
+        continue;
+      return true;
     }
     return false;
   }
