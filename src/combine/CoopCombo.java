@@ -294,13 +294,20 @@ public class CoopCombo {
     return b != null && b.isValid() && (eligible(b.block) || isLinker(b));
   }
 
-  /** 抓取基础容量：内容装配刚结束时调用，此时还没有任何放大。 */
+  /**
+   * 抓取基础容量：内容装配刚结束时调用，此时还没有任何放大。
+   *
+   * 【重要】只认第一次抓到的值。itemCapacity / liquidCapacity / conductivePower 这几个
+   * 字段组合逻辑自己会按组放大（applyCapacities / applyPowerSharing），而这个方法在
+   * {@code WorldLoadEvent} 上也会被叫一次 —— 如果那时再抓一遍，抓到的就是"已经放大过"
+   * 的值，于是每存/读档一次容量就翻一倍（饱和火力倾倒站那种"读写后容量一直涨"）。
+   */
   public static void captureBaseCaps() {
     for (Block b : content.blocks()) {
       if (!eligible(b)) continue;
-      baseItemCap.put(b, b.itemCapacity);
-      baseLiquidCap.put(b, b.liquidCapacity);
-      baseConductive.put(b, b.conductivePower);
+      if (!baseItemCap.containsKey(b)) baseItemCap.put(b, b.itemCapacity);
+      if (!baseLiquidCap.containsKey(b)) baseLiquidCap.put(b, b.liquidCapacity);
+      if (!baseConductive.containsKey(b)) baseConductive.put(b, b.conductivePower);
     }
   }
 

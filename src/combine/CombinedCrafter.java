@@ -1865,11 +1865,7 @@ public class CombinedCrafter extends GenericCrafter {
                     if (icon == null)
                         icon = Core.atlas.find("clear");
                     t.add(new Image(icon)).size(8 * 4);
-                    int count = ComboNet.displayMembers(this, group().size).size;
-                    String title = count > 1
-                            ? "[accent]组合工厂[] x" + count + "\n" + block.getDisplayName(tile)
-                            : block.getDisplayName(tile);
-                    t.labelWrap(title).left().width(160f).padLeft(4);
+                    t.labelWrap(comboPanelTitle()).left().width(160f).padLeft(4);
                 }).growX().left();
                 cont.row();
 
@@ -1904,6 +1900,22 @@ public class CombinedCrafter extends GenericCrafter {
                 cont.add(localIO).growX().left();
             }).width(260f).left();
                 }
+
+        /**
+         * 面板标题。用 {@link ComboNet#displayMembers} 而不是本地 group()：
+         * 组合连接器/节点接起来的整张网络都算"一个组合体"，标题也按网络报数。
+         */
+        public String comboPanelTitle() {
+            int count = comboMemberCount();
+            return count > 1
+                    ? "[accent]组合工厂[] x" + count + "\n" + block.getDisplayName(tile)
+                    : block.getDisplayName(tile);
+        }
+
+        /** 面板上的"x N"：整张网络的成员数（连接器/节点接起来的都算）。 */
+        public int comboMemberCount() {
+            return ComboNet.displayMembers(this, group().size).size;
+        }
 
         public void buildComboBars(Table table) {
             CombinedCrafter cb = (CombinedCrafter) block;
@@ -1954,9 +1966,11 @@ public class CombinedCrafter extends GenericCrafter {
             }
 
             Seq<Item> involvedItems = new Seq<>();
-            for (CombinedCrafterBuild member : group()) {
-                if (member.isValid()) {
-                    for (Item item : ((CombinedCrafter) member.block).cachedItems) {
+            // 用 displayMembers 而不是本地 group()：连接器/节点把别的组合建筑接进来时，
+            // 池子是共用的，对方用到的物品/液体也得有对应条目，否则面板看着"少了一半"。
+            for (Building member : ComboNet.displayMembers(this, group().size)) {
+                if (member.isValid() && member instanceof CombinedCrafterBuild mb) {
+                    for (Item item : ((CombinedCrafter) mb.block).cachedItems) {
                         if (!involvedItems.contains(item))
                             involvedItems.add(item);
                     }
@@ -1978,9 +1992,9 @@ public class CombinedCrafter extends GenericCrafter {
             }
 
             Seq<Liquid> involvedLiquids = new Seq<>();
-            for (CombinedCrafterBuild member : group()) {
-                if (member.isValid()) {
-                    for (Liquid liquid : ((CombinedCrafter) member.block).cachedLiquids) {
+            for (Building member : ComboNet.displayMembers(this, group().size)) {
+                if (member.isValid() && member instanceof CombinedCrafterBuild mb) {
+                    for (Liquid liquid : ((CombinedCrafter) mb.block).cachedLiquids) {
                         if (!involvedLiquids.contains(liquid))
                             involvedLiquids.add(liquid);
                     }

@@ -156,6 +156,15 @@ public class CombinedStorageBlock extends StorageBlock {
 
     ObjectSet<CombinedStorageBuild> visited = new ObjectSet<>();
     Seq<Seq<CombinedStorageBuild>> comps = new Seq<>();
+
+    // 同一张组合连接器/节点网络里的仓库，语义上和"直接贴着"完全一样，必须算同一个分量：
+    // 容量相加、共用一个池子、面板显示整张网络。否则就会出现"池子共享了、容量只算自己"。
+    arc.struct.IntMap<Seq<CombinedStorageBuild>> byNetwork = new arc.struct.IntMap<>();
+    for (CombinedStorageBuild s : storages) {
+      int key = ComboNet.networkKey(s);
+      if (key != 0) byNetwork.get(key, Seq::new).add(s);
+    }
+
     for (CombinedStorageBuild start : storages) {
       if (visited.contains(start)) continue;
       Seq<CombinedStorageBuild> comp = new Seq<>();
@@ -169,6 +178,15 @@ public class CombinedStorageBlock extends StorageBlock {
           if (nb instanceof CombinedStorageBuild other && other.team == data.team
               && other.coreMergeStorage() && visited.add(other)) {
             queue.addLast(other);
+          }
+        }
+        int key = ComboNet.networkKey(cur);
+        if (key != 0) {
+          Seq<CombinedStorageBuild> sameNet = byNetwork.get(key);
+          if (sameNet != null) {
+            for (CombinedStorageBuild other : sameNet) {
+              if (other != cur && other.team == data.team && visited.add(other)) queue.addLast(other);
+            }
           }
         }
       }
@@ -262,6 +280,14 @@ public class CombinedStorageBlock extends StorageBlock {
     }
     ItemModule pool = leader.items != null ? leader.items : new ItemModule();
 
+    // 连了组合连接器/节点时，容量和池子都按"整张网络"算：整组报告网络合计容量，
+    // 相当于这些机器直接贴在一起。池子目标也沿用 ComboNet 选中的那一份，避免两边来回抢。
+    int netCap = ComboNet.networkItemCap(leader);
+    if (netCap > groupCap) groupCap = netCap;
+    int netSize = ComboNet.networkSize(leader);
+    ItemModule netPool = ComboNet.poolModuleFor(leader);
+    if (netPool != null) pool = netPool;
+
     for (CombinedStorageBuild s : comp) {
       if (s.items != null && s.items != pool) {
         boolean duplicate = dedupe && sameItems(s.items, pool);
@@ -272,7 +298,7 @@ public class CombinedStorageBlock extends StorageBlock {
       s.items = pool;
       s.linkedCore = null;
       s.comboStorageCap = groupCap;
-      s.comboGroupSize = comp.size;
+      s.comboGroupSize = Math.max(comp.size, netSize);
     }
     clamp(pool, groupCap);
   }
@@ -377,6 +403,14 @@ public class CombinedStorageBlock extends StorageBlock {
       return comboStorageCap > 0 ? comboStorageCap : itemCapacity;
     }
 
+    /** 面板上那行说明（UI 与测试共用同一处，免得两边算得不一样）。 */
+    public String poolLabel() {
+      int cap = Math.max(comboCapacity(), 1);
+      return linkedCore instanceof CoreBuild
+          ? "[accent]已并入核心[] 容量 " + cap
+          : "[accent]组合仓库组 x" + comboGroupSize + "[] 容量 " + cap;
+    }
+
     /** 并进核心：共用核心的物品模块（容量已计入核心）。 */
     void linkToCore(CoreBuild core, boolean dedupe) {
       if (items != core.items) {
@@ -440,11 +474,8 @@ public class CombinedStorageBlock extends StorageBlock {
     /** 显示组合仓库当前共用的池子（独立组 = 组池；并进核心 = 核心池）。 */
     void showPool(Table table) {
       int cap = Math.max(comboCapacity(), 1);
-      boolean coreLinked = linkedCore instanceof CoreBuild;
       table.row();
-      table.add(coreLinked
-          ? "[accent]已并入核心[] 容量 " + cap
-          : "[accent]组合仓库组 x" + comboGroupSize + "[] 容量 " + cap).left();
+      table.add(poolLabel()).left();
       if (items != null) {
         for (Item item : content.items()) {
           int amount = items.get(item);
