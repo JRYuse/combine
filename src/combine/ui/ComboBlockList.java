@@ -230,9 +230,10 @@ public class ComboBlockList {
     };
 
     table.add("[accent]组合工厂[] [lightgray]· 建筑组合开关").left().padBottom(4f).row();
-    table.add("[lightgray]只影响 js/java 功能扩展建筑（协作组合接管的那些）。[]").left().row();
-    table.add("[lightgray]「关闭组合」立刻生效：这台建筑不再共享物品/液体/电力，容量还原。[]").left().row();
-    table.add("[lightgray]名单存在设置里（本机偏好），不会改动内容表 —— 联机两端不会因为本地开关错位。[]")
+    table.add("[lightgray]「扩展」= js/java 功能扩展建筑（协作组合接管的），可以开关；[]").left().row();
+    table.add("[lightgray]「替换」= 已经被组合方块顶掉的建筑，由组合方块接管，不吃这个开关。[]").left().row();
+    table.add("[lightgray]开关立刻生效：关掉后该建筑不再共享物品/液体/电力，容量还原。[]").left().row();
+    table.add("[lightgray]名单是本机偏好，不改内容表 —— 联机两端不会因为本地开关错位。[]")
         .left().padBottom(8f).row();
 
     TextField field = new TextField();
