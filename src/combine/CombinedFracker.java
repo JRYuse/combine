@@ -20,6 +20,7 @@ import mindustry.gen.Building;
 import mindustry.graphics.Pal;
 import mindustry.logic.LAccess;
 import mindustry.type.Item;
+import mindustry.type.ItemStack;
 import mindustry.type.Liquid;
 import mindustry.ui.Bar;
 import mindustry.world.Block;
@@ -27,6 +28,11 @@ import mindustry.world.Tile;
 import mindustry.world.blocks.production.Fracker;
 import mindustry.world.meta.Stat;
 import mindustry.world.meta.StatUnit;
+import mindustry.type.LiquidStack;
+import mindustry.world.consumers.Consume;
+import mindustry.world.consumers.ConsumeItems;
+import mindustry.world.consumers.ConsumeLiquid;
+import mindustry.world.consumers.ConsumeLiquids;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
 
@@ -271,9 +277,30 @@ public class CombinedFracker extends Fracker {
             return liquids.get(result) < Math.max(comboTotalLiquidCap, 1f) - 0.01f;
         }
 
+        /** 这种液体是不是本机要"吃"的料（原版 consumeLiquid / consumeLiquids）。 */
+        public boolean consumesLiquid(Liquid liquid) {
+            if (liquid == null || block.consumers == null)
+                return false;
+            for (Consume cons : block.consumers) {
+                if (cons instanceof ConsumeLiquid cl && cl.liquid == liquid)
+                    return true;
+                if (cons instanceof ConsumeLiquids cls) {
+                    for (LiquidStack st : cls.liquids)
+                        if (st.liquid == liquid)
+                            return true;
+                }
+            }
+            return false;
+        }
+
         @Override
         public boolean acceptLiquid(Building source, Liquid liquid) {
-            return false; // 产出型泵，不接受外部液体
+            // 以前一律拒收（"产出型泵"）。但 oil-extractor 这类 Fracker 是"吃水/吃料换油"的，
+            // 拒收就会缺料 → efficiency=0 → 完全不工作；面板上也看不到需要的那种液体。
+            // 现在：只有本机真正消费的液体才收，收到"整组容量"为止；纯产出泵仍然拒收。
+            if (!consumesLiquid(liquid))
+                return false;
+            return liquids != null && liquids.get(liquid) < Math.max(comboTotalLiquidCap, 1f) - 0.01f;
         }
 
         /** 收料按"整组容量"算：传送带/装卸器可以直接把料送进组共享池（谁在边上都行）。 */
@@ -385,7 +412,7 @@ public class CombinedFracker extends Fracker {
                     t.add(new Image(icon)).size(8 * 4);
                     int count = ComboNet.displayMembers(this, group().size).size;
                     String title = count > 1
-                            ? "[accent]组合抽油机[] x" + count + "\\n" + block.getDisplayName(tile)
+                            ? "[accent]组合抽油机[] x" + count + "\n" + block.getDisplayName(tile)
                             : block.getDisplayName(tile);
                     t.labelWrap(title).left().width(160f).padLeft(4);
                 }).growX().left();
@@ -418,18 +445,62 @@ public class CombinedFracker extends Fracker {
                     }
                     if (it != null) {
                         final ItemModule fItems = it;
+                        final int itemCap = Math.max(comboTotalItemCap, 1);
+                        // 先列"这台机器要吃的料"（原版 consumeItem）：哪怕池里是 0 也要显示，
+                        // 否则玩家看不到还需要喂什么
+                        ObjectSet<Item> shownItems = new ObjectSet<>();
+                        if (block.consumers != null) {
+                            for (Consume cons : block.consumers) {
+                                if (cons instanceof ConsumeItems ci) {
+                                    for (ItemStack st : ci.items) {
+                                        if (st.item == null || !shownItems.add(st.item))
+                                            continue;
+                                        Item item = st.item;
+                                        barsTable.add(new Bar(
+                                                () -> item.localizedName + ": " + fItems.get(item) + "/" + itemCap,
+                                                () -> item.color,
+                                                () -> fItems.get(item) / (float) itemCap));
+                                        barsTable.row();
+                                    }
+                                }
+                            }
+                        }
                         for (Item item : content.items()) {
-                            if (fItems.get(item) <= 0)
+                            if (fItems.get(item) <= 0 || shownItems.contains(item))
                                 continue;
                             barsTable.add(new Bar(
-                                    () -> item.localizedName + ": " + fItems.get(item) + "/" + Math.max(comboTotalItemCap, 1),
+                                    () -> item.localizedName + ": " + fItems.get(item) + "/" + itemCap,
                                     () -> item.color,
-                                    () -> Math.max(comboTotalItemCap, 1) <= 0 ? 0f
-                                            : fItems.get(item) / (float) Math.max(comboTotalItemCap, 1)));
+                                    () -> fItems.get(item) / (float) itemCap));
                             barsTable.row();
                         }
                     }
                     if (liq != null) {
+                        // 需要输入的液体（原版 consumeLiquid/consumeLiquids）也要显示：
+                        // oil-extractor 就是"吃水换油"，以前面板上根本看不到水
+                        ObjectSet<Liquid> shownLiquids = new ObjectSet<>();
+                        if (block.consumers != null) {
+                            for (Consume cons : block.consumers) {
+                                if (cons instanceof ConsumeLiquid cl) {
+                                    shownLiquids.add(cl.liquid);
+                                } else if (cons instanceof ConsumeLiquids cls) {
+                                    for (LiquidStack st : cls.liquids)
+                                        if (st.liquid != null)
+                                            shownLiquids.add(st.liquid);
+                                }
+                            }
+                        }
+                        final LiquidModule fLiq = liq;
+                        final float lcap = Math.max(comboTotalLiquidCap, 1f);
+                        for (Liquid need : shownLiquids) {
+                            if (need == null || need == result)
+                                continue;
+                            barsTable.add(new Bar(
+                                    () -> need.localizedName + ": " + Strings.fixed(fLiq.get(need), 1) + "/" + Strings.fixed(lcap, 1),
+                                    () -> need.barColor != null ? need.barColor : need.color,
+                                    () -> fLiq.get(need) / lcap));
+                            barsTable.row();
+                        }
                         Liquid out = result;
                         float total = liq.get(out);
                         final float t2 = total, c = Math.max(comboTotalLiquidCap, 1f);

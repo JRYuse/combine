@@ -20,6 +20,10 @@ import mindustry.gen.Building;
 import mindustry.graphics.Pal;
 import mindustry.logic.LAccess;
 import mindustry.type.Liquid;
+import mindustry.type.LiquidStack;
+import mindustry.world.consumers.Consume;
+import mindustry.world.consumers.ConsumeLiquid;
+import mindustry.world.consumers.ConsumeLiquids;
 import mindustry.ui.Bar;
 import mindustry.world.Block;
 import mindustry.world.Tile;
@@ -357,9 +361,30 @@ public class CombinedSolidPump extends SolidPump {
             return liquids.get(result) < Math.max(comboTotalLiquidCap, 1f) - 0.01f;
         }
 
+        /** 这种液体是不是本机要"吃"的料（原版 consumeLiquid / consumeLiquids）。 */
+        public boolean consumesLiquid(Liquid liquid) {
+            if (liquid == null || block.consumers == null)
+                return false;
+            for (Consume cons : block.consumers) {
+                if (cons instanceof ConsumeLiquid cl && cl.liquid == liquid)
+                    return true;
+                if (cons instanceof ConsumeLiquids cls) {
+                    for (LiquidStack st : cls.liquids)
+                        if (st.liquid == liquid)
+                            return true;
+                }
+            }
+            return false;
+        }
+
         @Override
         public boolean acceptLiquid(Building source, Liquid liquid) {
-            return false; // 产出型泵，不接受外部液体
+            // 以前一律拒收（"产出型泵"）。但 oil-extractor 这类 Fracker 是"吃水/吃料换油"的，
+            // 拒收就会缺料 → efficiency=0 → 完全不工作；面板上也看不到需要的那种液体。
+            // 现在：只有本机真正消费的液体才收，收到"整组容量"为止；纯产出泵仍然拒收。
+            if (!consumesLiquid(liquid))
+                return false;
+            return liquids != null && liquids.get(liquid) < Math.max(comboTotalLiquidCap, 1f) - 0.01f;
         }
 
         @Override
@@ -447,7 +472,7 @@ public class CombinedSolidPump extends SolidPump {
                     t.add(new Image(icon)).size(8 * 4);
                     int count = ComboNet.displayMembers(this, group().size).size;
                     String title = count > 1
-                            ? "[accent]组合固体系泵[] x" + count + "\\n" + block.getDisplayName(tile)
+                            ? "[accent]组合固体系泵[] x" + count + "\n" + block.getDisplayName(tile)
                             : block.getDisplayName(tile);
                     t.labelWrap(title).left().width(160f).padLeft(4);
                 }).growX().left();
@@ -473,6 +498,30 @@ public class CombinedSolidPump extends SolidPump {
                             liq = l.liquids;
                     }
                     if (liq != null) {
+                        // 需要输入的液体（有些 SolidPump 子类靠吃液体产液体）也要有 bar
+                        ObjectSet<Liquid> shownLiquids = new ObjectSet<>();
+                        if (block.consumers != null) {
+                            for (Consume cons : block.consumers) {
+                                if (cons instanceof ConsumeLiquid cl) {
+                                    shownLiquids.add(cl.liquid);
+                                } else if (cons instanceof ConsumeLiquids cls) {
+                                    for (LiquidStack st : cls.liquids)
+                                        if (st.liquid != null)
+                                            shownLiquids.add(st.liquid);
+                                }
+                            }
+                        }
+                        final LiquidModule fLiq = liq;
+                        final float lcap2 = Math.max(comboTotalLiquidCap, 1f);
+                        for (Liquid need : shownLiquids) {
+                            if (need == null || need == result)
+                                continue;
+                            barsTable.add(new Bar(
+                                    () -> need.localizedName + ": " + Strings.fixed(fLiq.get(need), 1) + "/" + Strings.fixed(lcap2, 1),
+                                    () -> need.barColor != null ? need.barColor : need.color,
+                                    () -> fLiq.get(need) / lcap2));
+                            barsTable.row();
+                        }
                         Liquid out = result;
                         float total = liq.get(out);
                         final float t2 = total, c = Math.max(comboTotalLiquidCap, 1f);
