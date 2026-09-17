@@ -157,7 +157,9 @@ public class CombinedStorageBlock extends StorageBlock {
     tracked.clear();
     if (world != null) {
       for (Tile tile : world.tiles) {
-        if (tile != null && tile.build instanceof CombinedStorageBuild sb && sb.coreMergeStorage()) {
+        // 所有组合仓库都登记（coreMerge=false 的强化版也要能"相邻成组"，
+        // coreMerge 只决定"要不要并进核心"）
+        if (tile != null && tile.build instanceof CombinedStorageBuild sb) {
           tracked.add(sb);
         }
       }
@@ -171,7 +173,8 @@ public class CombinedStorageBlock extends StorageBlock {
     // ---- 1) 本队所有参与并仓的仓库，按"仓库↔仓库相邻"求连通分量 ----
     Seq<CombinedStorageBuild> storages = new Seq<>();
     for (CombinedStorageBuild sb : tracked) {
-      if (ComboReflect.inWorld(sb) && sb.team == data.team && sb.coreMergeStorage())
+      // 全部纳入分组：coreMerge 只影响"是否并进核心"，不影响"相邻成组共用一个池子"
+      if (ComboReflect.inWorld(sb) && sb.team == data.team)
         storages.add(sb);
     }
 
@@ -199,7 +202,7 @@ public class CombinedStorageBlock extends StorageBlock {
         comp.add(cur);
         for (Building nb : cur.proximity) {
           if (nb instanceof CombinedStorageBuild other && other.team == data.team
-              && other.coreMergeStorage() && visited.add(other)) {
+              && visited.add(other)) {
             queue.addLast(other);
           }
         }
@@ -281,6 +284,12 @@ public class CombinedStorageBlock extends StorageBlock {
 
   /** 这个分量里有没有成员紧挨着本队的核心（有就整块并进核心）。 */
   private static CoreBuild adjoiningCore(Seq<CombinedStorageBuild> comp, TeamData data) {
+    // 强化版仓库（coreMerge=false）本来就不跟核心并仓：整组都没有可并仓的成员时直接不并
+    boolean anyMergeable = false;
+    for (CombinedStorageBuild s : comp)
+      if (s.coreMergeStorage()) { anyMergeable = true; break; }
+    if (!anyMergeable)
+      return null;
     for (CombinedStorageBuild s : comp) {
       for (Building nb : s.proximity) {
         if (nb instanceof CoreBuild core && core.team == data.team && core.isValid())
@@ -563,11 +572,10 @@ public class CombinedStorageBlock extends StorageBlock {
       while (!queue.isEmpty()) {
         CombinedStorageBuild cur = queue.removeFirst();
         out.add(cur);
-        if (!cur.coreMergeStorage())
-          continue; // 强化版仓库（coreMerge=false）不并仓
+        // coreMerge 只影响并核心，不影响"相邻成组"
         for (Building nb : cur.proximity) {
           if (nb instanceof CombinedStorageBuild other && other.team == team
-              && other.coreMergeStorage() && ComboReflect.inWorld(other) && seen.add(other)) {
+              && ComboReflect.inWorld(other) && seen.add(other)) {
             queue.addLast(other);
           }
         }
