@@ -49,6 +49,13 @@ public class ComboBlockList {
    * @param cap 最多返回多少个（<=0 表示不限）；query 为空时建议给个上限，免得一次挂上千行。
    */
   public static Seq<Block> list(String query, int cap) {
+    return list(query, cap, FILTER_EXT);
+  }
+
+  /** 过滤：只看扩展建筑 / 只看会参与组合的 / 全部。 */
+  public static final int FILTER_EXT = 0, FILTER_HANDLED = 1, FILTER_ALL = 2;
+
+  public static Seq<Block> list(String query, int cap, int filter) {
     String q = query == null ? "" : query.trim().toLowerCase();
     Seq<Block> hit = new Seq<>(), rest = new Seq<>();
     for (Block b : Vars.content.blocks()) {
@@ -60,14 +67,42 @@ public class ComboBlockList {
         if (!name.contains(q) && !loc.contains(q))
           continue;
       }
-      if (combinableByNature(b)) hit.add(b); else rest.add(b);
+      int k = kind(b);
+      if (filter == FILTER_EXT && k != 0)
+        continue;
+      if (filter == FILTER_HANDLED && k == 2)
+        continue;
+      if (k == 0) hit.add(b); else rest.add(b);
     }
     hit.sort((a, b2) -> a.name.compareTo(b2.name));
-    rest.sort((a, b2) -> a.name.compareTo(b2.name));
+    rest.sort((a, b2) -> {
+      int ka = kind(a), kb = kind(b2);
+      return ka != kb ? Integer.compare(ka, kb) : a.name.compareTo(b2.name);
+    });
     hit.addAll(rest);
     if (cap > 0 && hit.size > cap)
       hit.truncate(cap);
     return hit;
+  }
+
+  /**
+   * 分类：0 = js/java 功能扩展建筑（协作组合接管的那些）；1 = 会被替换成组合方块的原版/模组方块；
+   * 2 = 其它（本来就不参与组合）。列表按这个顺序排，扩展建筑在最前面。
+   */
+  public static int kind(Block b) {
+    if (b == null)
+      return 2;
+    try {
+      if (CoopCombo.eligibleByClass(b))
+        return 0;
+    } catch (Throwable ignored) {
+    }
+    try {
+      if (Replacer.replaced.containsValue(b, true))
+        return 1;
+    } catch (Throwable ignored) {
+    }
+    return 2;
   }
 
   /** 这个方块本来会不会参与组合（会被替换成组合方块，或会被协作组合接管）。 */
@@ -122,8 +157,27 @@ public class ComboBlockList {
 
   // ==================== 界面 ====================
 
+  /**
+   * 开关点完后再重画列表。
+   *
+   * 【为什么不能直接 run】按钮就在这张表里，点击事件还在派发时就把父表 clearChildren()，
+   * 旧按钮会被当场摘掉（arc 里表现为"点一下闪一下/偶发 getScene() 为空的崩溃"）。
+   * 放到下一帧做，列表已经稳定。
+   */
+  private static void defer(java.lang.Runnable[] rebuild) {
+    if (arc.Core.app == null) {
+      rebuild[0].run();
+      return;
+    }
+    arc.Core.app.post(() -> {
+      if (rebuild[0] != null)
+        rebuild[0].run();
+    });
+  }
+
   private static void build(SettingsTable table) {
     final String[] query = {""};
+    final int[] filter = {FILTER_EXT};
     final Table list = new Table();
     list.top().left();
     list.defaults().left();
@@ -133,34 +187,37 @@ public class ComboBlockList {
       try {
         list.clearChildren();
         boolean searching = query[0] != null && !query[0].trim().isEmpty();
-        Seq<Block> blocks = list(query[0], searching ? 0 : 120);
+        Seq<Block> blocks = list(query[0], searching ? 0 : 120, filter[0]);
         if (blocks.isEmpty()) {
           list.add("[gray]没有匹配的建筑[]").left().row();
           return;
         }
         for (Block b : blocks) {
           final boolean blockedNow = CoopCombo.isBlocked(b.name);
-          final boolean handled = combinableByNature(b);
           list.table(row -> {
             row.left();
             if (b.uiIcon != null)
               row.image(b.uiIcon).size(24f).padRight(6f);
-            row.add(b.localizedName + "   [gray]" + b.name + "[]").left().width(280f);
-            if (blockedNow) {
-              row.button("[scarlet]不组合[]", () -> {
+            int kind = kind(b);
+            String tag = kind == 0 ? "[accent]扩展[]" : (kind == 1 ? "[gray]替换[]" : "[darkGray]—[]");
+            row.add(tag + " " + b.localizedName + "   [gray]" + b.name + "[]").left().width(280f);
+            // 状态用文字写明、按钮只写"动作" —— 免得把"可组合"当成"点一下就能组合"，
+            // 结果点下去反而把它关掉了。
+            if (kind != 0) {
+              // 替换接管 / 本来就不组合：这两类不吃设置里的开关
+              row.add(kind == 1 ? "[gray]由组合方块接管[]" : "[darkGray]不参与组合[]")
+                  .left().width(150f).padLeft(6f);
+            } else if (blockedNow) {
+              row.add("[scarlet]已关闭组合[]").left().width(110f).padLeft(6f);
+              row.button("恢复组合", () -> {
                 CoopCombo.setBlocked(b.name, false);
-                rebuild[0].run();
-              }).width(120f).height(30f).padLeft(6f);
-            } else if (handled) {
-              row.button("[accent]可组合[]", () -> {
-                CoopCombo.setBlocked(b.name, true);
-                rebuild[0].run();
+                defer(rebuild);
               }).width(120f).height(30f).padLeft(6f);
             } else {
-              // 本来就不参与组合的方块（原版多数方块）：也能屏蔽，但先标注清楚
-              row.button("[gray]不参与[]", () -> {
+              row.add("[accent]组合已开启[]").left().width(110f).padLeft(6f);
+              row.button("关闭组合", () -> {
                 CoopCombo.setBlocked(b.name, true);
-                rebuild[0].run();
+                defer(rebuild);
               }).width(120f).height(30f).padLeft(6f);
             }
           }).left().row();
@@ -174,7 +231,9 @@ public class ComboBlockList {
 
     table.add("[accent]组合工厂[] [lightgray]· 建筑组合开关").left().padBottom(4f).row();
     table.add("[lightgray]只影响 js/java 功能扩展建筑（协作组合接管的那些）。[]").left().row();
-    table.add("[lightgray]取消后该建筑不再参与组合，名单会写进设置。[]").left().padBottom(8f).row();
+    table.add("[lightgray]「关闭组合」立刻生效：这台建筑不再共享物品/液体/电力，容量还原。[]").left().row();
+    table.add("[lightgray]名单存在设置里（本机偏好），不会改动内容表 —— 联机两端不会因为本地开关错位。[]")
+        .left().padBottom(8f).row();
 
     TextField field = new TextField();
     field.setMessageText("搜索建筑（英文名 / 中文名）");
@@ -184,22 +243,34 @@ public class ComboBlockList {
     });
     table.add(field).width(430f).left().row();
 
+    table.table(filters -> {
+      filters.left();
+      String[] names = {"只看扩展建筑", "只看会组合的", "全部方块"};
+      for(int i = 0; i < 3; i++){
+        final int mode = i;
+        filters.button(names[i], () -> {
+          filter[0] = mode;
+          rebuild[0].run();
+        }).width(150f).height(30f).padRight(6f);
+      }
+    }).left().padTop(4f).row();
+
     table.table(btns -> {
       btns.left();
       btns.button("全部可组合", () -> {
-        for (Block b : list(query[0], 0))
+        for (Block b : list(query[0], 0, filter[0]))
           CoopCombo.setBlocked(b.name, false);
-        rebuild[0].run();
+        defer(rebuild);
       }).width(140f).height(30f).padRight(6f);
       btns.button("全部不组合", () -> {
-        for (Block b : list(query[0], 0))
+        for (Block b : list(query[0], 0, filter[0]))
           CoopCombo.setBlocked(b.name, true);
-        rebuild[0].run();
+        defer(rebuild);
       }).width(140f).height(30f).padRight(6f);
       btns.button("清空手动名单", () -> {
         for (String name : CoopCombo.blockedNames())
           CoopCombo.setBlocked(name, false);
-        rebuild[0].run();
+        defer(rebuild);
       }).width(160f).height(30f);
     }).left().padTop(6f).row();
 

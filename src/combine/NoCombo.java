@@ -69,10 +69,15 @@ public class NoCombo {
       mindustry.world.blocks.storage.Unloader.class, Incinerator.class);
 
   /**
-   * 这个方块是不是"不组合"：
+   * 这个方块是不是"不组合"（**协作组合**语义）：
    * · 类在 {@link #classes} 里（含 js/java 子类）；
    * · 或者被玩家在设置界面里手动标了"不组合"（见 {@link CoopCombo#isBlocked}）。
-   * 两条路径都走这里：方块替换（Main.processModBlocks / processWalls）和协作组合。
+   *
+   * 【只给协作组合用】方块替换（Main.processModBlocks / processWalls）**必须**改走
+   * {@link #blockedByClass}：协作组合的黑名单是存在 {@code Core.settings} 里的**本机**偏好，
+   * 而替换会改变内容表的顺序/id —— 两端不一致联机就会错位（组合建筑变空气）；
+   * 而且"在设置里点一下，重启后整个模组的组合建筑全变回原版建筑"也正是这么来的。
+   * 要排除某个会被替换的方块，用模组内的 whitelist.json（两端同一个文件）。
    */
   public static boolean blocked(Block b) {
     return blockedByClass(b) || CoopCombo.isBlocked(b.name);

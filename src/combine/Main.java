@@ -407,8 +407,10 @@ public class Main extends Mod {
         continue;
       if (list.contains(b.name))
         continue;
-      // 不组合名单（按类，含 js/java 子类）：传送带/管道/桥/分流器这类运输方块
-      if (NoCombo.blocked(b))
+      // 不组合名单（**只按类**，含 js/java 子类）：传送带/管道/桥/分流器这类运输方块。
+      // 这里绝不能看设置界面里的手动黑名单（Core.settings，本机偏好）：
+      // 替换会改内容表 id，两端不一致联机就错位；而且改一下就整模组组合建筑变原版。
+      if (NoCombo.blockedByClass(b))
         continue;
       if (isExact(b, Incinerator.class))
         continue;
@@ -612,7 +614,8 @@ public class Main extends Mod {
       Block b = (Block) c;
       if (b instanceof LinkWall)
         continue;
-      if (NoCombo.blocked(b))
+      // 同上：只按类排除，不看设置界面里的手动黑名单
+      if (NoCombo.blockedByClass(b))
         continue;
       boolean isWall = isExact(b, Wall.class);
       boolean isDoor = isExact(b, mindustry.world.blocks.defense.Door.class);
