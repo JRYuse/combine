@@ -49,9 +49,6 @@ public class CoopPanel {
   private static final Table table = new Table();
   private static Building build;
   private static boolean built = false;
-  private static float emptyTime = 0f;
-  /** 面板最近一次打开的时间：刚打开的一小段时间内不做任何自动收起。 */
-  private static float shownAt = -999f;
 
   /** 客户端加载完成后调用：把面板挂到 HUD 上。 */
   public static void init() {
@@ -125,21 +122,15 @@ public class CoopPanel {
 
   public static void showFor(Building t) {
     if (build == t) {
-      hide();
+      // 已经在显示同一台：保持不动（"只有点击其他位置才会关闭"），别把面板切掉
       return;
     }
     build = t;
-    // 每次打开都重新计时：emptyTime 是"面板开着、池子一直空"的累计值，
-    // 不清零的话上一次攒够 30 秒之后，之后每次打开都会在下一帧被判"空置超时"直接收掉
-    // —— 那就是"闪一下就消失"。
-    emptyTime = 0f;
-    shownAt = Time.time;
     rebuild(true);
   }
 
   public static void hide() {
     build = null;
-    emptyTime = 0f;   // 收起后清零，下次打开重新给 30 秒
     if (table == null) return;
     try {
       table.actions(Actions.scaleTo(0f, 1f, 0.06f), Actions.run(() -> {
@@ -239,21 +230,15 @@ public class CoopPanel {
       table.actions(Actions.scaleTo(1f, 1f, 0.06f));
     }
 
+    // 【不自动收起】面板打开后就一直留着，只在"点了其他位置 / 读档 / 目标失效"时关闭。
+    // （以前有个"池子空置 30 秒自动收起"，但计时器不清零，重开后会瞬间到期，
+    //   表现成"闪一下就没了"；按需求直接去掉这类定时收起。）
     table.update(() -> {
       if (state.isMenu() || build == null || !build.isValid()) {
         hide();
         return;
       }
       updatePosition();
-      // 刚打开的 0.25 秒内不做任何自动收起（兜底：防止"闪一下就消失"）
-      if (Time.time - shownAt < 0.25f) return;
-      // 池子空了/变了就重画（内容变化时刷新数字）
-      if (build.items != null && build.items.total() == 0 && build.liquids != null && build.liquids.currentAmount() <= 0.001f) {
-        emptyTime += Time.delta;
-        if (emptyTime > 30f) hide();
-      } else {
-        emptyTime = 0f;
-      }
     });
   }
 
