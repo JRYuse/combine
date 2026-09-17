@@ -18,7 +18,6 @@ import arc.struct.ObjectIntMap;
 import arc.struct.ObjectSet;
 import arc.struct.Queue;
 import arc.struct.Seq;
-import arc.util.Log;
 import arc.util.Strings;
 import arc.util.Time;
 import arc.util.io.Reads;
@@ -306,8 +305,6 @@ public class CombinedForceProjector extends ForceProjector {
                 StringBuilder sb = new StringBuilder();
                 for (CombinedForceProjectorBuild b : newGroup)
                     if (b.isValid()) sb.append(b.block.name).append(' ');
-                Log.info("[组合工厂][力墙] 重建组合体: 领导者=@(@,@) 成员数=@ 类型=[@]",
-                    newLeader.block.name, newLeader.tileX(), newLeader.tileY(), newGroup.size, sb.toString());
             }
         }
 
@@ -475,7 +472,7 @@ public class CombinedForceProjector extends ForceProjector {
                         for (Liquid liquid : content.liquids()) {
                             float amt = m.liquids.get(liquid);
                             if (amt > 0.001f) {
-                                float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.currentAmount());
+                                float canAccept = Math.max(0f, totalLiquidCap - ComboReflect.liquidTotal(leader.liquids));
                                 float transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0.001f)
                                     leader.liquids.add(liquid, transfer);
@@ -857,7 +854,7 @@ public class CombinedForceProjector extends ForceProjector {
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float currentTotal = liquids.currentAmount();
+            float currentTotal = ComboReflect.liquidTotal(liquids);
             float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
@@ -880,7 +877,7 @@ public class CombinedForceProjector extends ForceProjector {
                     if (icon == null)
                         icon = Core.atlas.find("clear");
                     t.add(new Image(icon)).size(8 * 4);
-                    int count = group().size;
+                    int count = ComboNet.displayMembers(this, group().size).size;
                     String title = count > 1 ? "[accent]组合力场投影[] x" + count + "\n" + block.getDisplayName(tile)
                             : block.getDisplayName(tile);
                     t.labelWrap(title).left().width(160f).padLeft(4);
@@ -1029,7 +1026,7 @@ public class CombinedForceProjector extends ForceProjector {
             table.add("[lightgray]组合体构成:").left();
             table.row();
             ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (CombinedForceProjectorBuild member : group()) {
+            for (Building member : ComboNet.displayMembers(this, group().size)) {
                 if (member.isValid()) {
                     int old = blockCounts.get(member.block, 0);
                     blockCounts.put(member.block, old + 1);

@@ -359,7 +359,7 @@ public class CombinedMendProjector extends MendProjector {
                         for (Liquid liquid : content.liquids()) {
                             float amt = m.liquids.get(liquid);
                             if (amt > 0.001f) {
-                                float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.currentAmount());
+                                float canAccept = Math.max(0f, totalLiquidCap - ComboReflect.liquidTotal(leader.liquids));
                                 float transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0.001f)
                                     leader.liquids.add(liquid, transfer);
@@ -523,7 +523,7 @@ public class CombinedMendProjector extends MendProjector {
             if (isLeader() && comboDirty)
                 rebuildCombo();
             if (liquids != null && comboTotalLiquidCap > 0.001f) {
-                float excess = liquids.currentAmount() - comboTotalLiquidCap;
+                float excess = ComboReflect.liquidTotal(liquids) - comboTotalLiquidCap;
                 if (excess > 0.001f) {
                     for (Liquid l : content.liquids()) {
                         float amt = liquids.get(l);
@@ -589,7 +589,7 @@ public class CombinedMendProjector extends MendProjector {
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float currentTotal = liquids.currentAmount();
+            float currentTotal = ComboReflect.liquidTotal(liquids);
             float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
@@ -611,7 +611,7 @@ public class CombinedMendProjector extends MendProjector {
                     if (icon == null)
                         icon = Core.atlas.find("clear");
                     t.add(new Image(icon)).size(8 * 4);
-                    int count = group().size;
+                    int count = ComboNet.displayMembers(this, group().size).size;
                     String title = count > 1 ? "[accent]组合修复投影[] x" + count + "\n" + block.getDisplayName(tile)
                             : block.getDisplayName(tile);
                     t.labelWrap(title).left().width(160f).padLeft(4);
@@ -722,7 +722,7 @@ public class CombinedMendProjector extends MendProjector {
             table.add("[lightgray]组合体构成:").left();
             table.row();
             ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (CombinedMendProjectorBuild member : group()) {
+            for (Building member : ComboNet.displayMembers(this, group().size)) {
                 if (member.isValid()) {
                     int old = blockCounts.get(member.block, 0);
                     blockCounts.put(member.block, old + 1);

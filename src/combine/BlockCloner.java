@@ -63,7 +63,6 @@ public class BlockCloner {
           if (toField != null && toField.getType() == f.getType()) {
             toField.setAccessible(true);
             if (n.equals("region") || n.equals("fullIcon") || n.equals("uiIcon")) {
-              Log.info("[BC-COPY] @ -> @ | field=@ | val=@", from.name, to.name, n, val);
             }
 
             // FIX[消费者串味]: 数组字段必须新建数组拷贝——直接共享引用的话,
@@ -85,6 +84,18 @@ public class BlockCloner {
     }
   }
 
+  /**
+   * 取贴图，但允许没有图集的环境（专用服务器 Core.atlas 为 null）。
+   * 组合内容现在服务端也要装配，缺图集时返回 null 即可，服务端不会绘制。
+   */
+  static TextureRegion atlasFind(String name){
+    return Core.atlas == null ? null : Core.atlas.find(name);
+  }
+
+  static TextureRegion atlasFind(String name, String fallback){
+    return Core.atlas == null ? null : Core.atlas.find(name, fallback);
+  }
+
   public static void postInit(Block combo) {
     Block original = comboToOriginal.get(combo);
     if (original == null)
@@ -97,17 +108,17 @@ public class BlockCloner {
     combo.uiIcon = original.uiIcon;
     combo.region = (original.region != null && original.region.found())
         ? original.region
-        : Core.atlas.find(original.name);
+        : atlasFind(original.name);
     combo.fullIcon = (original.fullIcon != null && original.fullIcon.found())
         ? original.fullIcon
-        : Core.atlas.find(original.name + "-full", original.name);
+        : atlasFind(original.name + "-full", original.name);
     combo.uiIcon = (original.uiIcon != null && original.uiIcon.found())
         ? original.uiIcon
-        : Core.atlas.find(original.name + "-icon", original.name);
+        : atlasFind(original.name + "-icon", original.name);
     if (combo.region == null) {
       combo.region = (original.region != null && original.region.found())
           ? original.region
-          : Core.atlas.find(original.name);
+          : atlasFind(original.name);
     }
     ObjectMap<String, String> fieldMap = new ObjectMap<>();
     if (combo instanceof CombinedDrill) {
@@ -159,7 +170,11 @@ public class BlockCloner {
     copyRegionArray(original, combo, "teamRegions");
     copyRegionArray(original, combo, "variantRegions");
 
-    // 从原版深拷贝 drawer，然后替换 Liquid 绘制器
+    // 从原版深拷贝 drawer，然后替换 Liquid 绘制器。
+    // 纯绘制用数据：专用服务器没有图集也不会绘制，跳过可省下大量深拷贝与告警。
+    if (Core.atlas == null)
+      return;
+
     try {
       Field comboDrawerF = findField(combo.getClass(), "drawer");
       Field origDrawerF = findField(original.getClass(), "drawer");

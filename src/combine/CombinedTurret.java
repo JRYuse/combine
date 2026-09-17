@@ -359,7 +359,7 @@ public class CombinedTurret extends Turret {
             for (Liquid liquid : content.liquids()) {
               float amt = m.liquids.get(liquid);
               if (amt > 0.001f) {
-                float canAccept = Math.max(0f, totalLiqCap - leader.liquids.currentAmount());
+                float canAccept = Math.max(0f, totalLiqCap - ComboReflect.liquidTotal(leader.liquids));
                 float transfer = Math.min(amt, canAccept);
                 if (transfer > 0.001f)
                   leader.liquids.add(liquid, transfer);
@@ -378,7 +378,7 @@ public class CombinedTurret extends Turret {
       LiquidModule liq = leader.liquids;
       if (liq == null || leader.comboTotalLiquidCap <= 0.001f)
         return;
-      float excess = liq.currentAmount() - leader.comboTotalLiquidCap;
+      float excess = ComboReflect.liquidTotal(liq) - leader.comboTotalLiquidCap;
       if (excess <= 0.001f)
         return;
       for (Liquid l : content.liquids()) {
@@ -697,7 +697,7 @@ public class CombinedTurret extends Turret {
     public void handleLiquid(Building source, Liquid liquid, float amount) {
       if (amount <= 0.001f)
         return;
-      float currentTotal = liquids.currentAmount();
+      float currentTotal = ComboReflect.liquidTotal(liquids);
       float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
       float actual = Math.min(amount, canAccept);
       if (actual > 0.001f)
@@ -721,7 +721,7 @@ public class CombinedTurret extends Turret {
           if (icon == null)
             icon = Core.atlas.find("clear");
           t.add(new Image(icon)).size(8 * 4);
-          int count = group().size;
+          int count = ComboNet.displayMembers(this, group().size).size;
           String title = count > 1 ? "[accent]组合炮塔[] x" + count + "\n" + block.getDisplayName(tile)
               : block.getDisplayName(tile);
           t.labelWrap(title).left().width(160f).padLeft(4);
@@ -751,7 +751,7 @@ public class CombinedTurret extends Turret {
       table.add("[lightgray]组合体构成:").left();
       table.row();
       ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-      for (CombinedTurretBuild member : group()) {
+      for (Building member : ComboNet.displayMembers(this, group().size)) {
         if (member.isValid()) {
           int old = blockCounts.get(member.block, 0);
           blockCounts.put(member.block, old + 1);

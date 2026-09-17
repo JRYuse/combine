@@ -143,7 +143,7 @@ public interface IUnitCombo {
         for (IUnitCombo b : newGroup)
             if (B(b).isValid()) {
                 totalItemCap += B(b).block.itemCapacity;
-                totalLiquidCap += B(b).block.liquidCapacity;
+                totalLiquidCap += ComboReflect.baseLiquidCap(B(b));
             }
         for (IUnitCombo b : newGroup)
             if (B(b).isValid()) {
@@ -510,5 +510,27 @@ public interface IUnitCombo {
     /** 组合方块的跨类型开关契约(CombinedUnitFactory / CombinedReconstructor 的方块侧实现) */
     interface IUnitComboBlock {
         boolean allowCrossTypeCombo();
+    }
+
+    /** 组内是否有成员需要某物品。原版 consumesItem 认不出函数式 ConsumeItemDynamic（单位工厂），
+     *  单位工厂成员需直接查 plans 的配方需求。 */
+    static boolean groupNeedsItem(Seq<? extends IUnitCombo> group, Item item) {
+        for (IUnitCombo m : group) {
+            Building b = B(m);
+            if (!b.isValid())
+                continue;
+            if (b.block.consumesItem(item))
+                return true;
+            if (b instanceof mindustry.world.blocks.units.UnitFactory.UnitFactoryBuild) {
+                for (mindustry.world.blocks.units.UnitFactory.UnitPlan plan
+                        : ((mindustry.world.blocks.units.UnitFactory) b.block).plans) {
+                    for (ItemStack stack : plan.requirements) {
+                        if (stack.item == item)
+                            return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 }

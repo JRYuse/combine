@@ -1,0 +1,786 @@
+package combine;
+
+import arc.struct.IntFloatMap;
+import arc.struct.IntSet;
+import arc.struct.ObjectIntMap;
+import arc.struct.ObjectMap;
+import arc.struct.ObjectSet;
+import arc.struct.Queue;
+import arc.struct.Seq;
+import arc.scene.ui.layout.Table;
+import arc.util.Log;
+import arc.util.Strings;
+import mindustry.gen.Building;
+import mindustry.gen.Groups;
+import mindustry.graphics.Pal;
+import mindustry.type.Item;
+import mindustry.type.Liquid;
+import mindustry.ui.Bar;
+import mindustry.world.Block;
+import mindustry.world.blocks.heat.HeatBlock;
+import mindustry.world.modules.ItemModule;
+import mindustry.world.modules.LiquidModule;
+
+import java.util.IdentityHashMap;
+
+import static mindustry.Vars.content;
+import static mindustry.Vars.state;
+import static mindustry.Vars.world;
+
+/**
+ * 组合连接器 / 组合节点的跨组合体网络。
+ *
+ * 现有 Combined* 建筑各自维护“直接相邻”的本地组合体；这里把多个本地组合体
+ * 通过连接器或节点连成一个网络，统一共享物品/液体模块，并保持各建筑自己的
+ * leader 选举和序列化机制不变。
+ *
+ * 电力走原版电网：连接器是 conductivePower 导体，节点的 links 会由
+ * ComboNodeBuild 同步到原版 PowerModule.links。
+ */
+public class ComboNet {
+    private static final IntFloatMap heatAlloc = new IntFloatMap();
+    private static long heatFrame = -1L;
+    /**
+     * 读档窗口标记。
+     *
+     * 存档时网络里所有成员写的是同一个池模块，读档后每个成员各自拿到一份副本；
+     * 这期间（endMapLoad 的 proximity 刷新 + WorldLoadEvent）出现的任何合并都必须
+     * 按“去重”处理，一旦当成两份真库存相加，池子就会翻倍。
+     */
+    private static boolean loadingWorld = false;
+
+    public static void rebuild(){
+        rebuild(null, false);
+    }
+
+    public static void rebuildExcluding(Building excluded){
+        rebuild(excluded, false);
+    }
+
+    /** WorldLoadBeginEvent：进入读档语义窗口。 */
+    public static void beginWorldLoad(){
+        loadingWorld = true;
+    }
+
+    public static void rebuildLoading(){
+        loadingWorld = true;
+        try{
+            rebuild(null, true);
+        }finally{
+            loadingWorld = false;
+        }
+    }
+
+    /** 只读查询：返回某个连接器/节点所在连通分量里的所有组合建筑成员，用于 display。 */
+    public static Seq<Building> componentMembers(Building linker){
+        Seq<Building> out = new Seq<>();
+        if(world == null || Groups.build == null || linker == null || !linker.isValid()) return out;
+        if(ComboReflect.isComboBuild(linker)){
+            Building l = ComboReflect.leader(linker);
+            if(l != null) linker = l;
+        }
+
+        Seq<Building> all = new Seq<>();
+        for(Building b : Groups.build.copy()){
+            if(b != null && b.isValid()) all.add(b);
+        }
+
+        Seq<Building> groupLeaders = new Seq<>();
+        ObjectSet<Building> seenLeaders = new ObjectSet<>();
+        for(Building b : all){
+            if(!ComboReflect.isComboBuild(b)) continue;
+            Building l = ComboReflect.leader(b);
+            if(l != null && seenLeaders.add(l)) groupLeaders.add(l);
+        }
+
+        Seq<Building> vertices = new Seq<>();
+        ObjectSet<Building> vertexSet = new ObjectSet<>();
+        for(Building b : all){
+            if(b instanceof ComboConnector.ComboConnectorBuild
+                || b instanceof ComboNode.ComboNodeBuild){
+                if(vertexSet.add(b)) vertices.add(b);
+            }
+        }
+        for(Building l : groupLeaders){
+            if(vertexSet.add(l)) vertices.add(l);
+        }
+
+        ObjectMap<Building, Seq<Building>> edges = new ObjectMap<>();
+        for(Building v : vertices) edges.put(v, new Seq<>());
+        for(Building v : vertices){
+            if(v instanceof ComboConnector.ComboConnectorBuild c){
+                for(Building nb : c.proximity){
+                    if(nb == null || !nb.isValid()) continue;
+                    if(nb instanceof ComboConnector.ComboConnectorBuild && vertexSet.contains(nb)){
+                        addEdge(edges, c, nb);
+                    }else if(ComboReflect.isComboBuild(nb)){
+                        Building l = ComboReflect.leader(nb);
+                        if(l != null && vertexSet.contains(l)) addEdge(edges, c, l);
+                    }
+                }
+            }else if(v instanceof ComboNode.ComboNodeBuild n){
+                for(int i = 0; i < n.links.size; i++){
+                    Building link = world.build(n.links.get(i));
+                    if(link == null || !link.isValid() || !ComboReflect.isComboBuild(link)) continue;
+                    Building l = ComboReflect.leader(link);
+                    if(l != null && vertexSet.contains(l)) addEdge(edges, n, l);
+                }
+            }
+        }
+
+        if(!vertexSet.contains(linker)) return out;
+        ObjectSet<Building> visited = new ObjectSet<>();
+        Queue<Building> queue = new Queue<>();
+        queue.addLast(linker);
+        visited.add(linker);
+        while(!queue.isEmpty()){
+            Building cur = queue.removeFirst();
+            if(ComboReflect.isComboBuild(cur)){
+                for(Building m : ComboReflect.group(cur)){
+                    if(m.isValid()) out.addUnique(m);
+                }
+            }
+            Seq<Building> es = edges.get(cur);
+            if(es == null) continue;
+            for(Building nb : es){
+                if(visited.add(nb)) queue.addLast(nb);
+            }
+        }
+        return out;
+    }
+
+
+    /** 显示/生产用的有效物品容量：网络组合存在时按网络成员合计，否则回退到本地缓存值。 */
+    public static int effectiveItemCap(Building self){
+        if(self == null) return 1;
+        int cap = 0;
+        for(Building m : displayMembers(self, ComboReflect.group(self).size)){
+            if(m.isValid()) cap += ComboReflect.baseItemCap(m);
+        }
+        if(cap <= 0){
+            Integer v = ComboReflect.getInt(self, "comboTotalItemCap");
+            cap = v == null ? 0 : v;
+        }
+        return Math.max(cap, 1);
+    }
+
+    /** 显示/生产用的有效液体容量：网络组合存在时按网络成员合计，否则回退到本地缓存值。 */
+    public static float effectiveLiquidCap(Building self){
+        if(self == null) return 1f;
+        float cap = 0f;
+        for(Building m : displayMembers(self, ComboReflect.group(self).size)){
+            if(m.isValid()) cap += ComboReflect.baseLiquidCap(m);
+        }
+        if(cap <= 0.001f){
+            Float v = ComboReflect.getFloat(self, "comboTotalLiquidCap");
+            cap = v == null ? 0f : v;
+        }
+        return Math.max(cap, 1f);
+    }
+
+    /** display 用的“有效组合体”：网络组合大于本地组时返回网络成员，否则返回本地组。 */
+    public static Seq<Building> displayMembers(Building self, int localCount){
+        if(self == null) return new Seq<>();
+        Seq<Building> network = componentMembers(self);
+        if(network.size > localCount) return network;
+        return ComboReflect.group(self);
+    }
+
+    /** 给任意 Combined* 建筑的 display 追加网络组合面板。 */
+    public static boolean addNetworkDisplay(Table table, Building self, int localCount){
+        if(self == null || table == null) return false;
+        Seq<Building> members = componentMembers(self);
+        if(members.size <= localCount) return false;
+
+        table.row();
+        table.add("[accent]网络组合 x" + members.size + "[] " + self.block.localizedName).left();
+
+        Building itemPool = null, liquidPool = null;
+        int totalItemCap = 0;
+        float totalLiquidCap = 0f;
+        for(Building m : members){
+            totalItemCap += ComboReflect.baseItemCap(m);
+            totalLiquidCap += ComboReflect.baseLiquidCap(m);
+            if(m.items != null && (itemPool == null || m.pos() < itemPool.pos())) itemPool = m;
+            if(m.liquids != null && (liquidPool == null || m.pos() < liquidPool.pos())) liquidPool = m;
+        }
+
+        if(itemPool != null && itemPool.items != null){
+            for(Item item : content.items()){
+                int amount = itemPool.items.get(item);
+                if(amount <= 0) continue;
+                final int a = amount;
+                final int cap = Math.max(totalItemCap, 1);
+                table.row();
+                table.add(new Bar(
+                    () -> item.localizedName + ": " + a + "/" + cap,
+                    () -> item.color,
+                    () -> (float)a / cap)).growX().height(18f).pad(4).left();
+            }
+        }
+
+        if(liquidPool != null && liquidPool.liquids != null){
+            for(Liquid liquid : content.liquids()){
+                float amount = liquidPool.liquids.get(liquid);
+                if(amount <= 0.001f) continue;
+                final float a = amount;
+                final float cap = Math.max(totalLiquidCap, 1f);
+                table.row();
+                table.add(new Bar(
+                    () -> liquid.localizedName + ": " + Strings.fixed(a, 1) + "/" + Strings.fixed(cap, 1),
+                    () -> liquid.barColor != null ? liquid.barColor : liquid.color,
+                    () -> a / cap)).growX().height(18f).pad(4).left();
+            }
+        }
+
+        ObjectIntMap<Block> counts = new ObjectIntMap<>();
+        for(Building m : members) counts.increment(m.block, 1);
+        StringBuilder comp = new StringBuilder();
+        for(Block b : counts.keys()){
+            if(comp.length() > 0) comp.append("  ");
+            comp.append(b.localizedName).append("*").append(counts.get(b, 0));
+        }
+        table.row();
+        table.add("[lightgray]构成: " + comp + "[]").left();
+        return true;
+    }
+
+    private static void rebuild(Building excluded, boolean loading){
+        if(world == null || Groups.build == null) return;
+
+        // endMapLoad 阶段连接器/节点会随 proximity 刷新提前触发 rebuild，
+        // 那时各本地组合体手里还是存档写下的重复副本，必须按读档语义处理。
+        boolean loadPhase = loading || loadingWorld || world.isGenerating();
+
+        try{
+            Seq<Building> all = new Seq<>();
+            for(Building b : Groups.build.copy()){
+                if(b != null && b.isValid() && b != excluded) all.add(b);
+            }
+
+            // 1) 先让所有本地组合体完成自己的 leader 选举/邻接重建，再在其上架网络。
+            settleLocalGroups(all);
+
+            // 2) 找出所有本地组合体的 leader（同一组合体只出现一次）。
+            Seq<Building> groupLeaders = new Seq<>();
+            ObjectSet<Building> seenLeaders = new ObjectSet<>();
+            for(Building b : all){
+                if(!ComboReflect.isComboBuild(b)) continue;
+                Building l = ComboReflect.leader(b);
+                if(l != null && seenLeaders.add(l)) groupLeaders.add(l);
+            }
+
+            // 3) 建图：顶点 = 连接器/节点 + 本地组合体 leader。
+            Seq<Building> vertices = new Seq<>();
+            ObjectSet<Building> vertexSet = new ObjectSet<>();
+            for(Building b : all){
+                if(b instanceof ComboConnector.ComboConnectorBuild
+                    || b instanceof ComboNode.ComboNodeBuild){
+                    if(vertexSet.add(b)) vertices.add(b);
+                }
+            }
+            for(Building l : groupLeaders){
+                if(vertexSet.add(l)) vertices.add(l);
+            }
+
+            ObjectMap<Building, Seq<Building>> edges = new ObjectMap<>();
+            for(Building v : vertices) edges.put(v, new Seq<>());
+
+            for(Building v : vertices){
+                if(v instanceof ComboConnector.ComboConnectorBuild c){
+                    for(Building nb : c.proximity){
+                        if(nb == null || !nb.isValid()) continue;
+                        if(nb instanceof ComboConnector.ComboConnectorBuild
+                            && vertexSet.contains(nb)){
+                            addEdge(edges, c, nb);
+                        }else if(ComboReflect.isComboBuild(nb)){
+                            Building l = ComboReflect.leader(nb);
+                            if(l != null && vertexSet.contains(l)) addEdge(edges, c, l);
+                        }
+                    }
+                }else if(v instanceof ComboNode.ComboNodeBuild n){
+                    for(int i = 0; i < n.links.size; i++){
+                        Building link = world.build(n.links.get(i));
+                        if(link == null || !link.isValid() || !ComboReflect.isComboBuild(link)) continue;
+                        Building l = ComboReflect.leader(link);
+                        if(l != null && vertexSet.contains(l)) addEdge(edges, n, l);
+                    }
+                }
+            }
+
+            // 4) 连通分量。
+            ObjectSet<Building> visited = new ObjectSet<>();
+            Seq<Seq<Building>> components = new Seq<>();
+            for(Building v : vertices){
+                if(visited.contains(v)) continue;
+                Seq<Building> comp = new Seq<>();
+                Queue<Building> queue = new Queue<>();
+                queue.addLast(v);
+                visited.add(v);
+                while(!queue.isEmpty()){
+                    Building cur = queue.removeFirst();
+                    comp.add(cur);
+                    Seq<Building> es = edges.get(cur);
+                    if(es == null) continue;
+                    for(Building nb : es){
+                        if(visited.add(nb)) queue.addLast(nb);
+                    }
+                }
+                components.add(comp);
+            }
+
+            // 5) 每个分量的组合体成员：按“当前 leader 归属”收集，不依赖可能过期的 group 缓存。
+            IdentityHashMap<Building, Integer> leaderComponent = new IdentityHashMap<>();
+            for(int i = 0; i < components.size; i++){
+                for(Building b : components.get(i)){
+                    if(ComboReflect.isComboBuild(b)) leaderComponent.put(b, i);
+                }
+            }
+            Seq<Seq<Building>> compMembers = new Seq<>();
+            for(int i = 0; i < components.size; i++) compMembers.add(new Seq<Building>());
+            for(Building b : all){
+                if(!ComboReflect.isComboBuild(b)) continue;
+                Building l = ComboReflect.leader(b);
+                if(l == null) l = b;
+                Integer idx = leaderComponent.get(l);
+                if(idx != null) compMembers.get(idx).add(b);
+            }
+
+            // 6) 断开连接器/节点时：被多个分量共用的模块按分量容量比例拆开，总值不变。
+            splitAcrossComponents(compMembers);
+
+            // 7) 分量内合并共享池：运行期“相加”，读档窗口“去重”。
+            for(Seq<Building> members : compMembers){
+                mergeComponent(members, loadPhase);
+            }
+
+            // 读档语义只在读档过程中生效；任何一次运行期重建都意味着读档已经结束
+            if(!loading && !world.isGenerating()) loadingWorld = false;
+
+            heatAlloc.clear();
+        }catch(Throwable t){
+            Log.err("[combine] ComboNet.rebuild failed", t);
+        }
+    }
+
+    /** 局部组合体在成员被拆后可能仍是脏的单点；先调用它们自己的 rebuildCombo 恢复本地组。 */
+    private static void settleLocalGroups(Seq<Building> all){
+        // 读档留下的“待恢复 leader”先落地(与 updateTile 里的 comboPreUpdate 完全一致)。
+        // 不落地的话这些成员会被当成独立的单点组，池归属与容量都会错位。
+        for(Building b : all){
+            if(ComboReflect.isComboBuild(b) && ComboReflect.hasPendingLeader(b)){
+                ComboReflect.preUpdate(b);
+                // 该成员所属的本地组合体也要重选一次，否则它的 group 缓存可能还是空的
+                Building l = ComboReflect.leader(b);
+                if(l != null && l != b) ComboReflect.setDirty(l, true);
+            }
+        }
+        for(int iteration = 0; iteration < 6; iteration++){
+            ObjectSet<Building> rebuilt = new ObjectSet<>();
+            boolean changed = false;
+            for(Building b : all){
+                if(!ComboReflect.isComboBuild(b) || !ComboReflect.isDirty(b)) continue;
+                if(ComboReflect.hasPendingLeader(b)) continue;
+                Building leader = ComboReflect.leader(b);
+                if(leader == null || !leader.isValid()) continue;
+                if(rebuilt.add(leader)){
+                    ComboReflect.rebuildLocal(leader);
+                    changed = true;
+                }
+            }
+            if(!changed) return;
+        }
+    }
+
+    private static void addEdge(ObjectMap<Building, Seq<Building>> edges, Building a, Building b){
+        if(a == null || b == null || a == b) return;
+        Seq<Building> ea = edges.get(a);
+        if(ea != null) ea.addUnique(b);
+        Seq<Building> eb = edges.get(b);
+        if(eb != null) eb.addUnique(a);
+    }
+
+    /**
+     * 断开连接器/节点时，被多个连通分量共用的物品/液体模块必须拆开，
+     * 否则断开后两个分量仍然共用同一个池。按各分量容量比例分配，拆分前后总值不变。
+     */
+    private static void splitAcrossComponents(Seq<Seq<Building>> comps){
+        splitItemsAcrossComponents(comps);
+        splitLiquidsAcrossComponents(comps);
+    }
+
+    private static void splitItemsAcrossComponents(Seq<Seq<Building>> comps){
+        IdentityHashMap<ItemModule, IntSet> owners = new IdentityHashMap<>();
+        for(int i = 0; i < comps.size; i++){
+            for(Building m : comps.get(i)){
+                if(m.items == null) continue;
+                IntSet set = owners.get(m.items);
+                if(set == null){
+                    set = new IntSet();
+                    owners.put(m.items, set);
+                }
+                set.add(i);
+            }
+        }
+
+        for(var entry : owners.entrySet()){
+            IntSet ownerComps = entry.getValue();
+            if(ownerComps.size <= 1) continue;
+
+            ItemModule old = entry.getKey();
+            int n = ownerComps.size;
+            int[] compIdx = new int[n];
+            int[] caps = new int[n];
+            int totalCap = 0;
+            IntSet.IntSetIterator it = ownerComps.iterator();
+            for(int k = 0; k < n && it.hasNext; k++){
+                compIdx[k] = it.next();
+                caps[k] = Math.max(componentItemCap(comps.get(compIdx[k])), 1);
+                totalCap += caps[k];
+            }
+
+            ItemModule[] shares = new ItemModule[n];
+            for(int k = 0; k < n; k++) shares[k] = new ItemModule();
+            for(Item item : content.items()){
+                int total = old.get(item);
+                if(total <= 0) continue;
+                int remaining = total;
+                for(int k = 0; k < n; k++){
+                    int ideal = (k == n - 1) ? remaining : Math.round(total * (float)caps[k] / totalCap);
+                    ideal = Math.min(ideal, remaining);
+                    if(ideal > 0){
+                        shares[k].add(item, ideal);
+                        remaining -= ideal;
+                    }
+                }
+            }
+            for(int k = 0; k < n; k++){
+                for(Building m : comps.get(compIdx[k])){
+                    if(m.items == old) m.items = shares[k];
+                }
+            }
+        }
+    }
+
+    private static void splitLiquidsAcrossComponents(Seq<Seq<Building>> comps){
+        IdentityHashMap<LiquidModule, IntSet> owners = new IdentityHashMap<>();
+        for(int i = 0; i < comps.size; i++){
+            for(Building m : comps.get(i)){
+                if(m.liquids == null) continue;
+                IntSet set = owners.get(m.liquids);
+                if(set == null){
+                    set = new IntSet();
+                    owners.put(m.liquids, set);
+                }
+                set.add(i);
+            }
+        }
+
+        for(var entry : owners.entrySet()){
+            IntSet ownerComps = entry.getValue();
+            if(ownerComps.size <= 1) continue;
+
+            LiquidModule old = entry.getKey();
+            int n = ownerComps.size;
+            int[] compIdx = new int[n];
+            float[] caps = new float[n];
+            float totalCap = 0f;
+            IntSet.IntSetIterator it = ownerComps.iterator();
+            for(int k = 0; k < n && it.hasNext; k++){
+                compIdx[k] = it.next();
+                caps[k] = Math.max(componentLiquidCap(comps.get(compIdx[k])), 1f);
+                totalCap += caps[k];
+            }
+
+            LiquidModule[] shares = new LiquidModule[n];
+            for(int k = 0; k < n; k++) shares[k] = new LiquidModule();
+            for(Liquid liquid : content.liquids()){
+                float total = old.get(liquid);
+                if(total <= 0.001f) continue;
+                float remaining = total;
+                for(int k = 0; k < n; k++){
+                    float ideal = (k == n - 1) ? remaining : total * caps[k] / totalCap;
+                    ideal = Math.min(ideal, remaining);
+                    if(ideal > 0.001f){
+                        shares[k].add(liquid, ideal);
+                        remaining -= ideal;
+                    }
+                }
+            }
+            for(int k = 0; k < n; k++){
+                for(Building m : comps.get(compIdx[k])){
+                    if(m.liquids == old) m.liquids = shares[k];
+                }
+            }
+        }
+    }
+
+    /**
+     * 分量内统一共享池。
+     * 运行期(loadPhase=false)：各成员手里是真实库存，合并 = 相加到 pos 最小的成员模块；
+     * 读档窗口(loadPhase=true)：各成员手里是存档写下的同一份池的重复副本，
+     * 合并 = 相同副本只留一份、不同内容相加，绝不能把重复副本当两份真库存相加。
+     */
+    private static void mergeComponent(Seq<Building> members, boolean loadPhase){
+        if(members.size <= 0) return;
+
+        ItemModule itemTarget = pickItemModule(members, loadPhase);
+        if(itemTarget != null){
+            for(Building m : members){
+                if(m.items == null || m.items == itemTarget) continue;
+                if(!loadPhase) moveItems(m.items, itemTarget);
+                m.items = itemTarget;
+            }
+        }
+
+        LiquidModule liquidTarget = pickLiquidModule(members, loadPhase);
+        if(liquidTarget != null){
+            for(Building m : members){
+                if(m.liquids == null || m.liquids == liquidTarget) continue;
+                if(!loadPhase) moveLiquids(m.liquids, liquidTarget);
+                m.liquids = liquidTarget;
+            }
+        }
+
+        int itemCap = componentItemCap(members);
+        float liquidCap = componentLiquidCap(members);
+        for(Building m : members){
+            ComboReflect.setItemCap(m, itemCap);
+            ComboReflect.setLiquidCap(m, liquidCap);
+            ComboReflect.markClean(m);
+        }
+    }
+
+    private static ItemModule pickItemModule(Seq<Building> members, boolean loadPhase){
+        Seq<ItemModule> mods = new Seq<>();
+        for(Building m : members){
+            if(m.items != null && !mods.contains(m.items, true)) mods.add(m.items);
+        }
+        if(mods.size <= 1) return mods.isEmpty() ? null : mods.first();
+        return loadPhase ? mergeDistinctItems(members, mods) : moduleOfFirst(members, mods);
+    }
+
+    private static LiquidModule pickLiquidModule(Seq<Building> members, boolean loadPhase){
+        Seq<LiquidModule> mods = new Seq<>();
+        for(Building m : members){
+            if(m.liquids != null && !mods.contains(m.liquids, true)) mods.add(m.liquids);
+        }
+        if(mods.size <= 1) return mods.isEmpty() ? null : mods.first();
+        return loadPhase ? mergeDistinctLiquids(members, mods) : moduleOfFirstLiquid(members, mods);
+    }
+
+    /** 取 pos 最小的成员手里的那份模块，保证每次重建选到同一个池对象。 */
+    private static ItemModule moduleOfFirst(Seq<Building> members, Seq<ItemModule> candidates){
+        ItemModule best = null;
+        int bestPos = Integer.MAX_VALUE;
+        for(Building m : members){
+            if(m.items != null && candidates.contains(m.items, true) && m.pos() < bestPos){
+                best = m.items;
+                bestPos = m.pos();
+            }
+        }
+        return best;
+    }
+
+    private static LiquidModule moduleOfFirstLiquid(Seq<Building> members, Seq<LiquidModule> candidates){
+        LiquidModule best = null;
+        int bestPos = Integer.MAX_VALUE;
+        for(Building m : members){
+            if(m.liquids != null && candidates.contains(m.liquids, true) && m.pos() < bestPos){
+                best = m.liquids;
+                bestPos = m.pos();
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 运行期的目标模块：pos 最小的成员手里的那一份（其余相加进去）。
+     * 读档窗口则要小心：同一份池被每个成员各写了一份完全相同的副本，
+     * 内容相同的副本只能保留一份，内容不同的（旧档/断开残留的分配结果）仍要相加，
+     * 否则要么翻倍、要么丢库存。
+     */
+    private static ItemModule mergeDistinctItems(Seq<Building> members, Seq<ItemModule> mods){
+        Seq<ItemModule> unique = new Seq<>();
+        for(ItemModule mod : mods){
+            boolean dup = false;
+            for(ItemModule seen : unique){
+                if(sameItems(seen, mod)){
+                    dup = true;
+                    break;
+                }
+            }
+            if(!dup) unique.add(mod);
+        }
+        ItemModule dst = moduleOfFirst(members, unique);
+        for(int i = 1; i < unique.size; i++) moveItems(unique.get(i), dst);
+        return dst;
+    }
+
+    private static LiquidModule mergeDistinctLiquids(Seq<Building> members, Seq<LiquidModule> mods){
+        Seq<LiquidModule> unique = new Seq<>();
+        for(LiquidModule mod : mods){
+            boolean dup = false;
+            for(LiquidModule seen : unique){
+                if(sameLiquids(seen, mod)){
+                    dup = true;
+                    break;
+                }
+            }
+            if(!dup) unique.add(mod);
+        }
+        LiquidModule dst = moduleOfFirstLiquid(members, unique);
+        for(int i = 1; i < unique.size; i++) moveLiquids(unique.get(i), dst);
+        return dst;
+    }
+
+    private static boolean sameItems(ItemModule a, ItemModule b){
+        if(a == b) return true;
+        if(a == null || b == null) return false;
+        for(Item item : content.items()){
+            if(a.get(item) != b.get(item)) return false;
+        }
+        return true;
+    }
+
+    private static boolean sameLiquids(LiquidModule a, LiquidModule b){
+        if(a == b) return true;
+        if(a == null || b == null) return false;
+        for(Liquid liquid : content.liquids()){
+            if(Math.abs(a.get(liquid) - b.get(liquid)) > 0.001f) return false;
+        }
+        return true;
+    }
+
+    private static int componentItemCap(Seq<Building> members){
+        int total = 0;
+        for(Building m : members) total += ComboReflect.baseItemCap(m);
+        return total;
+    }
+
+    private static float componentLiquidCap(Seq<Building> members){
+        float total = 0f;
+        for(Building m : members) total += ComboReflect.baseLiquidCap(m);
+        return total;
+    }
+
+    private static void moveItems(ItemModule from, ItemModule to){
+        if(from == null || to == null || from == to) return;
+        for(Item item : content.items()){
+            int amt = from.get(item);
+            if(amt > 0){
+                to.add(item, amt);
+                from.remove(item, amt);
+            }
+        }
+    }
+
+    private static void moveLiquids(LiquidModule from, LiquidModule to){
+        if(from == null || to == null || from == to) return;
+        for(Liquid liquid : content.liquids()){
+            float amt = from.get(liquid);
+            if(amt > 0.001f){
+                to.add(liquid, amt);
+                from.remove(liquid, amt);
+            }
+        }
+    }
+
+    // -------------------- 节点热量网络 --------------------
+
+    public static float heatFor(Building consumer){
+        if(consumer == null) return 0f;
+        beginHeatFrame();
+        Building leader = ComboReflect.leader(consumer);
+        return leader == null ? 0f : heatAlloc.get(leader.pos(), 0f);
+    }
+
+    public static void updateHeatNode(ComboNode.ComboNodeBuild node){
+        if(node == null || state == null || node.power == null) return;
+        beginHeatFrame();
+
+        Seq<Building> groups = linkedHeatGroups(node);
+        int n = groups.size;
+        if(n == 0){
+            node.heat = 0f;
+            return;
+        }
+
+        float[] source = new float[n];
+        float[] demand = new float[n];
+        float totalSource = 0f, totalDemand = 0f;
+        for(int i = 0; i < n; i++){
+            Building leader = groups.get(i);
+            source[i] = groupHeatSource(leader);
+            demand[i] = groupHeatDemand(leader);
+            totalSource += source[i];
+            totalDemand += demand[i];
+        }
+
+        if(totalDemand > 0.001f){
+            for(int i = 0; i < n; i++){
+                float amount = totalSource * demand[i] / totalDemand;
+                heatAlloc.increment(groups.get(i).pos(), amount);
+                if(amount > 0.001f && source[i] > 0.001f){
+                    deductStoredHeat(groups.get(i), amount * source[i] / Math.max(totalSource, 0.001f));
+                }
+            }
+            node.heat = 0f;
+        }else{
+            // 没有网络内需热端时，节点作为 HeatBlock 向相邻的原版/组合需热建筑供热。
+            node.heat = totalSource;
+        }
+    }
+
+    private static Seq<Building> linkedHeatGroups(ComboNode.ComboNodeBuild node){
+        Seq<Building> out = new Seq<>();
+        ObjectSet<Building> seen = new ObjectSet<>();
+        for(int i = 0; i < node.links.size; i++){
+            Building link = world.build(node.links.get(i));
+            if(link == null || !link.isValid() || !ComboReflect.isComboBuild(link)) continue;
+            Building leader = ComboReflect.leader(link);
+            if(leader != null && seen.add(leader)) out.add(leader);
+        }
+        return out;
+    }
+
+    private static float groupHeatSource(Building leader){
+        for(Building m : ComboReflect.group(leader)){
+            if(m.isValid() && m instanceof HeatBlock hb && !(m instanceof ComboNode.ComboNodeBuild)){
+                return Math.max(0f, hb.heat());
+            }
+        }
+        return 0f;
+    }
+
+    private static float groupHeatDemand(Building leader){
+        float demand = 0f;
+        for(Building m : ComboReflect.group(leader)){
+            if(!m.isValid()) continue;
+            Float req = ComboReflect.getFloat(m.block, "heatRequirement");
+            if(req != null && req > 0f) demand += req;
+        }
+        return demand;
+    }
+
+    private static void deductStoredHeat(Building leader, float amount){
+        Building stored = null;
+        for(Building m : ComboReflect.group(leader)){
+            if(ComboReflect.isStoredHeatBuild(m)){
+                stored = m;
+                break;
+            }
+        }
+        if(stored == null && ComboReflect.isStoredHeatBuild(leader)) stored = leader;
+        if(stored == null) return;
+        float cur = ComboReflect.getStoredHeat(stored);
+        ComboReflect.setStoredHeat(stored, Math.max(0f, cur - amount));
+    }
+
+    private static void beginHeatFrame(){
+        if(state != null && heatFrame != state.updateId){
+            heatAlloc.clear();
+            heatFrame = state.updateId;
+        }
+    }
+}

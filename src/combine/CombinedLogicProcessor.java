@@ -227,7 +227,7 @@ public class CombinedLogicProcessor extends LogicBlock {
           if (icon == null)
             icon = Core.atlas.find("clear");
           t.add(new Image(icon)).size(8 * 4);
-          int count = group().size;
+          int count = ComboNet.displayMembers(this, group().size).size;
           String title = count > 1
               ? "[accent]组合逻辑处理器[] x" + count + "\n" + block.getDisplayName(tile)
               : block.getDisplayName(tile);
@@ -280,7 +280,7 @@ public class CombinedLogicProcessor extends LogicBlock {
       table.add("[lightgray]组合体构成:").left();
       table.row();
       ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-      for (CombinedLogicProcessorBuild member : group()) {
+      for (Building member : ComboNet.displayMembers(this, group().size)) {
         if (member.isValid()) {
           int old = blockCounts.get(member.block, 0);
           blockCounts.put(member.block, old + 1);

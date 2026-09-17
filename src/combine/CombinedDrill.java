@@ -493,9 +493,10 @@ public class CombinedDrill extends Block {
         public int facingAmount;
 
         public CombinedDrillBuild leader() {
-            if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null))
+            if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null)) {
                 comboLeader = null;
-            comboDirty = true; // FIX: 失联后允许重建组合
+                comboDirty = true; // FIX: 失联后允许重建组合
+            }
             return comboLeader == null ? this : comboLeader;
         }
 
@@ -738,7 +739,7 @@ public class CombinedDrill extends Block {
                         for (Liquid liquid : content.liquids()) {
                             float amt = member.liquids.get(liquid);
                             if (amt > 0.001f) {
-                                float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.currentAmount());
+                                float canAccept = Math.max(0f, totalLiquidCap - ComboReflect.liquidTotal(leader.liquids));
                                 float transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0.001f)
                                     leader.liquids.add(liquid, transfer);
@@ -914,7 +915,7 @@ public class CombinedDrill extends Block {
 
             // FIX: 每帧强制截断超出的液体
             if (liquids != null && comboTotalLiquidCap > 0.001f) {
-                float excess = liquids.currentAmount() - comboTotalLiquidCap;
+                float excess = ComboReflect.liquidTotal(liquids) - comboTotalLiquidCap;
                 if (excess > 0.001f) {
                     for (Liquid l : content.liquids()) {
                         float amt = liquids.get(l);
@@ -1108,14 +1109,14 @@ public class CombinedDrill extends Block {
                     break;
                 }
             }
-            return needed && liquids != null && liquids.currentAmount() < comboTotalLiquidCap - 0.001f;
+            return needed && liquids != null && ComboReflect.liquidTotal(liquids) < comboTotalLiquidCap - 0.001f;
         }
 
         @Override
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float currentTotal = liquids.currentAmount();
+            float currentTotal = ComboReflect.liquidTotal(liquids);
             float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
@@ -1381,7 +1382,7 @@ public class CombinedDrill extends Block {
                     if (icon == null)
                         icon = Core.atlas.find("clear");
                     t.add(new Image(icon)).size(8 * 4);
-                    int count = group().size;
+                    int count = ComboNet.displayMembers(this, group().size).size;
                     String title = count > 1
                             ? "[accent]组合钻机[] x" + count + "\n" + block.getDisplayName(tile)
                             : block.getDisplayName(tile);
@@ -1453,7 +1454,7 @@ public class CombinedDrill extends Block {
                 for (Item item : content.items()) {
                     int total = items.get(item);
                     if (total > 0) {
-                        final int t = total, c = Math.max(comboTotalItemCap, 1);
+                        final int t = total, c = ComboNet.effectiveItemCap(this);
                         table.add(new Bar(
                                 () -> item.localizedName + ": " + t + "/" + c,
                                 () -> item.color,
@@ -1480,7 +1481,7 @@ public class CombinedDrill extends Block {
                 for (Liquid liquid : content.liquids()) {
                     float total = sharedLiq.get(liquid);
                     if (total > 0.001f) {
-                        final float t = total, c = Math.max(comboTotalLiquidCap, 1f);
+                        final float t = total, c = ComboNet.effectiveLiquidCap(this);
                         table.add(new Bar(
                                 () -> liquid.localizedName + ": " + Strings.fixed(t, 1) + "/" + Strings.fixed(c, 1),
                                 () -> liquid.barColor != null ? liquid.barColor : liquid.color,
@@ -1496,7 +1497,7 @@ public class CombinedDrill extends Block {
             table.add("[lightgray]组合体构成:").left();
             table.row();
             ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (CombinedDrillBuild member : group()) {
+            for (Building member : ComboNet.displayMembers(this, group().size)) {
                 if (member.isValid()) {
                     int old = blockCounts.get(member.block, 0);
                     blockCounts.put(member.block, old + 1);

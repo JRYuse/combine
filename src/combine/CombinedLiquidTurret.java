@@ -325,7 +325,7 @@ public class CombinedLiquidTurret extends LiquidTurret {
             for (Liquid liquid : content.liquids()) {
               float amt = m.liquids.get(liquid);
               if (amt > 0.001f) {
-                float canAccept = Math.max(0f, totalLiqCap - leader.liquids.currentAmount());
+                float canAccept = Math.max(0f, totalLiqCap - ComboReflect.liquidTotal(leader.liquids));
                 float transfer = Math.min(amt, canAccept);
                 if (transfer > 0.001f)
                   leader.liquids.add(liquid, transfer);
@@ -641,7 +641,7 @@ public class CombinedLiquidTurret extends LiquidTurret {
           if (icon == null)
             icon = Core.atlas.find("clear");
           t.add(new Image(icon)).size(8 * 4);
-          int count = group().size;
+          int count = ComboNet.displayMembers(this, group().size).size;
           String title = count > 1 ? "[accent]组合液体炮塔[] x" + count + "\n" + block.getDisplayName(tile)
               : block.getDisplayName(tile);
           t.labelWrap(title).left().width(160f).padLeft(4);
@@ -671,7 +671,7 @@ public class CombinedLiquidTurret extends LiquidTurret {
       table.add("[lightgray]组合体构成:").left();
       table.row();
       ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-      for (CombinedLiquidTurretBuild member : group()) {
+      for (Building member : ComboNet.displayMembers(this, group().size)) {
         if (member.isValid()) {
           int old = blockCounts.get(member.block, 0);
           blockCounts.put(member.block, old + 1);

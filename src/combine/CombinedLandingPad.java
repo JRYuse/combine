@@ -495,7 +495,7 @@ public class CombinedLandingPad extends LandingPad {
             // 液体超限反注入：池子超过组合总容量（旧档残留/合并超额）时，
             // 把多余液体推回相邻液体网络，而不是截断销毁。
             if (liquids != null && comboTotalLiquidCap > 0.001f
-                    && liquids.currentAmount() > comboTotalLiquidCap + 0.001f
+                    && ComboReflect.liquidTotal(liquids) > comboTotalLiquidCap + 0.001f
                     && liquids.current() != null) {
                 dumpLiquid(liquids.current(), 1f, -1);
             }
@@ -514,14 +514,14 @@ public class CombinedLandingPad extends LandingPad {
             // 只接受冷却液（原版 consumeLiquid 字段本身就是 Liquid），
             // 且按组合池总量限制 —— 原版默认按 block.liquidCapacity(9999) 放行会超限
             boolean needed = consumeLiquid != null && liquid == consumeLiquid;
-            return needed && liquids.currentAmount() < comboTotalLiquidCap - 0.001f;
+            return needed && ComboReflect.liquidTotal(liquids) < comboTotalLiquidCap - 0.001f;
         }
 
         @Override
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float currentTotal = liquids.currentAmount();
+            float currentTotal = ComboReflect.liquidTotal(liquids);
             float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
@@ -552,7 +552,7 @@ public class CombinedLandingPad extends LandingPad {
                     if (icon == null)
                         icon = Core.atlas.find("clear");
                     t.add(new Image(icon)).size(8 * 4);
-                    int count = group().size;
+                    int count = ComboNet.displayMembers(this, group().size).size;
                     String title = count > 1
                             ? "[accent]组合接收台[] x" + count + "\n" + block.getDisplayName(tile)
                             : block.getDisplayName(tile);
@@ -630,7 +630,7 @@ public class CombinedLandingPad extends LandingPad {
             table.add("[lightgray]组合体构成:").left();
             table.row();
             ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (CombinedLandingPadBuild member : group()) {
+            for (Building member : ComboNet.displayMembers(this, group().size)) {
                 if (member.isValid()) {
                     int old = blockCounts.get(member.block, 0);
                     blockCounts.put(member.block, old + 1);

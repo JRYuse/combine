@@ -484,7 +484,7 @@ public class CombinedGenerator extends ConsumeGenerator {
         }
       }
       if (newLeader.liquids != null && totalLiqCap > 0.001f) {
-        float excess = newLeader.liquids.currentAmount() - totalLiqCap;
+        float excess = ComboReflect.liquidTotal(newLeader.liquids) - totalLiqCap;
         if (excess > 0.001f) {
           for (Liquid liquid : cachedLiquids) {
             float amt = newLeader.liquids.get(liquid);
@@ -697,7 +697,7 @@ public class CombinedGenerator extends ConsumeGenerator {
             for (Liquid liquid : cachedLiquids) {
               float amt = member.liquids.get(liquid);
               if (amt > 0.001f) {
-                float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.currentAmount());
+                float canAccept = Math.max(0f, totalLiquidCap - ComboReflect.liquidTotal(leader.liquids));
                 float transfer = Math.min(amt, canAccept);
                 if (transfer > 0.001f)
                   leader.liquids.add(liquid, transfer);
@@ -951,11 +951,11 @@ public class CombinedGenerator extends ConsumeGenerator {
       if (outputLiquid != null) {
         float cap = comboLiquidCapacity();
         float added = Math.min(productionEfficiency * delta() * outputLiquid.amount,
-            cap - liquids.get(outputLiquid.liquid));
+            Math.max(0f, cap - ComboReflect.liquidTotal(liquids)));
         liquids.add(outputLiquid.liquid, added);
         dumpLiquid(outputLiquid.liquid);
 
-        if (cb.explodeOnFull && liquids.get(outputLiquid.liquid) >= cap - 0.01f) {
+        if (cb.explodeOnFull && ComboReflect.liquidTotal(liquids) >= cap - 0.01f) {
           kill();
           Events.fire(new GeneratorPressureExplodeEvent(this));
         }
@@ -1238,7 +1238,7 @@ public class CombinedGenerator extends ConsumeGenerator {
           if (icon == null)
             icon = Core.atlas.find("clear");
           t.add(new Image(icon)).size(8 * 4);
-          int count = group().size;
+          int count = ComboNet.displayMembers(this, group().size).size;
           String title = count > 1
               ? "[accent]组合发电机[] x" + count + "\n" + block.getDisplayName(tile)
               : block.getDisplayName(tile);
@@ -1360,7 +1360,7 @@ public class CombinedGenerator extends ConsumeGenerator {
       table.add("[lightgray]组合体构成:").left();
       table.row();
       ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-      for (CombinedGeneratorBuild member : group()) {
+      for (Building member : ComboNet.displayMembers(this, group().size)) {
         if (member.isValid()) {
           int old = blockCounts.get(member.block, 0);
           blockCounts.put(member.block, old + 1);
