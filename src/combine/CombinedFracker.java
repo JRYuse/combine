@@ -293,6 +293,48 @@ public class CombinedFracker extends Fracker {
             return false;
         }
 
+
+        /**
+         * 收液体时按"整组容量"夹住。
+         *
+         * 我们把 liquidCapacity 抬到 9999 是为了让原版管道的流量计算不出现负值（否则池子超过
+         * 单台容量后管道会判定为"满了"而彻底断流），代价是管道一次可以灌进来一大坨 ——
+         * 原版 handleLiquid() 是无脑 add，所以池子能被灌到远超上限（面板上就是 水 4862/160）。
+         * 这里在入口把超出上限的部分直接丢掉。
+         */
+        @Override
+        public void handleLiquid(Building source, Liquid liquid, float amount) {
+            float room = Math.max(comboTotalLiquidCap, 0f) - liquids.get(liquid);
+            if (room <= 0f)
+                return;
+            super.handleLiquid(source, liquid, Math.min(amount, room));
+        }
+
+        /** 物品同理：满了就不再收（原版 handleItem 也是无脑 add）。 */
+        @Override
+        public void handleItem(Building source, Item item) {
+            if (items == null)
+                return;
+            if (items.get(item) >= Math.max(comboTotalItemCap, 1))
+                return;
+            super.handleItem(source, item);
+        }
+
+        /** 读档/合并/拆分后可能留下超容的存量：每帧夹回各自上限（和组合仓库/核心一个口径）。 */
+        public void clampPoolToCaps() {
+            if (items != null) {
+                int cap = Math.max(comboTotalItemCap, 0);
+                for (Item item : content.items())
+                    if (items.get(item) > cap)
+                        items.set(item, cap);
+            }
+            if (liquids != null) {
+                float cap = Math.max(comboTotalLiquidCap, 0f);
+                for (Liquid liquid : content.liquids())
+                    if (liquids.get(liquid) > cap)
+                        liquids.set(liquid, cap);
+            }
+        }
         @Override
         public boolean acceptLiquid(Building source, Liquid liquid) {
             // 以前一律拒收（"产出型泵"）。但 oil-extractor 这类 Fracker 是"吃水/吃料换油"的，
@@ -331,6 +373,7 @@ public class CombinedFracker extends Fracker {
             }
             if (isLeader() && comboDirty)
                 rebuildCombo();
+            clampPoolToCaps();
 
             liquidDrop = result;
             float fraction = Math.max(validTiles + boost + (attribute == null ? 0 : attribute.env()), 0);
