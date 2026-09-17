@@ -50,6 +50,8 @@ public class CoopPanel {
   private static Building build;
   private static boolean built = false;
   private static float emptyTime = 0f;
+  /** 面板最近一次打开的时间：刚打开的一小段时间内不做任何自动收起。 */
+  private static float shownAt = -999f;
 
   /** 客户端加载完成后调用：把面板挂到 HUD 上。 */
   public static void init() {
@@ -127,11 +129,17 @@ public class CoopPanel {
       return;
     }
     build = t;
+    // 每次打开都重新计时：emptyTime 是"面板开着、池子一直空"的累计值，
+    // 不清零的话上一次攒够 30 秒之后，之后每次打开都会在下一帧被判"空置超时"直接收掉
+    // —— 那就是"闪一下就消失"。
+    emptyTime = 0f;
+    shownAt = Time.time;
     rebuild(true);
   }
 
   public static void hide() {
     build = null;
+    emptyTime = 0f;   // 收起后清零，下次打开重新给 30 秒
     if (table == null) return;
     try {
       table.actions(Actions.scaleTo(0f, 1f, 0.06f), Actions.run(() -> {
@@ -237,6 +245,8 @@ public class CoopPanel {
         return;
       }
       updatePosition();
+      // 刚打开的 0.25 秒内不做任何自动收起（兜底：防止"闪一下就消失"）
+      if (Time.time - shownAt < 0.25f) return;
       // 池子空了/变了就重画（内容变化时刷新数字）
       if (build.items != null && build.items.total() == 0 && build.liquids != null && build.liquids.currentAmount() <= 0.001f) {
         emptyTime += Time.delta;
