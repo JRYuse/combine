@@ -5,6 +5,7 @@ import mindustry.gen.Building;
 import mindustry.type.Item;
 import mindustry.type.Liquid;
 import mindustry.world.Block;
+import mindustry.world.Tile;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
 
@@ -13,6 +14,7 @@ import java.lang.reflect.Method;
 
 import static mindustry.Vars.content;
 import static mindustry.Vars.state;
+import static mindustry.Vars.world;
 
 /**
  * 反射访问所有 Combined* / IUnitCombo 建筑共有的组合字段。
@@ -32,6 +34,21 @@ public class ComboReflect {
         // 这样 ComboNet 的池子合并/拆分、连接器/节点、信息面板都能一视同仁。
         if(CoopCombo.eligible(b.block)) return true;
         return hasField(b, "comboGroup") || hasField(b, "comboLeader");
+    }
+
+    /**
+     * 这台机器还属于**当前世界**吗？
+     *
+     * 读档会重建整个世界：旧世界留下的 Building 对象 {@code isValid()} 仍然是 true
+     * （Mindustry 不逐个调用 remove()），只有 {@code world.tile(x,y).build} 才能分辨出
+     * "这块地上的建筑已经换成新对象了"。各处的登记表/网络索引都必须用它过滤，
+     * 否则读档后新旧两批机器会被当成两组、容量直接翻倍（倾倒站那种）。
+     */
+    public static boolean inWorld(Building b){
+        if(b == null || !b.isValid()) return false;
+        if(b.tile == null) return false;
+        Tile t = world == null ? null : world.tile(b.tileX(), b.tileY());
+        return t != null && t.build == b;
     }
 
     public static Building leader(Building b){

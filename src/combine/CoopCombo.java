@@ -274,7 +274,7 @@ public class CoopCombo {
 
   static boolean linkable(Building a, Building b) {
     if (a == null || b == null || a == b) return false;
-    if (!a.isValid() || !b.isValid()) return false;
+    if (!ComboReflect.inWorld(a) || !ComboReflect.inWorld(b)) return false;
     if (a.team != b.team) return false;
     // 连接件当导线：只连"协作组合方块 / 别的连接件"，绝不把普通方块（传送带、容器、核心…）卷进组
     if (isLinker(a)) return joinable(b);
@@ -291,7 +291,7 @@ public class CoopCombo {
 
   /** 能不能被接进组合体：协作组合方块本身，或者连接件。 */
   static boolean joinable(Building b) {
-    return b != null && b.isValid() && (eligible(b.block) || isLinker(b));
+    return ComboReflect.inWorld(b) && (eligible(b.block) || isLinker(b));
   }
 
   /**
@@ -421,14 +421,15 @@ public class CoopCombo {
       // 清掉已经消失的成员
       ObjectSet<Building> dead = new ObjectSet<>();
       for (Building b : tracked) {
-        if (b == null || !b.isValid() || !eligible(b.block)) dead.add(b);
+        // 读档后旧世界的对象 isValid() 还是 true，只有 inWorld 能认出来
+        if (!ComboReflect.inWorld(b) || !eligible(b.block)) dead.add(b);
       }
       for (Building b : dead) tracked.remove(b);
 
       // ---- 0) 组合节点跨距离连线：成员 -> 链到它的节点们 ----
       ObjectMap<Building, Seq<Building>> linkedByNodes = new ObjectMap<>();
       for (Building nb : trackedNodes) {
-        if (nb == null || !nb.isValid() || !(nb instanceof ComboNode.ComboNodeBuild node) || node.links == null) continue;
+        if (!ComboReflect.inWorld(nb) || !(nb instanceof ComboNode.ComboNodeBuild node) || node.links == null) continue;
         for (int i = 0; i < node.links.size; i++) {
           Building link = world.build(node.links.get(i));
           if (link == null || !link.isValid() || !eligible(link.block)) continue;

@@ -122,6 +122,30 @@ public class ComboNet {
         Seq<Building> empty = new Seq<>();
         if(world == null || linker == null || !linker.isValid()) return empty;
 
+        // 组合节点是**跨距离**连接的：节点不在成员的 proximity 里，
+        // 从成员出发的局部 BFS 根本走不到节点，于是"点开一台只能看到自己那一格"。
+        // rebuild 时算好的 netByPos 才是权威，有记录就直接用（并确认这份记录确实是它的）。
+        Seq<Building> indexed = netByPos.get(linker.pos());
+        if(indexed != null && indexed.size > 0){
+            boolean found = false;
+            for(int i = 0; i < indexed.size; i++){
+                if(indexed.get(i) == linker){ found = true; break; }
+            }
+            if(found){
+                boolean allValid = true;
+                for(int i = 0; i < indexed.size; i++){
+                    // 必须用 inWorld：读档后旧世界的建筑 isValid() 仍是 true
+                    if(!ComboReflect.inWorld(indexed.get(i))){ allValid = false; break; }
+                }
+                if(allValid) return indexed;
+                Seq<Building> filtered = new Seq<>();
+                for(int i = 0; i < indexed.size; i++){
+                    if(ComboReflect.inWorld(indexed.get(i))) filtered.add(indexed.get(i));
+                }
+                if(filtered.size > 0 && filtered.contains(linker, true)) return filtered;
+            }
+        }
+
         // 缓存：同一帧内、同一个网络只算一次（组合建筑按组 leader 归并）
         Building key = ComboReflect.isComboBuild(linker) ? ComboReflect.leader(linker) : linker;
         if(key == null || !key.isValid()) key = linker;
@@ -420,17 +444,17 @@ public class ComboNet {
             Seq<Building> all = new Seq<>();
             ObjectSet<Building> allSet = new ObjectSet<>();
             for(Building b : Groups.build.copy()){
-                if(b != null && b.isValid() && b != excluded && allSet.add(b)) all.add(b);
+                if(ComboReflect.inWorld(b) && b != excluded && allSet.add(b)) all.add(b);
             }
             // 组合仓库/容器是 update=false，不会进 Groups.build —— 但它们在连接器/节点网络里
             // 同样要算成员（否则"js 工厂 ↔ 组合仓库"这种网络永远合不到一个池子里）。
             for(CombinedStorageBlock.CombinedStorageBuild sb : CombinedStorageBlock.trackedSet()){
-                if(sb != null && sb.isValid() && sb != excluded && allSet.add(sb)) all.add(sb);
+                if(ComboReflect.inWorld(sb) && sb != excluded && allSet.add(sb)) all.add(sb);
             }
             // 协作组合登记表：里面既有 update=true 的机器，也有各种 update=false 的 mod 仓库/容器，
             // 后者同样不在 Groups.build 里，必须一起补进来才能同池。
             for(Building cb : CoopCombo.trackedBuildings()){
-                if(cb != null && cb.isValid() && cb != excluded && allSet.add(cb)) all.add(cb);
+                if(ComboReflect.inWorld(cb) && cb != excluded && allSet.add(cb)) all.add(cb);
             }
             _tA = System.nanoTime();
 
@@ -545,12 +569,13 @@ public class ComboNet {
                 }
                 netSig = netSig * 31 + 7;
             }
-            // 网络结构变了 → 组合仓库那套逻辑要跟着重算（容量/面板/池子都按整张网络）。
-            // 组合仓库自己只认方块变化事件，连接器/节点的"连上/断开"不会触发它，
-            // 不叫它一声就会出现"池子共享了、容量还是自己那格"。
+            // 网络结构变了 → 两边"本地组合"逻辑都要跟着重算（容量/面板/池子都按整张网络）。
+            // 它们自己只认方块变化事件，连接器/节点的"连上/断开"不会触发它们，
+            // 不叫一声就会出现"池子共享了、容量和面板还是自己那格"。
             if(netSig != lastNetSignature){
                 lastNetSignature = netSig;
                 CombinedStorageBlock.markDirty();
+                CoopCombo.markDirty();
             }
             _tE = System.nanoTime();
             if(timeDebug){

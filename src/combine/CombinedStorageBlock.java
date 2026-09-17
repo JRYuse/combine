@@ -118,7 +118,7 @@ public class CombinedStorageBlock extends StorageBlock {
 
   private static boolean hasTracked(Team team) {
     for (CombinedStorageBuild s : tracked) {
-      if (s != null && s.isValid() && s.team == team) return true;
+      if (ComboReflect.inWorld(s) && s.team == team) return true;
     }
     return false;
   }
@@ -151,7 +151,7 @@ public class CombinedStorageBlock extends StorageBlock {
     // ---- 1) 本队所有参与并仓的仓库，按"仓库↔仓库相邻"求连通分量 ----
     Seq<CombinedStorageBuild> storages = new Seq<>();
     for (CombinedStorageBuild sb : tracked) {
-      if (sb != null && sb.isValid() && sb.team == data.team && sb.coreMergeStorage()) storages.add(sb);
+      if (ComboReflect.inWorld(sb) && sb.team == data.team && sb.coreMergeStorage()) storages.add(sb);
     }
 
     ObjectSet<CombinedStorageBuild> visited = new ObjectSet<>();
