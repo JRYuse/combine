@@ -173,11 +173,6 @@ public class Main extends Mod {
     addBuildWeapons(UnitTypes.quasar, 3);
   }
 
-  /** 兼容旧调用名 */
-  public static void addBuild(UnitType unit, int amount) {
-    addBuildWeapons(unit, amount);
-  }
-
   /**
    * 给指定单位挂 count 把建造武器（幂等：已挂够就跳过，不会叠加）。
    * 想改某个单位的并行数，改 {@link #addBuildWeapons()} 里的数字即可。
@@ -317,8 +312,8 @@ public class Main extends Mod {
     comboNode.health = 120;
     comboNode.size = 1;
     comboNode.alwaysUnlocked = true;
-    comboNode.maxNodes = 3;
-    comboNode.laserRange = 6f;
+    comboNode.maxNodes = 6;
+    comboNode.laserRange = 18f;
     comboNode.init();
     comboNode.postInit();
     if (visuals()) {
@@ -392,7 +387,7 @@ public class Main extends Mod {
       boolean isMend = isExact(b, MendProjector.class);
       // FIX[JS 力墙]: js（或 java）写的 ForceProjector **子类**，只要用到相位护盾这套参数
       // （phaseUseTime / itemConsumer / phaseShieldBoost —— 都是 ForceProjector 上的普通字段，
-      //  BlockCloner 会原样拷到组合力墙上），也纳入组合力墙的替换范围。
+      // BlockCloner 会原样拷到组合力墙上），也纳入组合力墙的替换范围。
       // 用反射读，避免依赖编译期版本有没有这些字段；不想要可以写进 assets/whitelist.json 黑名单。
       boolean isForce = isExact(b, ForceProjector.class);
       if (!isForce && b instanceof ForceProjector) {

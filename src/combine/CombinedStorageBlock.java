@@ -27,16 +27,16 @@ import static mindustry.Vars.world;
  * 并仓机制全部收在本类里，两条规则：
  *
  * 1) 没连核心 —— 跟本模组其它组合建筑一样：相邻成组的仓库**共用一个物品模块**，
- *    组容量 = 各成员容量之和（每个成员 getMaximumAccepted 都返回组容量）。
- *    拆开时按容量比例把池子分开，不丢物品。
+ * 组容量 = 各成员容量之和（每个成员 getMaximumAccepted 都返回组容量）。
+ * 拆开时按容量比例把池子分开，不丢物品。
  *
  * 2) 连通到核心 —— 原版规则（CoreBlock.CoreBuild.onProximityUpdate）的传递闭包：
- *    核心容量 = 自身 + **所有连通**的仓库容量，这些仓库也并进核心的库存模块。
- *    原版只认"直接相邻"一层；这里按 proximity 洪水填充，任意深度都算
- *    （a 连 b、b 连核心 ⇒ a 也算）。
- *    断开（拆掉中间那个）时：分离出去的仓库库存早已在核心池里，所以只解链、给它一份
- *    空模块（=「a 中所有物品进入核心」），再按缩小后的容量把核心库存截断
- *    （=「超出核心容量的部分截断」）。
+ * 核心容量 = 自身 + **所有连通**的仓库容量，这些仓库也并进核心的库存模块。
+ * 原版只认"直接相邻"一层；这里按 proximity 洪水填充，任意深度都算
+ * （a 连 b、b 连核心 ⇒ a 也算）。
+ * 断开（拆掉中间那个）时：分离出去的仓库库存早已在核心池里，所以只解链、给它一份
+ * 空模块（=「a 中所有物品进入核心」），再按缩小后的容量把核心库存截断
+ * （=「超出核心容量的部分截断」）。
  *
  * 全程只改核心自己的 storageCapacity 字段与仓库的 linkedCore/items，不替换原版核心。
  */
@@ -83,7 +83,8 @@ public class CombinedStorageBlock extends StorageBlock {
   }
 
   private static void update() {
-    if (!dirty || state == null || world == null || world.isGenerating()) return;
+    if (!dirty || state == null || world == null || world.isGenerating())
+      return;
     dirty = false;
     // 读档完成后的第一次重算带着"去重"语义；只有真正算完才清掉这个标记
     boolean dedupe = dedupeOnce;
@@ -107,8 +108,10 @@ public class CombinedStorageBlock extends StorageBlock {
       // 有核心的（要扩容）、或者有登记仓库的（要走"独立组合仓库组"规则）都要处理。
       for (Team team : Team.all) {
         TeamData data = team.data();
-        if (data == null) continue;
-        if (data.cores.isEmpty() && !hasTracked(team)) continue;
+        if (data == null)
+          continue;
+        if (data.cores.isEmpty() && !hasTracked(team))
+          continue;
         rebuildTeam(data, dedupe);
       }
     } catch (Throwable t) {
@@ -118,18 +121,21 @@ public class CombinedStorageBlock extends StorageBlock {
 
   private static boolean hasTracked(Team team) {
     for (CombinedStorageBuild s : tracked) {
-      if (ComboReflect.inWorld(s) && s.team == team) return true;
+      if (ComboReflect.inWorld(s) && s.team == team)
+        return true;
     }
     return false;
   }
 
   /** 仓库登记 / 注销（由 {@link CombinedStorageBuild} 自己调用）。 */
   public static void track(CombinedStorageBuild storage) {
-    if (storage != null && tracked.add(storage)) dirty = true;
+    if (storage != null && tracked.add(storage))
+      dirty = true;
   }
 
   public static void untrack(CombinedStorageBuild storage) {
-    if (storage != null && tracked.remove(storage)) dirty = true;
+    if (storage != null && tracked.remove(storage))
+      dirty = true;
   }
 
   /** 读档后全图扫一遍重建登记表（兜底，正常情况下 created() 已经登记过）。 */
@@ -151,7 +157,8 @@ public class CombinedStorageBlock extends StorageBlock {
     // ---- 1) 本队所有参与并仓的仓库，按"仓库↔仓库相邻"求连通分量 ----
     Seq<CombinedStorageBuild> storages = new Seq<>();
     for (CombinedStorageBuild sb : tracked) {
-      if (ComboReflect.inWorld(sb) && sb.team == data.team && sb.coreMergeStorage()) storages.add(sb);
+      if (ComboReflect.inWorld(sb) && sb.team == data.team && sb.coreMergeStorage())
+        storages.add(sb);
     }
 
     ObjectSet<CombinedStorageBuild> visited = new ObjectSet<>();
@@ -162,11 +169,13 @@ public class CombinedStorageBlock extends StorageBlock {
     arc.struct.IntMap<Seq<CombinedStorageBuild>> byNetwork = new arc.struct.IntMap<>();
     for (CombinedStorageBuild s : storages) {
       int key = ComboNet.networkKey(s);
-      if (key != 0) byNetwork.get(key, Seq::new).add(s);
+      if (key != 0)
+        byNetwork.get(key, Seq::new).add(s);
     }
 
     for (CombinedStorageBuild start : storages) {
-      if (visited.contains(start)) continue;
+      if (visited.contains(start))
+        continue;
       Seq<CombinedStorageBuild> comp = new Seq<>();
       Queue<CombinedStorageBuild> queue = new Queue<>();
       queue.addLast(start);
@@ -185,7 +194,8 @@ public class CombinedStorageBlock extends StorageBlock {
           Seq<CombinedStorageBuild> sameNet = byNetwork.get(key);
           if (sameNet != null) {
             for (CombinedStorageBuild other : sameNet) {
-              if (other != cur && other.team == data.team && visited.add(other)) queue.addLast(other);
+              if (other != cur && other.team == data.team && visited.add(other))
+                queue.addLast(other);
             }
           }
         }
@@ -208,13 +218,15 @@ public class CombinedStorageBlock extends StorageBlock {
     // ---- 2) 每个分量：挨着核心 → 并进核心；否则独立组合仓库组 ----
     int capacity = 0;
     for (CoreBuild core : cores) {
-      if (core != null && core.isValid()) capacity += core.block.itemCapacity;
+      if (core != null && core.isValid())
+        capacity += core.block.itemCapacity;
     }
 
     ObjectSet<CombinedStorageBuild> linkedNow = new ObjectSet<>();
     for (Seq<CombinedStorageBuild> comp : comps) {
       int compCap = 0;
-      for (CombinedStorageBuild s : comp) compCap += s.block.itemCapacity;
+      for (CombinedStorageBuild s : comp)
+        compCap += s.block.itemCapacity;
 
       CoreBuild core = adjoiningCore(comp, data);
       if (core != null) {
@@ -230,7 +242,8 @@ public class CombinedStorageBlock extends StorageBlock {
 
     // ---- 3) 曾经连着核心、这次不再连通的仓库：解链（物品已经留在核心池里） ----
     for (CombinedStorageBuild s : storages) {
-      if (s.linkedCore != null && !linkedNow.contains(s)) s.unlinkFromCore();
+      if (s.linkedCore != null && !linkedNow.contains(s))
+        s.unlinkFromCore();
     }
 
     // ---- 4) 刚被拆开的独立组之间可能还共用同一个模块：按容量比例分开，不丢物品 ----
@@ -241,7 +254,8 @@ public class CombinedStorageBlock extends StorageBlock {
     for (CoreBuild core : cores) {
       if (core != null && core.isValid()) {
         core.storageCapacity = capacity;
-        if (coreItems == null) coreItems = core.items;
+        if (coreItems == null)
+          coreItems = core.items;
       }
     }
     if (coreItems != null) {
@@ -255,7 +269,8 @@ public class CombinedStorageBlock extends StorageBlock {
   private static CoreBuild adjoiningCore(Seq<CombinedStorageBuild> comp, TeamData data) {
     for (CombinedStorageBuild s : comp) {
       for (Building nb : s.proximity) {
-        if (nb instanceof CoreBuild core && core.team == data.team && core.isValid()) return core;
+        if (nb instanceof CoreBuild core && core.team == data.team && core.isValid())
+          return core;
       }
     }
     return null;
@@ -276,22 +291,26 @@ public class CombinedStorageBlock extends StorageBlock {
 
     CombinedStorageBuild leader = comp.first();
     for (CombinedStorageBuild s : comp) {
-      if (s.pos() < leader.pos()) leader = s;
+      if (s.pos() < leader.pos())
+        leader = s;
     }
     ItemModule pool = leader.items != null ? leader.items : new ItemModule();
 
     // 连了组合连接器/节点时，容量和池子都按"整张网络"算：整组报告网络合计容量，
     // 相当于这些机器直接贴在一起。池子目标也沿用 ComboNet 选中的那一份，避免两边来回抢。
     int netCap = ComboNet.networkItemCap(leader);
-    if (netCap > groupCap) groupCap = netCap;
+    if (netCap > groupCap)
+      groupCap = netCap;
     int netSize = ComboNet.networkSize(leader);
     ItemModule netPool = ComboNet.poolModuleFor(leader);
-    if (netPool != null) pool = netPool;
+    if (netPool != null)
+      pool = netPool;
 
     for (CombinedStorageBuild s : comp) {
       if (s.items != null && s.items != pool) {
         boolean duplicate = dedupe && sameItems(s.items, pool);
-        if (!duplicate) moveItems(s.items, pool);
+        if (!duplicate)
+          moveItems(s.items, pool);
       }
     }
     for (CombinedStorageBuild s : comp) {
@@ -307,15 +326,18 @@ public class CombinedStorageBlock extends StorageBlock {
   private static void splitSharedModules(Seq<Seq<CombinedStorageBuild>> comps) {
     ObjectMap<ItemModule, Seq<Seq<CombinedStorageBuild>>> byModule = new ObjectMap<>();
     for (Seq<CombinedStorageBuild> comp : comps) {
-      if (comp.isEmpty()) continue;
+      if (comp.isEmpty())
+        continue;
       CombinedStorageBuild first = comp.first();
-      if (first.linkedCore != null || first.items == null) continue;
+      if (first.linkedCore != null || first.items == null)
+        continue;
       byModule.get(first.items, Seq::new).add(comp);
     }
 
     for (ObjectMap.Entry<ItemModule, Seq<Seq<CombinedStorageBuild>>> entry : byModule) {
       Seq<Seq<CombinedStorageBuild>> users = entry.value;
-      if (users.size <= 1) continue;
+      if (users.size <= 1)
+        continue;
 
       ItemModule old = entry.key;
       int n = users.size;
@@ -323,16 +345,19 @@ public class CombinedStorageBlock extends StorageBlock {
       int totalCap = 0;
       for (int i = 0; i < n; i++) {
         int cap = 0;
-        for (CombinedStorageBuild s : users.get(i)) cap += s.block.itemCapacity;
+        for (CombinedStorageBuild s : users.get(i))
+          cap += s.block.itemCapacity;
         caps[i] = Math.max(cap, 1);
         totalCap += caps[i];
       }
 
       ItemModule[] shares = new ItemModule[n];
-      for (int i = 0; i < n; i++) shares[i] = new ItemModule();
+      for (int i = 0; i < n; i++)
+        shares[i] = new ItemModule();
       for (Item item : content.items()) {
         int total = old.get(item);
-        if (total <= 0) continue;
+        if (total <= 0)
+          continue;
         int remaining = total;
         for (int i = 0; i < n; i++) {
           int ideal = i == n - 1 ? remaining : Math.round(total * (float) caps[i] / totalCap);
@@ -344,21 +369,24 @@ public class CombinedStorageBlock extends StorageBlock {
         }
       }
       for (int i = 0; i < n; i++) {
-        for (CombinedStorageBuild s : users.get(i)) s.items = shares[i];
+        for (CombinedStorageBuild s : users.get(i))
+          s.items = shares[i];
         clamp(shares[i], caps[i]);
       }
     }
   }
 
   private static void clamp(ItemModule module, int capacity) {
-    if (module == null) return;
+    if (module == null)
+      return;
     for (Item item : content.items()) {
       module.set(item, Math.min(module.get(item), capacity));
     }
   }
 
   private static void moveItems(ItemModule from, ItemModule to) {
-    if (from == null || to == null || from == to) return;
+    if (from == null || to == null || from == to)
+      return;
     for (Item item : content.items()) {
       int amount = from.get(item);
       if (amount > 0) {
@@ -369,10 +397,13 @@ public class CombinedStorageBlock extends StorageBlock {
   }
 
   private static boolean sameItems(ItemModule a, ItemModule b) {
-    if (a == b) return true;
-    if (a == null || b == null) return false;
+    if (a == b)
+      return true;
+    if (a == null || b == null)
+      return false;
     for (Item item : content.items()) {
-      if (a.get(item) != b.get(item)) return false;
+      if (a.get(item) != b.get(item))
+        return false;
     }
     return true;
   }
@@ -399,7 +430,8 @@ public class CombinedStorageBlock extends StorageBlock {
 
     /** 当前实际可存容量：并进核心 → 核心容量；独立组 → 组容量；都没在组里 → 自身容量。 */
     public int comboCapacity() {
-      if (linkedCore instanceof CoreBuild core && core.isValid()) return core.storageCapacity;
+      if (linkedCore instanceof CoreBuild core && core.isValid())
+        return core.storageCapacity;
       return comboStorageCap > 0 ? comboStorageCap : itemCapacity;
     }
 
@@ -417,7 +449,8 @@ public class CombinedStorageBlock extends StorageBlock {
         // 仓库里本来有自己的一份库存 → 真正并入；
         // 但读档那一轮，每个链接仓库都写了一份核心库存的副本，内容相同就是副本，丢弃而不是相加。
         boolean duplicate = dedupe && sameItems(items, core.items);
-        if (!duplicate) moveItems(items, core.items);
+        if (!duplicate)
+          moveItems(items, core.items);
       }
       items = core.items;
       linkedCore = core;
@@ -447,7 +480,8 @@ public class CombinedStorageBlock extends StorageBlock {
 
     @Override
     public int getMaximumAccepted(Item item) {
-      if (linkedCore != null) return linkedCore.getMaximumAccepted(item);
+      if (linkedCore != null)
+        return linkedCore.getMaximumAccepted(item);
       return comboStorageCap > 0 ? comboStorageCap : itemCapacity;
     }
 
@@ -473,18 +507,37 @@ public class CombinedStorageBlock extends StorageBlock {
 
     /** 显示组合仓库当前共用的池子（独立组 = 组池；并进核心 = 核心池）。 */
     void showPool(Table table) {
-      int cap = Math.max(comboCapacity(), 1);
+      // 【关键】选中方块的信息面板只在**切换选中目标**时重建一次（PlacementFragment 里 hover 没变就直接 return），
+      // 面板搭好之后一直复用。所以这里的数字必须在 update 回调里每帧重取，
+      // 写成构建那一刻的常量就会出现"打开面板时的数量，之后一直不动"。
+      Table pool = new Table();
+      pool.left();
+      pool.update(() -> {
+        pool.clearChildren();
+        pool.defaults().left();
+        ComboUi.safe("combinedstorageblock:pool", () -> buildPool(pool));
+      });
       table.row();
+      table.add(pool).growX().left();
+    }
+
+    /** 物品条的文字：每次调用取当前值（面板每帧重画 + Bar 自己的 update 都会读它）。 */
+    public String itemLabel(Item item) {
+      return item.localizedName + ": " + items.get(item) + "/" + Math.max(comboCapacity(), 1);
+    }
+
+    /** 池子内容：活数据（供面板每帧重画）。 */
+    public void buildPool(Table table) {
       table.add(poolLabel()).left();
       if (items != null) {
         for (Item item : content.items()) {
-          int amount = items.get(item);
-          if (amount <= 0) continue;
+          if (items.get(item) <= 0)
+            continue;
           table.row();
           table.add(new mindustry.ui.Bar(
-              () -> item.localizedName + ": " + amount + "/" + cap,
+              () -> itemLabel(item),
               () -> item.color,
-              () -> (float) amount / cap)).growX().height(18f).pad(4).left();
+              () -> items.get(item) / (float) Math.max(comboCapacity(), 1))).growX().height(18f).pad(4).left();
         }
       }
     }

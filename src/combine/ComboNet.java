@@ -382,47 +382,74 @@ public class ComboNet {
     /** 给任意 Combined* 建筑的 display 追加网络组合面板。 */
     public static boolean addNetworkDisplay(Table table, Building self, int localCount){
         if(self == null || table == null) return false;
-        Seq<Building> members = componentMembers(self);
-        if(members.size <= localCount) return false;
+        if(componentMembers(self).size <= localCount) return false;
 
+        // 同 showPool：面板只在切换目标时重建一次，数字必须每帧重取
+        Table net = new Table();
+        net.left();
+        net.update(() -> {
+            net.clearChildren();
+            net.defaults().left();
+            ComboUi.safe("combonet:network", () -> buildNetworkContent(net, self, localCount));
+        });
         table.row();
+        table.add(net).growX().left();
+        return true;
+    }
+
+    /** 网络面板上一条物品条的文字：每次调用取当前值。 */
+    public static String poolItemText(Building pool, int cap, Item item){
+        return item.localizedName + ": " + (pool == null || pool.items == null ? 0 : pool.items.get(item))
+            + "/" + Math.max(cap, 1);
+    }
+
+    /** 同上，液体版。 */
+    public static String poolLiquidText(Building pool, float cap, Liquid liquid){
+        return liquid.localizedName + ": "
+            + Strings.fixed(pool == null || pool.liquids == null ? 0f : pool.liquids.get(liquid), 1)
+            + "/" + Strings.fixed(Math.max(cap, 1f), 1);
+    }
+
+    /** 网络面板内容：活数据（供面板每帧重画）。 */
+    public static void buildNetworkContent(Table table, Building self, int localCount){
+        Seq<Building> members = componentMembers(self);
+        if(members.size <= localCount) return;
+
         table.add("[accent]网络组合 x" + members.size + "[] " + self.block.localizedName).left();
 
         Building itemPool = null, liquidPool = null;
         int totalItemCap = 0;
         float totalLiquidCap = 0f;
         for(Building m : members){
+            if(!m.isValid()) continue;
             totalItemCap += ComboReflect.baseItemCap(m);
             totalLiquidCap += ComboReflect.baseLiquidCap(m);
             if(m.items != null && (itemPool == null || m.pos() < itemPool.pos())) itemPool = m;
             if(m.liquids != null && (liquidPool == null || m.pos() < liquidPool.pos())) liquidPool = m;
         }
+        final Building fi = itemPool, fl = liquidPool;
+        final int icap = Math.max(totalItemCap, 1);
+        final float lcap = Math.max(totalLiquidCap, 1f);
 
-        if(itemPool != null && itemPool.items != null){
+        if(fi != null && fi.items != null){
             for(Item item : content.items()){
-                int amount = itemPool.items.get(item);
-                if(amount <= 0) continue;
-                final int a = amount;
-                final int cap = Math.max(totalItemCap, 1);
+                if(fi.items.get(item) <= 0) continue;
                 table.row();
                 table.add(new Bar(
-                    () -> item.localizedName + ": " + a + "/" + cap,
+                    () -> poolItemText(fi, icap, item),
                     () -> item.color,
-                    () -> (float)a / cap)).growX().height(18f).pad(4).left();
+                    () -> fi.items == null ? 0f : (float)fi.items.get(item) / icap)).growX().height(18f).pad(4).left();
             }
         }
 
-        if(liquidPool != null && liquidPool.liquids != null){
+        if(fl != null && fl.liquids != null){
             for(Liquid liquid : content.liquids()){
-                float amount = liquidPool.liquids.get(liquid);
-                if(amount <= 0.001f) continue;
-                final float a = amount;
-                final float cap = Math.max(totalLiquidCap, 1f);
+                if(fl.liquids.get(liquid) <= 0.001f) continue;
                 table.row();
                 table.add(new Bar(
-                    () -> liquid.localizedName + ": " + Strings.fixed(a, 1) + "/" + Strings.fixed(cap, 1),
+                    () -> poolLiquidText(fl, lcap, liquid),
                     () -> liquid.barColor != null ? liquid.barColor : liquid.color,
-                    () -> a / cap)).growX().height(18f).pad(4).left();
+                    () -> fl.liquids == null ? 0f : fl.liquids.get(liquid) / lcap)).growX().height(18f).pad(4).left();
             }
         }
 
@@ -435,7 +462,6 @@ public class ComboNet {
         }
         table.row();
         table.add("[lightgray]构成: " + comp + "[]").left();
-        return true;
     }
 
     /** 临时排查用：打印各阶段耗时（默认关）。 */
