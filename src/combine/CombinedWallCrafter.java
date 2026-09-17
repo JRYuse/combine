@@ -488,6 +488,8 @@ public class CombinedWallCrafter extends WallCrafter {
                 barsTable.update(() -> {
                     barsTable.clearChildren();
                     barsTable.defaults().growX().height(18f).pad(4);
+                    // 血条：手绘（不要用 displayBars —— 它会把原版那条按假容量 9999 算的液条也带出来，
+                    // 和组合自己的液条重复）
                     if (!Mathf.zero(block.health, 0.001f)) {
                         final float h = health, mh = maxHealth;
                         barsTable.add(new Bar(
@@ -495,6 +497,12 @@ public class CombinedWallCrafter extends WallCrafter {
                                 () -> Pal.health, () -> Mathf.clamp(h / mh)));
                         barsTable.row();
                     }
+                    // 电力条：按整组耗电显示（组里没人耗电就不画）
+                    float totalPowerUsage = 0f;
+                    for (CombinedWallCrafterBuild member : group())
+                        if (member.isValid() && member.block.consPower != null)
+                            totalPowerUsage += member.block.consPower.usage;
+                    ComboUi.addPowerBar(barsTable, this, totalPowerUsage);
                     final float le = lastEfficiency;
                     barsTable.add(new Bar(
                             () -> Core.bundle.format("bar.drillspeed", Strings.fixed(le * 60 / drillTime, 2)),

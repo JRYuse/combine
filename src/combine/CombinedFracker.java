@@ -20,36 +20,41 @@ import mindustry.gen.Building;
 import mindustry.graphics.Pal;
 import mindustry.logic.LAccess;
 import mindustry.type.Item;
+import mindustry.type.ItemStack;
 import mindustry.type.Liquid;
-import mindustry.type.LiquidStack;
-import mindustry.world.consumers.Consume;
-import mindustry.world.consumers.ConsumeLiquid;
-import mindustry.world.consumers.ConsumeLiquids;
 import mindustry.ui.Bar;
 import mindustry.world.Block;
 import mindustry.world.Tile;
-import mindustry.world.blocks.production.SolidPump;
+import mindustry.world.blocks.production.Fracker;
 import mindustry.world.meta.Stat;
 import mindustry.world.meta.StatUnit;
+import mindustry.type.LiquidStack;
+import mindustry.world.consumers.Consume;
+import mindustry.world.consumers.ConsumeItems;
+import mindustry.world.consumers.ConsumeLiquid;
+import mindustry.world.consumers.ConsumeLiquids;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
 
 import static mindustry.Vars.*;
 
 /**
- * 组合固体系泵 —— 相邻同型自动组合，共享液体池（总容量 = Σ 单台容量）。
- * 每台按自己地格的 validTiles/boost 产量注入共享池，池子由全体成员向外输出。
+ * 组合抽油机（Fracker / oil-extractor 等）—— 相邻同型自动组合：
+ *   · 共享**液体**池（总容量 = Σ 单台容量），每台按自己地格的 validTiles/boost 注入，池子由全体输出；
+ *   · 共享**物品**池（总容量 = Σ 单台容量），Fracker 每攒够 itemUseTime 就"吃"一次料，
+ *     从组共享池里扣 —— 所以同伴送进来的料也能喂给组里任意一台。
  * 复刻原版 SolidPumpBuild 的 warmup/pumpTime/lastPump 行为（字段全部继承自
- * SolidPumpBuild，不重复声明）。
+ * FrackerBuild/SolidPumpBuild，不重复声明）。
  */
-public class CombinedSolidPump extends SolidPump {
+public class CombinedFracker extends Fracker {
     public boolean allowCrossTypeCombo = true;
     public float baseLiquidCapacity = 10f;
     public float displayLiquid;
 
-    public CombinedSolidPump(String name) {
+    public CombinedFracker(String name) {
         super(name);
         hasLiquids = true;
+        hasItems = true;
         update = true;
         solid = true;
         sync = true;
@@ -77,14 +82,15 @@ public class CombinedSolidPump extends SolidPump {
         stats.add(Stat.liquidCapacity, displayLiquid, StatUnit.liquidUnits);
     }
 
-    public class CombinedSolidPumpBuild extends SolidPumpBuild {
-        public CombinedSolidPumpBuild comboLeader;
-        public Seq<CombinedSolidPumpBuild> comboGroup = new Seq<>();
+    public class CombinedFrackerBuild extends FrackerBuild {
+        public CombinedFrackerBuild comboLeader;
+        public Seq<CombinedFrackerBuild> comboGroup = new Seq<>();
         public boolean comboDirty = true;
         public float comboTotalLiquidCap = 0f;
+        public int comboTotalItemCap = 0;
         public int pendingLeaderPos = -1;
 
-        public CombinedSolidPumpBuild leader() {
+        public CombinedFrackerBuild leader() {
             if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null))
                 comboLeader = null;
             return comboLeader == null ? this : comboLeader;
@@ -94,8 +100,8 @@ public class CombinedSolidPump extends SolidPump {
             return leader() == this;
         }
 
-        public Seq<CombinedSolidPumpBuild> group() {
-            CombinedSolidPumpBuild l = leader();
+        public Seq<CombinedFrackerBuild> group() {
+            CombinedFrackerBuild l = leader();
             if (l.comboGroup == null)
                 l.comboGroup = new Seq<>();
             return l.comboGroup;
@@ -103,19 +109,19 @@ public class CombinedSolidPump extends SolidPump {
 
         // -------------------- 组合重建 --------------------
         public void rebuildCombo() {
-            Seq<CombinedSolidPumpBuild> oldGroup = comboGroup != null ? new Seq<>(comboGroup) : new Seq<>();
+            Seq<CombinedFrackerBuild> oldGroup = comboGroup != null ? new Seq<>(comboGroup) : new Seq<>();
             comboGroup = new Seq<>();
             comboGroup.add(this);
             IntSet visited = new IntSet();
-            Queue<CombinedSolidPumpBuild> queue = new Queue<>();
+            Queue<CombinedFrackerBuild> queue = new Queue<>();
             queue.add(this);
             visited.add(pos());
             while (!queue.isEmpty()) {
-                CombinedSolidPumpBuild cur = queue.removeFirst();
+                CombinedFrackerBuild cur = queue.removeFirst();
                 for (Building b : cur.proximity) {
-                    if (b instanceof CombinedSolidPumpBuild o && o.team == team && o.isValid()
+                    if (b instanceof CombinedFrackerBuild o && o.team == team && o.isValid()
                             && !visited.contains(o.pos())) {
-                        CombinedSolidPump cb = (CombinedSolidPump) cur.block, ob = (CombinedSolidPump) o.block;
+                        CombinedFracker cb = (CombinedFracker) cur.block, ob = (CombinedFracker) o.block;
                         if (cur.block == o.block || cb.allowCrossTypeCombo || ob.allowCrossTypeCombo) {
                             visited.add(o.pos());
                             queue.addLast(o);
@@ -124,13 +130,13 @@ public class CombinedSolidPump extends SolidPump {
                     }
                 }
             }
-            CombinedSolidPumpBuild newLeader = this;
-            for (CombinedSolidPumpBuild b : comboGroup)
+            CombinedFrackerBuild newLeader = this;
+            for (CombinedFrackerBuild b : comboGroup)
                 if (b.isValid() && b.pos() < newLeader.pos())
                     newLeader = b;
-            Seq<CombinedSolidPumpBuild> newGroup = new Seq<>(comboGroup);
+            Seq<CombinedFrackerBuild> newGroup = new Seq<>(comboGroup);
             newLeader.comboGroup = newGroup;
-            for (CombinedSolidPumpBuild b : newGroup) {
+            for (CombinedFrackerBuild b : newGroup) {
                 if (b.isValid()) {
                     b.comboLeader = newLeader;
                     b.comboGroup = newGroup;
@@ -140,107 +146,38 @@ public class CombinedSolidPump extends SolidPump {
             newLeader.comboLeader = null;
 
             float totalLiqCap = 0f;
-            for (CombinedSolidPumpBuild b : newGroup)
-                if (b.isValid())
-                    totalLiqCap += ((CombinedSolidPump) b.block).baseLiquidCapacity;
-            for (CombinedSolidPumpBuild b : newGroup)
-                if (b.isValid())
+            int totalItemCap = 0;
+            for (CombinedFrackerBuild b : newGroup)
+                if (b.isValid()) {
+                    totalLiqCap += ((CombinedFracker) b.block).baseLiquidCapacity;
+                    totalItemCap += b.block.itemCapacity;
+                }
+            for (CombinedFrackerBuild b : newGroup)
+                if (b.isValid()) {
                     b.comboTotalLiquidCap = totalLiqCap;
+                    b.comboTotalItemCap = totalItemCap;
+                }
 
-            if (oldGroup.size > newGroup.size)
-                splitAssets(oldGroup, newGroup);
+            // 【拆池】这里不自己拆：刚被拆开的组之间可能还共用同一份模块，谁来分都容易分错
+            // （不知道"新"的一共有几组）。ComboNet 每帧会做一次全局拆池：同一份模块被多个
+            // 组件引用时按各组件的基础容量比例拆开，物品/液体都算，分配正确且总值不变。
             shareModules(newLeader);
 
-            for (CombinedSolidPumpBuild old : oldGroup) {
+            for (CombinedFrackerBuild old : oldGroup) {
                 if (old != this && old.isValid() && !newGroup.contains(old)) {
                     old.comboLeader = null;
                     old.comboGroup = new Seq<>();
                     old.comboDirty = true;
                     old.comboTotalLiquidCap = 0f;
+                    old.comboTotalItemCap = 0;
                 }
             }
         }
 
-        /** 被踢出的成员按容量比例分走液体 */
-        public void splitAssets(Seq<CombinedSolidPumpBuild> oldGroup,
-                Seq<CombinedSolidPumpBuild> newGroup) {
-            CombinedSolidPumpBuild oldLeader = null;
-            for (CombinedSolidPumpBuild b : oldGroup) {
-                if (!b.isValid())
-                    continue;
-                for (CombinedSolidPumpBuild o : oldGroup) {
-                    if (o != b && o.isValid() && o.liquids == b.liquids) {
-                        oldLeader = b;
-                        break;
-                    }
-                }
-                if (oldLeader != null)
-                    break;
-            }
-            if (oldLeader == null) {
-                for (CombinedSolidPumpBuild b : oldGroup)
-                    if (b.isValid()) {
-                        oldLeader = b;
-                        break;
-                    }
-            }
-            if (oldLeader == null)
-                oldLeader = this;
-            LiquidModule oldLiquids = oldLeader.liquids;
-            Seq<CombinedSolidPumpBuild> kicked = new Seq<>();
-            for (CombinedSolidPumpBuild b : oldGroup)
-                if (b.isValid() && !newGroup.contains(b))
-                    kicked.add(b);
-            if (kicked.isEmpty())
-                return;
-
-            float oldTotalLiqCap = 0f;
-            for (CombinedSolidPumpBuild b : oldGroup)
-                if (b.isValid())
-                    oldTotalLiqCap += ((CombinedSolidPump) b.block).baseLiquidCapacity;
-            float[] liquidCaps = new float[kicked.size];
-            float kickedTotalLiqCap = 0f;
-            for (int i = 0; i < kicked.size; i++) {
-                CombinedSolidPumpBuild b = kicked.get(i);
-                liquidCaps[i] = ((CombinedSolidPump) b.block).baseLiquidCapacity;
-                kickedTotalLiqCap += liquidCaps[i];
-            }
-            LiquidModule[] newLiquidMods = new LiquidModule[kicked.size];
-            for (int i = 0; i < kicked.size; i++)
-                newLiquidMods[i] = new LiquidModule();
-
-            if (oldLiquids != null && oldTotalLiqCap > 0.001f && kickedTotalLiqCap > 0.001f) {
-                for (Liquid liquid : content.liquids()) {
-                    float total = oldLiquids.get(liquid);
-                    if (total <= 0.001f)
-                        continue;
-                    float kickedTotalShare = total * kickedTotalLiqCap / oldTotalLiqCap;
-                    kickedTotalShare = Math.min(kickedTotalShare, total);
-                    float remaining = kickedTotalShare;
-                    for (int i = 0; i < kicked.size; i++) {
-                        float ideal = (i == kicked.size - 1) ? remaining
-                                : kickedTotalShare * liquidCaps[i] / kickedTotalLiqCap;
-                        ideal = Math.min(ideal, remaining);
-                        if (ideal > 0.001f) {
-                            newLiquidMods[i].add(liquid, ideal);
-                            remaining -= ideal;
-                        }
-                    }
-                    oldLiquids.remove(liquid, kickedTotalShare - remaining);
-                }
-            }
-            if (oldLiquids != null)
-                for (CombinedSolidPumpBuild b : newGroup)
-                    if (b.isValid())
-                        b.liquids = oldLiquids;
-            for (int i = 0; i < kicked.size; i++)
-                kicked.get(i).liquids = newLiquidMods[i];
-        }
-
-        public void shareModules(CombinedSolidPumpBuild leader) {
+        public void shareModules(CombinedFrackerBuild leader) {
             float totalLiquidCap = leader.comboTotalLiquidCap;
             if (leader.liquids == null) {
-                for (CombinedSolidPumpBuild m : group())
+                for (CombinedFrackerBuild m : group())
                     if (m.liquids != null) {
                         leader.liquids = m.liquids;
                         break;
@@ -249,7 +186,7 @@ public class CombinedSolidPump extends SolidPump {
             ObjectSet<LiquidModule> processed = new ObjectSet<>();
             if (leader.liquids != null) {
                 processed.add(leader.liquids);
-                for (CombinedSolidPumpBuild m : group()) {
+                for (CombinedFrackerBuild m : group()) {
                     if (m != leader && m.isValid() && m.liquids != null
                             && !processed.contains(m.liquids)) {
                         processed.add(m.liquids);
@@ -260,9 +197,35 @@ public class CombinedSolidPump extends SolidPump {
                         }
                     }
                 }
-                for (CombinedSolidPumpBuild m : group())
+                for (CombinedFrackerBuild m : group())
                     if (m.isValid())
                         m.liquids = leader.liquids;
+            }
+
+            // 物品同样：组内共用一份模块，容量 = Σ 单台容量（Fracker 吃料从这里扣）
+            if (leader.items == null) {
+                for (CombinedFrackerBuild m : group())
+                    if (m.items != null) {
+                        leader.items = m.items;
+                        break;
+                    }
+            }
+            ObjectSet<ItemModule> processedItems = new ObjectSet<>();
+            if (leader.items != null) {
+                processedItems.add(leader.items);
+                for (CombinedFrackerBuild m : group()) {
+                    if (m != leader && m.isValid() && m.items != null && !processedItems.contains(m.items)) {
+                        processedItems.add(m.items);
+                        for (Item item : content.items()) {
+                            int amt = m.items.get(item);
+                            if (amt > 0)
+                                leader.items.add(item, amt);
+                        }
+                    }
+                }
+                for (CombinedFrackerBuild m : group())
+                    if (m.isValid())
+                        m.items = leader.items;
             }
         }
 
@@ -277,75 +240,26 @@ public class CombinedSolidPump extends SolidPump {
         public void onProximityUpdate() {
             super.onProximityUpdate(); // 原版：重算 boost / validTiles
             comboDirty = true;
-            for (CombinedSolidPumpBuild m : group())
+            for (CombinedFrackerBuild m : group())
                 if (m.isValid())
                     m.comboDirty = true;
         }
 
         @Override
         public void onRemoved() {
-            Seq<CombinedSolidPumpBuild> members = new Seq<>(group());
-            boolean wasLeader = isLeader();
-            LiquidModule oldLiquids = this.liquids;
-            if (!wasLeader && oldLiquids != null) {
-                boolean shared = false;
-                for (CombinedSolidPumpBuild m : members)
-                    if (m != this && m.isValid() && m.liquids == oldLiquids) {
-                        shared = true;
-                        break;
-                    }
-                if (shared)
-                    liquids = new LiquidModule(); // 先脱钩，避免共享池被空模块覆盖
-            }
-            if (wasLeader) {
-                Seq<CombinedSolidPumpBuild> survivors = new Seq<>();
-                for (CombinedSolidPumpBuild b : members)
-                    if (b != this && b.isValid())
-                        survivors.add(b);
-                float[] liquidCaps = new float[survivors.size];
-                float totalLiqCap = 0f;
-                for (int i = 0; i < survivors.size; i++) {
-                    CombinedSolidPumpBuild b = survivors.get(i);
-                    liquidCaps[i] = ((CombinedSolidPump) b.block).baseLiquidCapacity;
-                    totalLiqCap += liquidCaps[i];
+            Seq<CombinedFrackerBuild> members = new Seq<>(group());
+            for (CombinedFrackerBuild m : members) {
+                if (m != this && m.isValid()) {
+                    m.comboLeader = null;
+                    m.comboGroup = new Seq<>();
+                    m.comboDirty = true;
                 }
-                LiquidModule[] liquidMods = new LiquidModule[survivors.size];
-                for (int i = 0; i < survivors.size; i++)
-                    liquidMods[i] = new LiquidModule();
-                if (oldLiquids != null && totalLiqCap > 0.001f) {
-                    for (Liquid liquid : content.liquids()) {
-                        float total = oldLiquids.get(liquid);
-                        if (total <= 0.001f)
-                            continue;
-                        float remaining = total;
-                        for (int i = 0; i < survivors.size; i++) {
-                            float ideal = (i == survivors.size - 1) ? remaining
-                                    : total * liquidCaps[i] / totalLiqCap;
-                            ideal = Math.min(ideal, remaining);
-                            if (ideal > 0.001f) {
-                                liquidMods[i].add(liquid, ideal);
-                                remaining -= ideal;
-                            }
-                        }
-                    }
-                }
-                for (int i = 0; i < survivors.size; i++) {
-                    CombinedSolidPumpBuild b = survivors.get(i);
-                    b.liquids = liquidMods[i];
-                    b.comboLeader = null;
-                    b.comboGroup = new Seq<>();
-                    b.comboDirty = true;
-                    b.comboTotalLiquidCap = 0f;
-                }
-            } else {
-                CombinedSolidPumpBuild leader = leader();
-                if (leader != null && leader.isValid() && leader != this)
-                    leader.comboDirty = true;
             }
             comboLeader = null;
             comboGroup = new Seq<>();
             comboDirty = false;
             comboTotalLiquidCap = 0f;
+            comboTotalItemCap = 0;
             super.onRemoved();
         }
 
@@ -396,8 +310,24 @@ public class CombinedSolidPump extends SolidPump {
             super.handleLiquid(source, liquid, Math.min(amount, room));
         }
 
+        /** 物品同理：满了就不再收（原版 handleItem 也是无脑 add）。 */
+        @Override
+        public void handleItem(Building source, Item item) {
+            if (items == null)
+                return;
+            if (items.get(item) >= Math.max(comboTotalItemCap, 1))
+                return;
+            super.handleItem(source, item);
+        }
+
         /** 读档/合并/拆分后可能留下超容的存量：每帧夹回各自上限（和组合仓库/核心一个口径）。 */
         public void clampPoolToCaps() {
+            if (items != null) {
+                int cap = Math.max(comboTotalItemCap, 0);
+                for (Item item : content.items())
+                    if (items.get(item) > cap)
+                        items.set(item, cap);
+            }
             if (liquids != null) {
                 float cap = Math.max(comboTotalLiquidCap, 0f);
                 for (Liquid liquid : content.liquids())
@@ -415,11 +345,22 @@ public class CombinedSolidPump extends SolidPump {
             return liquids != null && liquids.get(liquid) < Math.max(comboTotalLiquidCap, 1f) - 0.01f;
         }
 
+        /** 收料按"整组容量"算：传送带/装卸器可以直接把料送进组共享池（谁在边上都行）。 */
+        @Override
+        public boolean acceptItem(Building source, Item item) {
+            return items != null && items.get(item) < getMaximumAccepted(item);
+        }
+
+        @Override
+        public int getMaximumAccepted(Item item) {
+            return Math.max(comboTotalItemCap, 1);
+        }
+
         @Override
         public void updateTile() {
             if (pendingLeaderPos != -1) {
                 Building b = world.build(pendingLeaderPos);
-                if (b instanceof CombinedSolidPumpBuild leaderBuild && leaderBuild.isValid()
+                if (b instanceof CombinedFrackerBuild leaderBuild && leaderBuild.isValid()
                         && leaderBuild.team == team) {
                     comboLeader = leaderBuild;
                     if (leaderBuild.liquids != null)
@@ -437,6 +378,19 @@ public class CombinedSolidPump extends SolidPump {
             liquidDrop = result;
             float fraction = Math.max(validTiles + boost + (attribute == null ? 0 : attribute.env()), 0);
             float room = Math.max(0f, comboTotalLiquidCap - liquids.get(result));
+
+            // Fracker 特有：每攒够 itemUseTime 就吃一次料（从组共享的物品池里扣）。
+            // 原版 FrackerBuild.updateTile 就是这个节奏，这里换了"容量/池子"的来源。
+            if (efficiency > 0) {
+                float useTime = ((Fracker) block).itemUseTime;
+                if (useTime > 0f && accumulator >= useTime) {
+                    consume();
+                    accumulator -= useTime;
+                }
+                accumulator += delta() * efficiency;
+            } else {
+                accumulator = 0f;
+            }
 
             if (efficiency > 0 && room > 0.001f) {
                 float maxPump = Math.min(room, pumpAmount * delta() * fraction * efficiency);
@@ -486,7 +440,7 @@ public class CombinedSolidPump extends SolidPump {
         @Override
         public void display(Table table) {
           // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
-          ComboUi.safe("combinedsolidpump:display", () -> displayInner(table));
+          ComboUi.safe("combinedfracker:display", () -> displayInner(table));
         }
 
         void displayInner(Table table) {
@@ -501,7 +455,7 @@ public class CombinedSolidPump extends SolidPump {
                     t.add(new Image(icon)).size(8 * 4);
                     int count = ComboNet.displayMembers(this, group().size).size;
                     String title = count > 1
-                            ? "[accent]组合固体系泵[] x" + count + "\n" + block.getDisplayName(tile)
+                            ? "[accent]组合抽油机[] x" + count + "\n" + block.getDisplayName(tile)
                             : block.getDisplayName(tile);
                     t.labelWrap(title).left().width(160f).padLeft(4);
                 }).growX().left();
@@ -524,18 +478,57 @@ public class CombinedSolidPump extends SolidPump {
                     }
                     // 电力条：按整组耗电显示（组里没人耗电就不画）
                     float totalPowerUsage = 0f;
-                    for (CombinedSolidPumpBuild member : group())
+                    for (CombinedFrackerBuild member : group())
                         if (member.isValid() && member.block.consPower != null)
                             totalPowerUsage += member.block.consPower.usage;
                     ComboUi.addPowerBar(barsTable, this, totalPowerUsage);
                     LiquidModule liq = liquids;
                     if (liq == null) {
-                        CombinedSolidPumpBuild l = leader();
+                        CombinedFrackerBuild l = leader();
                         if (l != null)
                             liq = l.liquids;
                     }
+                    ItemModule it = items;
+                    if (it == null) {
+                        CombinedFrackerBuild l2 = leader();
+                        if (l2 != null)
+                            it = l2.items;
+                    }
+                    if (it != null) {
+                        final ItemModule fItems = it;
+                        final int itemCap = Math.max(comboTotalItemCap, 1);
+                        // 先列"这台机器要吃的料"（原版 consumeItem）：哪怕池里是 0 也要显示，
+                        // 否则玩家看不到还需要喂什么
+                        ObjectSet<Item> shownItems = new ObjectSet<>();
+                        if (block.consumers != null) {
+                            for (Consume cons : block.consumers) {
+                                if (cons instanceof ConsumeItems ci) {
+                                    for (ItemStack st : ci.items) {
+                                        if (st.item == null || !shownItems.add(st.item))
+                                            continue;
+                                        Item item = st.item;
+                                        barsTable.add(new Bar(
+                                                () -> item.localizedName + ": " + fItems.get(item) + "/" + itemCap,
+                                                () -> item.color,
+                                                () -> fItems.get(item) / (float) itemCap));
+                                        barsTable.row();
+                                    }
+                                }
+                            }
+                        }
+                        for (Item item : content.items()) {
+                            if (fItems.get(item) <= 0 || shownItems.contains(item))
+                                continue;
+                            barsTable.add(new Bar(
+                                    () -> item.localizedName + ": " + fItems.get(item) + "/" + itemCap,
+                                    () -> item.color,
+                                    () -> fItems.get(item) / (float) itemCap));
+                            barsTable.row();
+                        }
+                    }
                     if (liq != null) {
-                        // 需要输入的液体（有些 SolidPump 子类靠吃液体产液体）也要有 bar
+                        // 需要输入的液体（原版 consumeLiquid/consumeLiquids）也要显示：
+                        // oil-extractor 就是"吃水换油"，以前面板上根本看不到水
                         ObjectSet<Liquid> shownLiquids = new ObjectSet<>();
                         if (block.consumers != null) {
                             for (Consume cons : block.consumers) {
@@ -549,14 +542,14 @@ public class CombinedSolidPump extends SolidPump {
                             }
                         }
                         final LiquidModule fLiq = liq;
-                        final float lcap2 = Math.max(comboTotalLiquidCap, 1f);
+                        final float lcap = Math.max(comboTotalLiquidCap, 1f);
                         for (Liquid need : shownLiquids) {
                             if (need == null || need == result)
                                 continue;
                             barsTable.add(new Bar(
-                                    () -> need.localizedName + ": " + Strings.fixed(fLiq.get(need), 1) + "/" + Strings.fixed(lcap2, 1),
+                                    () -> need.localizedName + ": " + Strings.fixed(fLiq.get(need), 1) + "/" + Strings.fixed(lcap, 1),
                                     () -> need.barColor != null ? need.barColor : need.color,
-                                    () -> fLiq.get(need) / lcap2));
+                                    () -> fLiq.get(need) / lcap));
                             barsTable.row();
                         }
                         Liquid out = result;
@@ -571,7 +564,7 @@ public class CombinedSolidPump extends SolidPump {
                         // 只显示本格的话，站在没水/没油地格上的那一台会一直显示 0.0/秒，
                         // 看起来像"整组不干活"，其实水是同伴在抽。
                         float groupPump = 0f;
-                        for (CombinedSolidPumpBuild m : group())
+                        for (CombinedFrackerBuild m : group())
                             if (m.isValid())
                                 groupPump += m.lastPump;
                         final float lp = groupPump;
@@ -626,9 +619,9 @@ public class CombinedSolidPump extends SolidPump {
 
         @Override
         public void write(Writes write) {
-            CombinedSolidPumpBuild trueLeader = this;
+            CombinedFrackerBuild trueLeader = this;
             if (comboGroup != null && comboGroup.size > 0)
-                for (CombinedSolidPumpBuild b : comboGroup)
+                for (CombinedFrackerBuild b : comboGroup)
                     if (b != null && b.isValid() && b.pos() < trueLeader.pos())
                         trueLeader = b;
             LiquidModule savedLiquids = liquids;
@@ -663,7 +656,8 @@ public class CombinedSolidPump extends SolidPump {
                 pendingLeaderPos = -1;
                 comboLeader = null;
             }
-            comboTotalLiquidCap = ((CombinedSolidPump) block).baseLiquidCapacity;
+            comboTotalLiquidCap = ((CombinedFracker) block).baseLiquidCapacity;
+            comboTotalItemCap = block.itemCapacity;
 }
     }
 }

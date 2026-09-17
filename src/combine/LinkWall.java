@@ -217,6 +217,9 @@ public class LinkWall extends Wall {
         b.linksDirty = false;
         b.seqSize = found.size;
       }
+      // 成员增删后也摊平（新加进来的满血墙不会和受伤的同伴差一截）
+      if (found.size > 1)
+        redistributeHealth();
     }
 
     @Override
@@ -397,18 +400,39 @@ public class LinkWall extends Wall {
     }
 
     /**
-     * 【平衡】修复只作用在"被治疗的那一台"上，和原版墙一样。
+     * 修复：先按原版补"被治疗的那一格"（修复投影/修复塔只会照到射程内的墙，
+     * 所以只有那几格会进这里），然后**立刻**把整组的血量按最大血量比重重新摊一遍。
      *
-     * 以前是把治疗量按上限比例摊给**整条链路**，于是：
-     *   · 修复投影/修复塔是按"射程内每一台各 heal 一次"来的，一个修复源旁边站几格墙，
-     *     就等于在给整面组合墙（包括射程外的那些）同时回血；
-     *   · 组合墙本来就共用血池，结果就是"几格墙 + 一个修复源 = 基本打不动"。
-     * 现在治疗只补被点中的那一格（伤害仍然按组池分摊，"组=一整面墙"的机制保留），
-     * 一个修复源能管到的范围就回到"它实际射程内的那几格"，和原版一个量级。
+     * 这样组仍然是"一整面墙"的血池，但任何时候每格都是同一个血量百分比：
+     *   · 治疗量只按射程内实际照到的墙计入池子，不会出现"一个修复源等于在修整面墙"的夸张效果；
+     *   · 摊平之后不会再出现"某一格先见底 → 连带整组一起炸"。
      */
     @Override
     public void heal(float amount) {
       super.heal(amount);
+      redistributeHealth();
+    }
+
+    /** 把整组的血量按各成员最大血量比重重新分配（总量不变，各格回到同一百分比）。 */
+    public void redistributeHealth() {
+      Seq<LinkWallBuild> members = new Seq<>(group());
+      int n = members.size;
+      if (n <= 1)
+        return;
+      float totalMax = 0f, total = 0f;
+      for (int i = 0; i < n; i++) {
+        LinkWallBuild b = members.get(i);
+        totalMax += b.maxHealth;
+        total += Math.max(b.health, 0f);
+      }
+      if (totalMax <= 0.001f)
+        return;
+      for (int i = 0; i < n; i++) {
+        LinkWallBuild b = members.get(i);
+        b.health = total * (b.maxHealth / totalMax);
+        b.clampHealth();
+        b.healthChanged();
+      }
     }
 
     @Override
@@ -445,14 +469,17 @@ public class LinkWall extends Wall {
         super.damage(damage);
         return;
       }
-      float pool = 0f;
       for (LinkWallBuild b : members) {
         b.health -= damage * (b.maxHealth / totalMax);
-        b.clampHealth();
-        b.healthChanged();
-        pool += b.health;
       }
-      if (pool <= 0f || health <= 0f) {
+      // 分摊完立刻摊平：各格始终保持同一个百分比，这样不会出现"某一格血量先见底就被单独打掉"，
+      // 更不会因为那一格见底而把满血的同伴一起带走（以前这里是 health <= 0 就整组 kill）。
+      redistributeHealth();
+      float pool = 0f;
+      for (LinkWallBuild b : members)
+        pool += Math.max(b.health, 0f);
+      // 只有整组的血池被打空，这面组合墙才算倒
+      if (pool <= 0.001f) {
         for (LinkWallBuild b : members)
           if (!b.dead())
             b.kill();

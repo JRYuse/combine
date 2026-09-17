@@ -66,6 +66,25 @@ public class BlockCloner {
             if (n.equals("region") || n.equals("fullIcon") || n.equals("uiIcon")) {
             }
 
+            // FIX[配置串味 / 原版建筑崩溃]: configurations 是"配置值类型 -> 配置回调"的表。
+            // 直接共享引用的话，组合方块在 init() 里 config()/configClear()/clear() 改的是
+            // **同一张表**，原版方块（战役基地蓝图、地图里的原版炮塔等）就会拿到本模组的回调；
+            // 回调里强转成组合建筑的 build 类型 → ClassCastException 直接崩游戏
+            // （ItemTurret$ItemTurretBuild cannot be cast to CombinedItemTurret$CombinedItemTurretBuild）。
+            // 所以这里复制成独立表，并且保留我们自己已经注册的项（同类型以我们的为准）。
+            if (n.equals("configurations") && val instanceof ObjectMap<?, ?> srcMap) {
+              ObjectMap<Object, Object> dst = (ObjectMap<Object, Object>) toField.get(to);
+              if (dst == null) {
+                dst = new ObjectMap<>();
+                toField.set(to, dst);
+              }
+              for (ObjectMap.Entry<?, ?> e : srcMap) {
+                if (!dst.containsKey(e.key))
+                  dst.put(e.key, e.value);
+              }
+              continue;
+            }
+
             // FIX[消费者串味]: 数组字段必须新建数组拷贝——直接共享引用的话,
             // 任一克隆体/原版的 consume() 追加都会污染所有共享者(分离机被掺入
             // 电力/冷却液消费者即此因)。元素共享无妨(消费者对象无状态), 数组必须独立
