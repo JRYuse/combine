@@ -126,8 +126,12 @@ public class CoopPanel {
       return;
     }
     build = t;
+    lastRefresh = -1f;   // 换目标：下一帧立刻重画一次
     rebuild(true);
   }
+
+  /** 上次重画内容的时间（-1 = 需要立刻重画一次）。 */
+  private static float lastRefresh = -1f;
 
   public static void hide() {
     build = null;
@@ -149,7 +153,8 @@ public class CoopPanel {
     }
     Table table = CoopPanel.table;
     table.clearChildren();
-    table.clearActions();
+    // 只有"显示动画"那次才清动作：实时重画内容时清掉会把正在跑的缩放动画打断（面板卡在半截大小）
+    if (actions) table.clearActions();
     table.background(mindustry.gen.Tex.inventory);
     try {
       table.margin(4f);
@@ -236,6 +241,14 @@ public class CoopPanel {
     table.update(() -> {
       if (state.isMenu() || build == null || !build.isValid()) {
         hide();
+        return;
+      }
+      // 【实时刷新】原来面板只在打开时画一次，物品/液体数量就冻在那一刻了。
+      // 这里每 0.1 秒重画一次内容（面板很小，重画开销可忽略）：
+      // 数量、图标、"（空）"这些都跟着池子实时变。
+      if (lastRefresh < 0f || Time.time - lastRefresh >= 0.1f) {
+        lastRefresh = Time.time;
+        rebuild(false);
         return;
       }
       updatePosition();
