@@ -382,47 +382,66 @@ public class ComboNet {
     /** 给任意 Combined* 建筑的 display 追加网络组合面板。 */
     public static boolean addNetworkDisplay(Table table, Building self, int localCount){
         if(self == null || table == null) return false;
-        Seq<Building> members = componentMembers(self);
-        if(members.size <= localCount) return false;
+        if(componentMembers(self).size <= localCount) return false;
 
-        table.row();
-        table.add("[accent]网络组合 x" + members.size + "[] " + self.block.localizedName).left();
+        // 面板只在"切换选中目标"时重建一次，数字必须自己每帧刷新（见 buildNetworkContent 里的活 supplier）
+        ComboUi.live(table, "combonet:network", t -> buildNetworkContent(t, self, localCount));
+        return true;
+    }
+
+    /** 网络面板上一条物品/液体的文字：每次取当前值（面板只搭一次，数字必须自己刷新）。 */
+    public static String poolItemText(Building pool, int cap, Item item){
+        return item.localizedName + ": " + (pool == null || pool.items == null ? 0 : pool.items.get(item)) + "/" + Math.max(cap, 1);
+    }
+
+    public static String poolLiquidText(Building pool, float cap, Liquid liquid){
+        return liquid.localizedName + ": "
+            + Strings.fixed(pool == null || pool.liquids == null ? 0f : pool.liquids.get(liquid), 1)
+            + "/" + Strings.fixed(Math.max(cap, 1f), 1);
+    }
+
+    /** 网络组合面板的内容（活数据；面板每帧重画，测试也直接调它）。 */
+    public static void buildNetworkContent(Table table, Building self, int localCount){
+        Seq<Building> members = componentMembers(self);
+        if(members.size <= localCount) return;
 
         Building itemPool = null, liquidPool = null;
         int totalItemCap = 0;
         float totalLiquidCap = 0f;
         for(Building m : members){
+            if(!m.isValid()) continue;
             totalItemCap += ComboReflect.baseItemCap(m);
             totalLiquidCap += ComboReflect.baseLiquidCap(m);
             if(m.items != null && (itemPool == null || m.pos() < itemPool.pos())) itemPool = m;
             if(m.liquids != null && (liquidPool == null || m.pos() < liquidPool.pos())) liquidPool = m;
         }
+        final Building fi = itemPool, fl = liquidPool;
+        final int icap = Math.max(totalItemCap, 1);
+        final float lcap = Math.max(totalLiquidCap, 1f);
 
-        if(itemPool != null && itemPool.items != null){
+        table.add("[accent]网络组合 x" + members.size + "[] " + self.block.localizedName).left();
+
+        if(fi != null && fi.items != null){
             for(Item item : content.items()){
-                int amount = itemPool.items.get(item);
-                if(amount <= 0) continue;
-                final int a = amount;
-                final int cap = Math.max(totalItemCap, 1);
+                if(fi.items.get(item) <= 0) continue;
                 table.row();
                 table.add(new Bar(
-                    () -> item.localizedName + ": " + a + "/" + cap,
+                    () -> poolItemText(fi, icap, item),
                     () -> item.color,
-                    () -> (float)a / cap)).growX().height(18f).pad(4).left();
+                    () -> fi.items == null ? 0f : (float)fi.items.get(item) / icap))
+                    .height(18f).pad(4).left();
             }
         }
 
-        if(liquidPool != null && liquidPool.liquids != null){
+        if(fl != null && fl.liquids != null){
             for(Liquid liquid : content.liquids()){
-                float amount = liquidPool.liquids.get(liquid);
-                if(amount <= 0.001f) continue;
-                final float a = amount;
-                final float cap = Math.max(totalLiquidCap, 1f);
+                if(fl.liquids.get(liquid) <= 0.001f) continue;
                 table.row();
                 table.add(new Bar(
-                    () -> liquid.localizedName + ": " + Strings.fixed(a, 1) + "/" + Strings.fixed(cap, 1),
+                    () -> poolLiquidText(fl, lcap, liquid),
                     () -> liquid.barColor != null ? liquid.barColor : liquid.color,
-                    () -> a / cap)).growX().height(18f).pad(4).left();
+                    () -> fl.liquids == null ? 0f : fl.liquids.get(liquid) / lcap))
+                    .height(18f).pad(4).left();
             }
         }
 
@@ -435,11 +454,7 @@ public class ComboNet {
         }
         table.row();
         table.add("[lightgray]构成: " + comp + "[]").left();
-        return true;
     }
-
-    /** 临时排查用：打印各阶段耗时（默认关）。 */
-    public static boolean timeDebug = false;
 
     private static void rebuild(Building excluded, boolean loading){
         if(world == null || Groups.build == null) return;
@@ -453,8 +468,6 @@ public class ComboNet {
     }
 
     private static void rebuildInner(Building excluded, boolean loading){
-        long _t0 = System.nanoTime(), _tA = _t0, _tB = _t0, _tC = _t0, _tD = _t0, _tE = _t0, _tF = _t0;
-
         // 网络结构变了：显示用的连通分量缓存立刻作废（同帧内别拿旧网络画面板）
         invalidateComponentCache();
 
@@ -468,11 +481,9 @@ public class ComboNet {
             for(Building b : allComboBuildings()){
                 if(b != excluded && allSet.add(b)) all.add(b);
             }
-            _tA = System.nanoTime();
 
             // 1) 先让所有本地组合体完成自己的 leader 选举/邻接重建，再在其上架网络。
             settleLocalGroups(all);
-            _tB = System.nanoTime();
 
             // 2) 找出所有本地组合体的 leader（同一组合体只出现一次）。
             Seq<Building> groupLeaders = new Seq<>();
@@ -560,9 +571,7 @@ public class ComboNet {
             }
 
             // 6) 断开连接器/节点时：被多个分量共用的模块按分量容量比例拆开，总值不变。
-            _tC = System.nanoTime();
             splitAcrossComponents(compMembers);
-            _tD = System.nanoTime();
 
             // 7) 分量内合并共享池：运行期“相加”，读档窗口“去重”。
             for(Seq<Building> members : compMembers){
@@ -589,13 +598,6 @@ public class ComboNet {
                 CombinedStorageBlock.markDirty();
                 CoopCombo.markDirty();
             }
-            _tE = System.nanoTime();
-            if(timeDebug){
-                Log.info("[combine][time] 快照=@ms settle=@ms 建图=@ms 拆池=@ms 合池=@ms 合计=@ms all=@ verts=@ comps=@",
-                    (_tA-_t0)/1e6, (_tB-_tA)/1e6, (_tC-_tB)/1e6, (_tD-_tC)/1e6, (_tE-_tD)/1e6, (_tE-_t0)/1e6,
-                    all.size, vertices.size, components.size);
-            }
-
             // 读档语义只在读档过程中生效；任何一次运行期重建都意味着读档已经结束
             if(!loading && !world.isGenerating()) loadingWorld = false;
 

@@ -47,6 +47,9 @@ public class CoopPanel {
 
   private static final Table table = new Table();
   private static Building build;
+  /** 面板内容表（数字靠活标签每帧刷新，结构变了才重画）。 */
+  private static Table panelContent;
+  private static long lastSignature = 0L;
   private static boolean built = false;
   private static float emptyTime = 0f;
 
@@ -129,68 +132,22 @@ public class CoopPanel {
     try {
       table.margin(4f);
 
-      Seq<Building> members = members(build);
-      // 标题 + 构成
-      table.add("[accent]协作组合[] x" + Math.max(members.size, 1) + "  " + build.block.localizedName).left().row();
-      ObjectIntMap<Block> counts = new ObjectIntMap<>();
-      for (Building m : members) counts.increment(m.block, 1);
-      StringBuilder comp = new StringBuilder();
-      for (Block b : counts.keys()) {
-        if (comp.length() > 0) comp.append("  ");
-        comp.append(b.localizedName).append(" x").append(counts.get(b, 0));
-      }
-      if (comp.length() == 0) comp.append(build.block.localizedName).append(" x1");
-      table.add("[lightgray]构成: " + comp + "[]").left().row();
-
-      // 共享物品池（每行 3 个）
-      int itemCap = Math.max(build.block.itemCapacity, 1);
-      Seq<Item> items = new Seq<>();
-      if (build.items != null) {
-        for (Item item : content.items()) if (build.items.get(item) > 0) items.add(item);
-      }
-      table.add("[lightgray]物品池[]").left().row();
-      if (items.isEmpty()) {
-        table.add("[gray]（空）[]").left().row();
-      } else {
-        for (int i = 0; i < items.size; i += 3) {
-          Table rowT = new Table();
-          for (int k = i; k < Math.min(i + 3, items.size); k++) {
-            Item item = items.get(k);
-            int amount = build.items.get(item);
-            Table cell = new Table();
-            cell.add(new Image(item.uiIcon)).size(26f).pad(2f);
-            cell.add(amount + "/" + build.getMaximumAccepted(item)).pad(2f);
-            rowT.add(cell).left();
-          }
-          table.add(rowT).left().row();
+      // 内容单独一张表：面板本身只在点击时搭一次，里面的数字靠"活标签 + 结构变了就重画"保持更新
+      // （Mindustry 的选中方块面板只在切换目标时重建，写死数字就会一直停在打开那一刻）
+      panelContent = new Table();
+      panelContent.left();
+      panelContent.defaults().left();
+      table.add(panelContent).left();
+      lastSignature = 0L;
+      buildContent();
+      panelContent.update(() -> {
+        if (state.isMenu() || build == null || !build.isValid()) {
+          hide();
+          return;
         }
-      }
-
-      // 共享液体池（每行 3 个）
-      float liquidCap = Math.max(build.block.liquidCapacity, 1f);
-      Seq<Liquid> liquids = new Seq<>();
-      if (build.liquids != null) {
-        for (Liquid liquid : content.liquids()) if (build.liquids.get(liquid) > 0.001f) liquids.add(liquid);
-      }
-      table.add("[lightgray]液体池[]").left().row();
-      if (liquids.isEmpty()) {
-        table.add("[gray]（空）[]").left().row();
-      } else {
-        for (int i = 0; i < liquids.size; i += 3) {
-          Table rowT = new Table();
-          for (int k = i; k < Math.min(i + 3, liquids.size); k++) {
-            Liquid liquid = liquids.get(k);
-            float amount = build.liquids.get(liquid);
-            Table cell = new Table();
-            cell.add(new Image(liquid.uiIcon)).size(26f).pad(2f);
-            cell.add(Math.round(amount) + "/" + (int) liquidCap).pad(2f);
-            rowT.add(cell).left();
-          }
-          table.add(rowT).left().row();
-        }
-      }
-
-      table.add("[gray]组上限: 每种物品 " + itemCap + " / 每种液体 " + (int) liquidCap + "[]").left();
+        long sig = signature();
+        if (sig != lastSignature) buildContent();
+      });
     } catch (Throwable t) {
       Log.err("[combine] 协作组合面板绘制失败（已跳过）", t);
       return;
@@ -219,6 +176,103 @@ public class CoopPanel {
         emptyTime = 0f;
       }
     });
+  }
+
+  /** 物品/液体数字用活标签，每帧自己取当前值。 */
+  private static String itemText(Item item) {
+    if (build == null || build.items == null) return "0";
+    return build.items.get(item) + "/" + Math.max(build.block.itemCapacity, 1);
+  }
+
+  private static String liquidText(Liquid liquid) {
+    if (build == null || build.liquids == null) return "0";
+    return Math.round(build.liquids.get(liquid)) + "/" + (int) Math.max(build.block.liquidCapacity, 1f);
+  }
+
+  /** 内容结构签名：成员组成 + 现在有哪些物品/液体 + 组上限。变了才重画内容。 */
+  private static long signature() {
+    long h = 17;
+    if (build == null) return h;
+    Seq<Building> members = members(build);
+    h = h * 31 + members.size;
+    for (Building m : members) h = h * 31 + m.pos();
+    if (build.items != null) {
+      for (Item item : content.items()) if (build.items.get(item) > 0) h = h * 31 + item.id;
+    }
+    if (build.liquids != null) {
+      for (Liquid liquid : content.liquids()) if (build.liquids.get(liquid) > 0.001f) h = h * 31 + liquid.id;
+    }
+    h = h * 31 + build.block.itemCapacity;
+    h = h * 31 + (long) build.block.liquidCapacity;
+    return h;
+  }
+
+  /** 面板内容（成员构成 + 共享物品池 + 共享液体池）。 */
+  private static void buildContent() {
+    if (panelContent == null || build == null) return;
+    panelContent.clearChildren();
+    panelContent.defaults().left();
+    lastSignature = signature();
+
+    Seq<Building> members = members(build);
+    panelContent.add("[accent]协作组合[] x" + Math.max(members.size, 1) + "  " + build.block.localizedName).left().row();
+    ObjectIntMap<Block> counts = new ObjectIntMap<>();
+    for (Building m : members) counts.increment(m.block, 1);
+    StringBuilder comp = new StringBuilder();
+    for (Block b : counts.keys()) {
+      if (comp.length() > 0) comp.append("  ");
+      comp.append(b.localizedName).append(" x").append(counts.get(b, 0));
+    }
+    if (comp.length() == 0) comp.append(build.block.localizedName).append(" x1");
+    panelContent.add("[lightgray]构成: " + comp + "[]").left().row();
+
+    // 共享物品池（每行 3 个）
+    int itemCap = Math.max(build.block.itemCapacity, 1);
+    Seq<Item> items = new Seq<>();
+    if (build.items != null) {
+      for (Item item : content.items()) if (build.items.get(item) > 0) items.add(item);
+    }
+    panelContent.add("[lightgray]物品池[]").left().row();
+    if (items.isEmpty()) {
+      panelContent.add("[gray]（空）[]").left().row();
+    } else {
+      for (int i = 0; i < items.size; i += 3) {
+        Table rowT = new Table();
+        for (int k = i; k < Math.min(i + 3, items.size); k++) {
+          Item item = items.get(k);
+          Table cell = new Table();
+          cell.add(new Image(item.uiIcon)).size(26f).pad(2f);
+          cell.label(() -> itemText(item)).pad(2f);
+          rowT.add(cell).left();
+        }
+        panelContent.add(rowT).left().row();
+      }
+    }
+
+    // 共享液体池（每行 3 个）
+    float liquidCap = Math.max(build.block.liquidCapacity, 1f);
+    Seq<Liquid> liquids = new Seq<>();
+    if (build.liquids != null) {
+      for (Liquid liquid : content.liquids()) if (build.liquids.get(liquid) > 0.001f) liquids.add(liquid);
+    }
+    panelContent.add("[lightgray]液体池[]").left().row();
+    if (liquids.isEmpty()) {
+      panelContent.add("[gray]（空）[]").left().row();
+    } else {
+      for (int i = 0; i < liquids.size; i += 3) {
+        Table rowT = new Table();
+        for (int k = i; k < Math.min(i + 3, liquids.size); k++) {
+          Liquid liquid = liquids.get(k);
+          Table cell = new Table();
+          cell.add(new Image(liquid.uiIcon)).size(26f).pad(2f);
+          cell.label(() -> liquidText(liquid)).pad(2f);
+          rowT.add(cell).left();
+        }
+        panelContent.add(rowT).left().row();
+      }
+    }
+
+    panelContent.add("[gray]组上限: 每种物品 " + itemCap + " / 每种液体 " + (int) liquidCap + "[]").left();
   }
 
   /**

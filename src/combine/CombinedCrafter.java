@@ -147,8 +147,7 @@ public class CombinedCrafter extends GenericCrafter {
             try {
                 super.init();
             } catch (Throwable t) {
-                Log.err("[组合工厂] super.init() 异常: @", t.toString());
-                t.printStackTrace();
+                Log.err("[组合工厂] super.init() 异常", t);
             }
             try {
         super.init();
@@ -244,8 +243,7 @@ public class CombinedCrafter extends GenericCrafter {
         ambientSoundVolume = 0f;
     
             } catch (Throwable t) {
-                Log.err("[组合工厂] init 主体异常(已尽力完成初始化): @", t.toString());
-                t.printStackTrace();
+                Log.err("[组合工厂] init 主体异常(已尽力完成初始化)", t);
             }
         }
 
@@ -1865,7 +1863,8 @@ public class CombinedCrafter extends GenericCrafter {
                     if (icon == null)
                         icon = Core.atlas.find("clear");
                     t.add(new Image(icon)).size(8 * 4);
-                    t.labelWrap(comboPanelTitle()).left().width(160f).padLeft(4);
+                    // 活标签：网络组成变了不用重新点开一次
+                    t.labelWrap(() -> comboPanelTitle()).left().width(160f).padLeft(4);
                 }).growX().left();
                 cont.row();
 

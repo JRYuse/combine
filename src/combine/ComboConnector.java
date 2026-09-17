@@ -133,7 +133,26 @@ public class ComboConnector extends PowerBlock {
 
         void displayInner(Table table) {
             super.display(table);
-            table.row();
+            // 面板只在切换选中目标时重建一次 → 内容放进 update 里每帧重画（物品数量才是活的）
+            ComboUi.live(table, "comboconnector:info", this::buildPanel);
+        }
+
+        /** 面板文字都是"活"函数：每次调用取当前值（面板只搭一次，数字必须自己刷新）。 */
+        public String membersText(){
+            return "连接组合 x" + ComboNet.componentMembers(this).size;
+        }
+
+        public String itemText(Building pool, Item item){
+            return item.localizedName + ": " + (pool == null || pool.items == null ? 0 : pool.items.get(item));
+        }
+
+        public String liquidText(Building pool, Liquid liquid){
+            return liquid.localizedName + ": "
+                + Strings.fixed(pool == null || pool.liquids == null ? 0f : pool.liquids.get(liquid), 1);
+        }
+
+        /** 连接器面板内容（活数据）。 */
+        public void buildPanel(Table table) {
             table.add("[accent]组合连接器[]").left();
             table.row();
             table.add("相邻组合体通过连续连接器共享物品/液体/电力").color(Pal.accent).left();
@@ -141,7 +160,7 @@ public class ComboConnector extends PowerBlock {
             Seq<Building> members = ComboNet.componentMembers(this);
             if(!members.isEmpty()){
                 table.row();
-                table.add("[accent]连接组合 x" + members.size + "[]").left();
+                table.add("[accent]" + membersText() + "[]").left();
 
                 Building itemPool = null, liquidPool = null;
                 for(Building m : members){
@@ -150,22 +169,20 @@ public class ComboConnector extends PowerBlock {
                 }
 
                 if(itemPool != null){
+                    final Building pool = itemPool;
                     for(Item item : content.items()){
-                        int amount = itemPool.items.get(item);
-                        if(amount > 0){
-                            final int a = amount;
+                        if(pool.items.get(item) > 0){
                             table.row();
-                            table.add(item.localizedName + ": " + a).color(item.color).left();
+                            table.add(itemText(pool, item)).color(item.color).left();
                         }
                     }
                 }
                 if(liquidPool != null){
+                    final Building pool = liquidPool;
                     for(Liquid liquid : content.liquids()){
-                        float amount = liquidPool.liquids.get(liquid);
-                        if(amount > 0.001f){
+                        if(pool.liquids.get(liquid) > 0.001f){
                             table.row();
-                            table.add(liquid.localizedName + ": " + Strings.fixed(amount, 1))
-                                .color(liquid.color).left();
+                            table.add(liquidText(pool, liquid)).color(liquid.color).left();
                         }
                     }
                 }
@@ -173,7 +190,7 @@ public class ComboConnector extends PowerBlock {
                 table.row();
                 table.add("未连接任何组合体").color(Pal.accent).left();
             }
-                }
+        }
 
         @Override
         public byte version(){
