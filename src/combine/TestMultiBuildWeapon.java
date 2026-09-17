@@ -10,6 +10,7 @@ import arc.struct.Seq;
 import arc.util.Time;
 import arc.util.Tmp;
 import arc.util.Log;
+import mindustry.Vars;
 import mindustry.ai.types.BuilderAI;
 import mindustry.ai.types.CommandAI;
 import mindustry.entities.bullet.BulletType;
@@ -17,6 +18,7 @@ import mindustry.entities.units.BuildPlan;
 import mindustry.entities.units.UnitController;
 import mindustry.entities.units.WeaponMount;
 import mindustry.entities.Units;
+import mindustry.game.Gamemode;
 import mindustry.gen.Building;
 import mindustry.gen.Unit;
 import mindustry.graphics.Drawf;
@@ -38,6 +40,8 @@ public class TestMultiBuildWeapon extends Weapon {
   public float speedMulti = 1f;
   /** 该挂座同时建造/拆除的建筑数量上限（可被 Settings.maxBuild 覆盖）。 */
   public int maxBuild = 5;
+  /** 找活失败后的重试间隔（秒）。空闲挂座不必每帧都去附近单位里翻施工队列。 */
+  public float searchRetryInterval = 0.15f;
 
   public TestMultiBuildWeapon() {
     rotate = true;
@@ -51,7 +55,7 @@ public class TestMultiBuildWeapon extends Weapon {
 
   /** 实际生效的并行上限：优先取全局 Settings，其次取本武器字段。 */
   int getMaxBuild() {
-    return Settings.maxBuild() <= 0 ? maxBuild : Settings.maxBuild();
+    return Settings.maxBuild() < 0 ? maxBuild : Settings.maxBuild();
   }
 
   @Override
@@ -69,32 +73,68 @@ public class TestMultiBuildWeapon extends Weapon {
   }
 
   void updateWeapon(Unit unit, BuildWeaponMount m) {
+    // FIX[建造启停]: 原版 E 键(Binding.pauseBuilding) / 手机端的"暂停建造"是给单位翻
+    // updateBuilding 这个开关；原版那第一把建造武器会照做，但本模组多出来的挂座原先不看它 ——
+    // 表现就是"按 E 只停第一个建造线程，其它挂座还在造"。这里所有挂座统一看这个开关。
+    if (!unit.updateBuilding()) {
+      releaseAll(m);
+      aimForward(unit, m);
+      m.shoot = false;
+      m.rotate = true;
+      super.update(unit, m);
+      return;
+    }
+
+    // FIX[取消建造]: 玩家操控的单位一旦队列被清空（原版 Q = clearBuilding），
+    // 就该彻底停手；原先挂座会继续从"附近单位的队列 / 队伍计划表"里找活，
+    // 表现就是"取消了建造、光束也没了，但格子还在造"。
+    if (unit.isPlayer() && unit.plans().size == 0) {
+      releaseAll(m);
+      aimForward(unit, m);
+      m.shoot = false;
+      m.rotate = true;
+      super.update(unit, m);
+      return;
+    }
+
     // 施工队列的主人：跟随谁就优先辅助谁；没人可跟时用自己
     Unit targetUnit = resolveTargetUnit(unit);
 
-    check(unit, m);
-
-    // 造完/失效/被抢的格子放开，下面重新认领
+    // 1) 清理：造完/失效/被抢/超射程的格子放开
+    float max = state.rules.infiniteResources ? Float.MAX_VALUE : range;
     for (int i = m.plans.size - 1; i >= 0; i--) {
       BuildPlan plan = m.plans.get(i);
       if (plan == null) {
-        m.plans.remove(i);
-        m.targets.remove(i);
+        releaseIndex(m, i);
         continue;
       }
       Building b = world.build(plan.x, plan.y);
       boolean done = !(b instanceof ConstructBlock.ConstructBuild) || plan.progress >= 1f;
-      if (done || isRob(unit, m, plan)) {
+      boolean outOfRange = Mathf.dst(unit.x, unit.y, plan.x * 8f, plan.y * 8f) > max;
+      if (done || outOfRange || isRob(unit, m, plan)) {
         releaseIndex(m, i);
       }
     }
 
-    // 不要求"主人正在施工"：空闲的建造单位也该主动去造队列/预设里的建筑
-    findTargets(targetUnit, unit, m);
+    // 2) 补位到 maxBuild（带冷却，避免空闲挂座每帧都做空间查询）
+    if (m.plans.size < getMaxBuild()) {
+      if (m.searchCooldown > 0f) {
+        m.searchCooldown -= Time.delta;
+      } else {
+        int before = m.plans.size;
+        findTargets(targetUnit, unit, m);
+        if (m.plans.size == before) {
+          m.searchCooldown = searchRetryInterval;
+        }
+      }
+    } else {
+      m.searchCooldown = 0f;
+    }
 
+    // 3) 并行施工
+    // 开启 Settings.buildBoost 时：总速度平摊到当前认领数 → 认满 = maxBuild 倍速，未满时单格更快
+    // 关闭时（默认）：完全等同于原版单格施工速度
     if (m.plans.size > 0) {
-      // 开启 Settings.buildBoost 时：总速度平摊到当前认领数 → 认满 = maxBuild 倍速，未满时单格更快
-      // 关闭时（默认）：完全等同于原版单格施工速度
       float boost = Settings.buildBoost() ? (float) getMaxBuild() / m.plans.size : 1f;
 
       for (int i = 0; i < m.plans.size; i++) {
@@ -106,22 +146,20 @@ public class TestMultiBuildWeapon extends Weapon {
                 * unit.buildSpeedMultiplier * state.rules.buildSpeed(unit.team) * speedMulti * Time.delta;
         if (plan.breaking) {
           target.deconstruct(unit, unit.team.core(), bs);
-          plan.progress = target.progress;
         } else {
           target.construct(unit, unit.team.core(), bs, plan.config);
-          plan.progress = target.progress;
         }
+        plan.progress = target.progress;
       }
     }
 
+    // 4) 瞄准：指向第一个（主）计划
     if (m.plans.size > 0) {
       BuildPlan plan = m.plans.first();
       m.aimX = plan.drawx();
       m.aimY = plan.drawy();
     } else {
-      Tmp.v2.trns(unit.rotation(), 800f);
-      m.aimX = Tmp.v2.x + unit.x;
-      m.aimY = Tmp.v2.y + unit.y;
+      aimForward(unit, m);
     }
 
     m.shoot = false;
@@ -157,19 +195,36 @@ public class TestMultiBuildWeapon extends Weapon {
     return unit;
   }
 
-  /** 按索引放弃当前认领（计划本身还留给别的施工者） */
+  /** 没活干时的瞄准方向：朝正前方（和原版空手时一致） */
+  void aimForward(Unit unit, BuildWeaponMount m) {
+    Tmp.v2.trns(unit.rotation(), 800f);
+    m.aimX = Tmp.v2.x + unit.x;
+    m.aimY = Tmp.v2.y + unit.y;
+  }
+
+  /** 放弃所有认领（计划本身还留给别的施工者） */
+  void releaseAll(BuildWeaponMount m) {
+    for (int i = 0; i < m.plans.size; i++) {
+      BuildPlan p = m.plans.get(i);
+      if (p != null) p.initialized = false;
+    }
+    m.plans.clear();
+    m.targets.clear();
+  }
+
+  /** 按索引放弃一格 */
   void releaseIndex(BuildWeaponMount m, int i) {
     if (i < 0 || i >= m.plans.size) return;
     BuildPlan plan = m.plans.remove(i);
     m.targets.remove(i);
-    if (plan != null)
-      plan.initialized = false;
+    if (plan != null) plan.initialized = false;
   }
 
   /** 循环认领直到达到 maxBuild 或没有可认领的格子 */
   void findTargets(Unit unit, Unit weaponUnit, BuildWeaponMount m) {
     int guard = 0;
-    while (m.plans.size < getMaxBuild() && guard++ < getMaxBuild()) {
+    int limit = getMaxBuild();
+    while (m.plans.size < limit && guard++ < limit) {
       BuildPlan plan = findPlan(unit, weaponUnit, m);
       if (plan == null) break;
       if (!claimPlan(unit, m, plan)) break;
@@ -226,17 +281,29 @@ public class TestMultiBuildWeapon extends Weapon {
 
     if (plans.size > 0) {
       BuildPlan first = plans.first();
-      // 先找还没开工的格子，其次接手已经开工但没人管的 ConstructBuild
+      // 认领顺序（队首始终留给单位自己的建造逻辑）：
+      //   1. 队首**以外**已经在施工的格子（一把武器帮一格，几把就分摊到几格）
+      //   2. 队首以外还没开工的格子（开新格）
+      //   3. 都没有时，才允许帮队首那格一起造（避免多把武器全空转）
       for (int pass = 0; pass < 2; pass++) {
-        for (int i = 0; i < plans.size; i++) {
+        boolean assist = pass == 0;
+        for (int i = 1; i < plans.size; i++) {
           BuildPlan p = plans.get(i);
-          // 队首归它自己的建造逻辑
-          if (p == null || p == first)
+          if (p == null)
             continue;
-          if (!claimable(weaponUnit, tm, p, pass == 0))
+          if (assist && !(world.build(p.x, p.y) instanceof ConstructBlock.ConstructBuild))
+            continue; // 这一轮只认"已经开工"的
+          if (!assist && world.build(p.x, p.y) instanceof ConstructBlock.ConstructBuild)
+            continue; // 这一轮只认"还没开工"的
+          if (!claimable(weaponUnit, tm, p, !assist, false))
             continue;
           return p;
         }
+      }
+      // 兜底：队列里只剩队首那一格（或其余都够不着）时，允许帮它一起造
+      if (first != null && claimable(weaponUnit, tm, first,
+              !(world.build(first.x, first.y) instanceof ConstructBlock.ConstructBuild), true)) {
+        return first;
       }
 
       // 顺手清掉"已经造好"的残留计划，别让它一直堵在队列里（原版只清队首）
@@ -251,6 +318,23 @@ public class TestMultiBuildWeapon extends Weapon {
       }
     }
 
+    // FIX[取消建造]: 玩家自己操控的单位只负责"玩家自己排的队"。
+    // 空闲时替别人/替队伍计划表施工是给 AI 建造单位的功能；对玩家单位来说，
+    // 清空队列就该停手，否则会出现"取消了还在造"。
+    if (weaponUnit.isPlayer())
+      return null;
+
+    // FIX[敌方自动重建]: 队伍里没有玩家的势力（战役/进攻图里的敌方、沙盒里随便放的敌方队）
+    // 只能"帮着造所跟随单位的队列"，不能去认领下面那两条"主动找活"的来源 ——
+    // 因为它们的队伍计划表(team.data().plans)正是 BaseBuilderAI 排的基地蓝图
+    // （含被摧毁建筑的原地重建）。每把挂座认领一格 = 敌方多线程重建基地，
+    // 表现就是玩家报的"敌方建造机自动重建被摧毁的敌方建筑"。
+    // 判据用"队伍里有没有玩家"，不用 Team.isOnlyAI()：后者只在有波次/进攻/战役时成立，
+    // 沙盒、自定义模式里敌方队伍会被算成"不是 AI"，照样会去认领。
+    if (weaponUnit.team != null && weaponUnit.team.data().players.isEmpty()
+            && (mindustry.Vars.player == null || mindustry.Vars.player.team() != weaponUnit.team))
+      return null;
+
     // 附近同队单位的队列（玩家排好的预设、其它工程车正在排的活都在这）
     final BuildPlan[] found = {null};
     float radius = range;
@@ -259,9 +343,12 @@ public class TestMultiBuildWeapon extends Weapon {
         return;
       Queue<BuildPlan> q = other.plans();
       for(int pass = 0; pass < 2 && found[0] == null; pass++){
+        boolean assist = pass == 0;
         for(int i = 1; i < q.size; i++){ // 队首归它自己，跳过
           BuildPlan p = q.get(i);
-          if(p != null && claimable(weaponUnit, tm, p, pass == 0)){
+          if(p == null) continue;
+          if(assist && !(world.build(p.x, p.y) instanceof ConstructBlock.ConstructBuild)) continue;
+          if(claimable(weaponUnit, tm, p, !assist, assist)){
             found[0] = p;
             return;
           }
@@ -292,47 +379,75 @@ public class TestMultiBuildWeapon extends Weapon {
 
   /** 查询用：不看是否已开工，只问"这格能不能被认领" */
   boolean claimable(Unit weaponUnit, BuildWeaponMount tm, BuildPlan plan){
-    return claimable(weaponUnit, tm, plan, false);
+    return claimable(weaponUnit, tm, plan, false, false);
   }
 
   boolean claimable(Unit weaponUnit, BuildWeaponMount tm, BuildPlan plan, boolean freshOnly){
+    return claimable(weaponUnit, tm, plan, freshOnly, false);
+  }
+
+  /** @param allowOwn 是否允许认领"单位自己队首那格"（帮它一起造） */
+  boolean claimable(Unit weaponUnit, BuildWeaponMount tm, BuildPlan plan, boolean freshOnly, boolean allowOwn){
     if(plan == null || plan.block == null)
       return false;
-    if(!weaponUnit.within(plan.x * 8f, plan.y * 8f, range))
+    if(!weaponUnit.within(plan.x * 8f, plan.y * 8f, range) && !(state.rules.mode() == Gamemode.sandbox))
       return false;
 
     Building existing = world.build(plan.x, plan.y);
     boolean constructing = existing instanceof ConstructBlock.ConstructBuild;
+    // 已经在施工：只在"接手"那一轮允许认领
     if(constructing && freshOnly)
       return false;
     if(plan.breaking){
+      // 拆除计划：空气说明已经拆完
       if(existing == null)
         return false;
     }else{
+      // 建造计划：已经有别的方块，说明造好了/这里不是该造的东西
       if(existing != null && !constructing)
         return false;
     }
 
-    BuildPlan own = weaponUnit.buildPlan();
-    if(own != null && own.x == plan.x && own.y == plan.y)
-      return false;
-    if(tm.plans.contains(plan))
-      return false;
+    if(!allowOwn){
+      BuildPlan own = weaponUnit.buildPlan();
+      if(own != null && own.x == plan.x && own.y == plan.y)
+        return false;
+    }
+    // 本挂座已认领过这格（多格并行去重）
+    for (int i = 0; i < tm.plans.size; i++) {
+      BuildPlan p = tm.plans.get(i);
+      if (p != null && p.x == plan.x && p.y == plan.y)
+        return false;
+    }
     return notClaimedByOtherMount(weaponUnit, tm, plan.x, plan.y);
   }
 
+  /**
+   * 这一格能不能认领：射程内、没开工、没被自己身上其它挂座认领、
+   * 也不是自己正在造的那格（队首由单位自己的建造逻辑负责）。
+   */
   boolean claimable(Unit weaponUnit, BuildWeaponMount tm, int x, int y) {
     return claimable(weaponUnit, tm, x, y, true);
   }
 
+  /**
+   * 这一格能不能认领。
+   *
+   * @param freshOnly true = 只认领还没开工的格子；false = 也允许接手已经存在的 ConstructBuild
+   *                  （原版 BuilderComp 就是靠"tile.build instanceof ConstructBuild 就直接继续"
+   *                  来接手的，只靠 Build.validPlace() 会因为 ConstructBuild 已存在而被拒，
+   *                  结果格子开工后没人继续施工、进度卡死）。
+   */
   boolean claimable(Unit weaponUnit, BuildWeaponMount tm, int x, int y, boolean freshOnly) {
     if (!weaponUnit.within(x * 8f, y * 8f, range))
       return false;
 
     Building existing = world.build(x, y);
     boolean constructing = existing instanceof ConstructBlock.ConstructBuild;
+    // 已经在施工：只有允许接手时才行
     if (constructing && freshOnly)
       return false;
+    // 已经是别的方块了（造完了/不是计划中的东西），跳过
     if (existing != null && !constructing)
       return false;
 
@@ -340,6 +455,7 @@ public class TestMultiBuildWeapon extends Weapon {
     if (own != null && own.x == x && own.y == y)
       return false;
 
+    // 本挂座已认领过这格
     for (int i = 0; i < tm.plans.size; i++) {
       BuildPlan p = tm.plans.get(i);
       if (p != null && p.x == x && p.y == y)
@@ -363,33 +479,14 @@ public class TestMultiBuildWeapon extends Weapon {
     return true;
   }
 
-  void check(Unit unit, BuildWeaponMount m) {
-    float max = state.rules.infiniteResources ? Float.MAX_VALUE : range;
-    for (int i = m.plans.size - 1; i >= 0; i--) {
-      BuildPlan plan = m.plans.get(i);
-      if (plan == null) {
-        m.plans.remove(i);
-        m.targets.remove(i);
-        continue;
-      }
-      if (Mathf.dst(unit.x, unit.y, plan.x * 8f, plan.y * 8f) > max) {
-        releaseIndex(m, i);
-      }
-    }
-  }
-
   /** 该格是否被队首 / 其它挂座抢走（该放弃重找） */
   boolean isRob(Unit unit, BuildWeaponMount m, BuildPlan plan) {
     if (plan == null)
       return true;
-    Queue<BuildPlan> plans = unit.plans();
-    if (plans.size > 0 && plans.first() == plan)
-      return true;
     for (WeaponMount mount : unit.mounts) {
       if (mount instanceof BuildWeaponMount bm && bm != m) {
         for (int i = 0; i < bm.plans.size; i++) {
-          BuildPlan p = bm.plans.get(i);
-          if (p == plan)
+          if (bm.plans.get(i) == plan)
             return true;
         }
       }
@@ -421,21 +518,22 @@ public class TestMultiBuildWeapon extends Weapon {
     // 本挂座自己认领的每一格：必须画
     drawBuildingBeam(px, py, m, unit);
 
-    // 单位自己队列里、由本挂座负责的其它格子
+    // 单位自己队列里、由本挂座负责的其它格子（核心机这种整串队列就在自己身上）
     Queue<BuildPlan> plans = unit.plans();
     for (int i = 1; i < plans.size; i++) {
       if ((i - 1) % total != idx)
         continue;
       BuildPlan plan = plans.get(i);
       if (m.plans.contains(plan))
-        continue;
+        continue; // 上面已经画过
       Tile tile = world.tile(plan.x, plan.y);
       if (!(tile.build instanceof ConstructBlock.ConstructBuild))
         continue;
 
       boolean worked = false;
       for (WeaponMount wm : unit.mounts) {
-        if (wm instanceof BuildWeaponMount bm && bm.plans.contains(plan) && bm.targets.get(bm.plans.indexOf(plan)) != null) {
+        if (wm instanceof BuildWeaponMount bm && bm.plans.contains(plan)
+                && bm.targets.get(bm.plans.indexOf(plan)) != null) {
           worked = true;
           break;
         }
@@ -479,11 +577,24 @@ public class TestMultiBuildWeapon extends Weapon {
   }
 
   private static Object getCommandController(CommandAI ai) {
+    if (commandControllerField == null)
+      return null;
+    try {
+      return commandControllerField.get(ai);
+    } catch (Exception e) {
+      return null;
+    }
+  }
+
+  /** 反射字段只查一次：这个方法是每帧每挂座都要走的。 */
+  private static final Field commandControllerField = findCommandControllerField();
+
+  private static Field findCommandControllerField() {
     try {
       Field f = CommandAI.class.getDeclaredField("commandController");
       f.setAccessible(true);
-      return f.get(ai);
-    } catch (Exception e) {
+      return f;
+    } catch (Throwable t) {
       return null;
     }
   }
@@ -492,6 +603,8 @@ public class TestMultiBuildWeapon extends Weapon {
     public Seq<ConstructBlock.ConstructBuild> targets = new Seq<>();
     public Seq<BuildPlan> plans = new Seq<>();
     public float lastError = -999f;
+    /** 找活失败后的冷却（秒），避免空闲挂座每帧都做空间查询。 */
+    public float searchCooldown = 0f;
 
     public BuildWeaponMount(Weapon w) {
       super(w);
