@@ -126,12 +126,12 @@ public class CoopPanel {
       return;
     }
     build = t;
-    lastRefresh = -1f;   // 换目标：下一帧立刻重画一次
+    lastSignature = null;   // 换目标：下一帧立刻重画一次
     rebuild(true);
   }
 
-  /** 上次重画内容的时间（-1 = 需要立刻重画一次）。 */
-  private static float lastRefresh = -1f;
+  /** 上一次画出来的内容签名（null = 需要立刻重画一次）。 */
+  private static String lastSignature;
 
   public static void hide() {
     build = null;
@@ -240,19 +240,43 @@ public class CoopPanel {
     //   表现成"闪一下就没了"；按需求直接去掉这类定时收起。）
     table.update(() -> {
       if (state.isMenu() || build == null || !build.isValid()) {
+        lastSignature = null;
         hide();
         return;
       }
       // 【实时刷新】原来面板只在打开时画一次，物品/液体数量就冻在那一刻了。
-      // 这里每 0.1 秒重画一次内容（面板很小，重画开销可忽略）：
-      // 数量、图标、"（空）"这些都跟着池子实时变。
-      if (lastRefresh < 0f || Time.time - lastRefresh >= 0.1f) {
-        lastRefresh = Time.time;
+      // 现在每帧比一次"内容签名"，变了就重画：数量、图标、"（空）"都跟着池子实时变。
+      // 这里特意**不**用时间做节流 —— 客户端在某些状态下 Time 会冻住（不在跑逻辑时），
+      // 按 Time 节流的话面板就再也不刷新了（实测踩到过）。
+      String sig = signature();
+      if (lastSignature == null || !lastSignature.equals(sig)) {
+        lastSignature = sig;
         rebuild(false);
         return;
       }
       updatePosition();
     });
+  }
+
+  /** 面板要显示的内容的"指纹"：成员数 + 有货的物品数量 + 有货的液体数量。 */
+  private static String signature() {
+    StringBuilder sb = new StringBuilder(64);
+    Seq<Building> members = members(build);
+    sb.append(members.size).append('|');
+    if (build.items != null) {
+      for (Item item : content.items()) {
+        int amount = build.items.get(item);
+        if (amount > 0) sb.append(item.id).append(':').append(amount).append(',');
+      }
+    }
+    sb.append('|');
+    if (build.liquids != null) {
+      for (Liquid liquid : content.liquids()) {
+        float amount = build.liquids.get(liquid);
+        if (amount > 0.001f) sb.append(liquid.id).append(':').append(Math.round(amount)).append(',');
+      }
+    }
+    return sb.toString();
   }
 
   /**
