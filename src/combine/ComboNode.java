@@ -491,36 +491,19 @@ public class ComboNode extends Block {
 
         void displayInner(Table table) {
             super.display(table);
-            // 信息面板只在切换选中目标时重建一次，所以这些行必须是"活"标签，
-            // 不然连接数/覆盖数/热量都会停在打开面板那一刻。
-            ComboUi.live(table, "combonode:info", this::buildPanel);
-        }
-
-        /** 面板文字都是"活"函数：每次调用取当前值（面板只搭一次，数字必须自己刷新）。 */
-        public String linkText(){
-            return "连接数: " + links.size + "/" + maxNodes;
-        }
-
-        public String coverText(){
-            return "覆盖组合建筑: " + ComboNet.componentMembers(this).size;
-        }
-
-        public String heatText(){
-            return "网络热量: " + Strings.fixed(heat, 1) + "/" + Strings.fixed(heatCap, 1);
-        }
-
-        /** 节点面板内容（活数据）。 */
-        public void buildPanel(Table table) {
+            int members = ComboNet.componentMembers(this).size;
+            table.row();
             table.add("[accent]组合节点[]").left();
             table.row();
-            table.add(linkText()).color(Pal.accent).left();
-            if(ComboNet.componentMembers(this).size > 0){
+            table.add("连接数: " + links.size + "/" + maxNodes).color(Pal.accent).left();
+            if(members > 0){
                 table.row();
-                table.add(coverText()).color(Pal.accent).left();
+                table.add("覆盖组合建筑: " + members).color(Pal.accent).left();
             }
             table.row();
-            table.add(heatText()).color(Pal.lightOrange).left();
-        }
+            table.add("网络热量: " + Strings.fixed(heat, 1) + "/" + Strings.fixed(heatCap, 1))
+                .color(Pal.lightOrange).left();
+                }
 
         @Override
         public byte version(){

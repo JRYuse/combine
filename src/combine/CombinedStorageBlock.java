@@ -44,6 +44,9 @@ public class CombinedStorageBlock extends StorageBlock {
 
   // ==================== 机制驱动 ====================
 
+  /** 排查用：置 true 会把每次重算的细节打进日志。 */
+  public static boolean debug = false;
+
   /**
    * 已登记的组合仓库。
    * 仓库方块 update=false，不会进 Groups.build，所以只能由仓库自己在 created()/onRemoved() 里登记。
@@ -188,6 +191,18 @@ public class CombinedStorageBlock extends StorageBlock {
         }
       }
       comps.add(comp);
+    }
+
+    if (debug) {
+      StringBuilder sb = new StringBuilder();
+      for (Seq<CombinedStorageBuild> comp : comps) {
+        sb.append('[');
+        for (CombinedStorageBuild x : comp) {
+          sb.append(x.block.name).append('@').append(x.tileX()).append(',').append(x.tileY()).append(' ');
+        }
+        sb.append("] ");
+      }
+      Log.info("[combine] 重算 team=@ 已登记=@ 分量=@ -> @", data.team.name, storages.size, comps.size, sb);
     }
 
     // ---- 2) 每个分量：挨着核心 → 并进核心；否则独立组合仓库组 ----
@@ -458,27 +473,18 @@ public class CombinedStorageBlock extends StorageBlock {
 
     /** 显示组合仓库当前共用的池子（独立组 = 组池；并进核心 = 核心池）。 */
     void showPool(Table table) {
-      // 面板只在切换目标时重建一次，内容必须自己每帧重画（见 ComboUi.live）
-      ComboUi.live(table, "combinedstorageblock:pool", this::buildPool);
-    }
-
-    /** 物品条的文字：每次取当前值（面板只搭一次，数字必须自己刷新）。 */
-    public String itemLabel(Item item) {
-      return item.localizedName + ": " + items.get(item) + "/" + Math.max(comboCapacity(), 1);
-    }
-
-    /** 池子的内容（活数据；供面板每帧重画，也供测试直接调用）。 */
-    public void buildPool(Table table) {
-      table.add(poolLabel()).growX().left();
+      int cap = Math.max(comboCapacity(), 1);
+      table.row();
+      table.add(poolLabel()).left();
       if (items != null) {
         for (Item item : content.items()) {
-          if (items.get(item) <= 0) continue;
+          int amount = items.get(item);
+          if (amount <= 0) continue;
           table.row();
           table.add(new mindustry.ui.Bar(
-              () -> itemLabel(item),
+              () -> item.localizedName + ": " + amount + "/" + cap,
               () -> item.color,
-              () -> Math.max(comboCapacity(), 1) <= 0 ? 0f : items.get(item) / (float) Math.max(comboCapacity(), 1)))
-              .height(18f).pad(4).left();
+              () -> (float) amount / cap)).growX().height(18f).pad(4).left();
         }
       }
     }

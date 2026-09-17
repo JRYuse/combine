@@ -27,25 +27,4 @@ public class ComboUi {
       }
     }
   }
-
-  /**
-   * 在 parent 里挂一张「每帧重画」的子表，内容由 builder 决定。
-   *
-   * 背景：Mindustry 的选中方块信息面板（PlacementFragment）**只在切换选中目标时重建一次**，
-   * 之后一直复用同一张表。所以面板里的数字必须自己刷新，否则就会停在打开面板那一刻
-   * （"仓库里的物品数量不动"就是这么来的）。包一层这个，builder 每帧重跑，
-   * 再配 Bar / label(Prov) 这类活 supplier 就万无一失。
-   */
-  public static arc.scene.ui.layout.Table live(arc.scene.ui.layout.Table parent, String tag, arc.func.Cons<arc.scene.ui.layout.Table> builder) {
-    arc.scene.ui.layout.Table t = new arc.scene.ui.layout.Table();
-    t.left();
-    t.update(() -> {
-      t.clearChildren();
-      t.defaults().left();
-      safe(tag, () -> builder.get(t));
-    });
-    parent.row();
-    parent.add(t).growX().left();
-    return t;
-  }
 }

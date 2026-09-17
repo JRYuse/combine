@@ -474,12 +474,11 @@ public class CombinedWallCrafter extends WallCrafter {
                     if (icon == null)
                         icon = Core.atlas.find("clear");
                     t.add(new Image(icon)).size(8 * 4);
-                    // 标题也用活标签：网络组成变了（比如刚放了个连接器）不用重新点开一次
-                    t.labelWrap(() -> {
                     int count = ComboNet.displayMembers(this, group().size).size;
-                    return count > 1 ? "[accent]组合墙切割机[] x" + count + "\n" + block.getDisplayName(tile)
-                        : block.getDisplayName(tile);
-                    }).left().width(160f).padLeft(4);
+                    String title = count > 1
+                            ? "[accent]组合墙切割机[] x" + count + "\n" + block.getDisplayName(tile)
+                            : block.getDisplayName(tile);
+                    t.labelWrap(title).left().width(160f).padLeft(4);
                 }).growX().left();
                 cont.row();
                 if (team != mindustry.Vars.player.team())

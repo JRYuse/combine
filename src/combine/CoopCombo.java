@@ -117,6 +117,8 @@ public class CoopCombo {
    */
   public static boolean sharePower = true;
 
+  /** 排查用：置 true 会把每次重算的细节打进日志。 */
+  public static boolean debug = false;
 
   /** 黑名单（方块内部名）：个别子类方块组合起来语义不对时，可以在这里单独排除。 */
   public static final ObjectSet<String> blacklist = new ObjectSet<>();
@@ -521,6 +523,15 @@ public class CoopCombo {
       intakeGroups.clear();
       for (Seq<Building> comp : comps) {
         if (comp.size > 1) intakeGroups.add(comp);
+      }
+
+      if (debug) {
+        StringBuilder sb = new StringBuilder();
+        for (Seq<Building> comp : comps) {
+          if (comp.size <= 1) continue;
+          sb.append('[').append(comp.first().block.name).append(" x").append(comp.size).append("] ");
+        }
+        Log.info("[combine] 协作组合重算: 登记=@ 组=@ 多机组=@", tracked.size, comps.size, sb);
       }
     } catch (Throwable t) {
       Log.err("[combine] 协作组合重算失败", t);
