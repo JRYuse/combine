@@ -4,6 +4,7 @@ import arc.Events;
 import arc.scene.ui.layout.Table;
 import arc.struct.ObjectMap;
 import arc.struct.ObjectSet;
+import arc.struct.ObjectIntMap;
 import arc.struct.Queue;
 import arc.struct.Seq;
 import arc.util.Log;
@@ -12,6 +13,7 @@ import mindustry.game.Team;
 import mindustry.game.Teams.TeamData;
 import mindustry.gen.Building;
 import mindustry.type.Item;
+import mindustry.world.Block;
 import mindustry.world.Tile;
 import mindustry.world.blocks.storage.CoreBlock.CoreBuild;
 import mindustry.world.blocks.storage.StorageBlock;
@@ -298,10 +300,20 @@ public class CombinedStorageBlock extends StorageBlock {
 
     // 连了组合连接器/节点时，容量和池子都按"整张网络"算：整组报告网络合计容量，
     // 相当于这些机器直接贴在一起。池子目标也沿用 ComboNet 选中的那一份，避免两边来回抢。
-    int netCap = ComboNet.networkItemCap(leader);
-    if (netCap > groupCap)
-      groupCap = netCap;
-    int netSize = ComboNet.networkSize(leader);
+    // 注意用"本组合计 + 网络里不属于本组的成员"而不是 max()：网络只连到本组一部分仓库时，
+    // max() 会把网络里那些仓库再数一遍（数小了反而漏掉真正多出来的工厂容量）。
+    ObjectSet<Building> inGroup = new ObjectSet<>();
+    for (CombinedStorageBuild s : comp)
+      inGroup.add(s);
+    ObjectSet<Building> counted = new ObjectSet<>();
+    for (CombinedStorageBuild s : comp) {
+      // 注意要遍历**每个成员**的网络：本组里没接进网络的那几台，从它出发查网络只能查到它自己
+      for (Building m : ComboNet.componentMembers(s)) {
+        if (!ComboReflect.inWorld(m) || inGroup.contains(m) || !counted.add(m))
+          continue;
+        groupCap += ComboReflect.baseItemCap(m);
+      }
+    }
     ItemModule netPool = ComboNet.poolModuleFor(leader);
     if (netPool != null)
       pool = netPool;
@@ -317,7 +329,8 @@ public class CombinedStorageBlock extends StorageBlock {
       s.items = pool;
       s.linkedCore = null;
       s.comboStorageCap = groupCap;
-      s.comboGroupSize = Math.max(comp.size, netSize);
+      // 面板上的"x N"就是本组仓库台数；网络里接过来的工厂之类由 extraNetworkText 单独报名字
+      s.comboGroupSize = comp.size;
     }
     clamp(pool, groupCap);
   }
@@ -501,7 +514,9 @@ public class CombinedStorageBlock extends StorageBlock {
 
     void displayInner(Table table) {
       super.display(table);
-      ComboNet.addNetworkDisplay(table, this, 1);
+      // 只留一段内容：仓库组的池子（它已经是"整张网络"的容量，见 standalone）。
+      // 以前这里还会再挂一段 ComboNet 的"网络组合"面板，两段列的是同一份池子、
+      // 数量却按各自统计（例如 5000/3000 这种超容显示），看着就是自相矛盾，所以合并掉。
       showPool(table);
     }
 
@@ -526,9 +541,65 @@ public class CombinedStorageBlock extends StorageBlock {
       return item.localizedName + ": " + items.get(item) + "/" + Math.max(comboCapacity(), 1);
     }
 
+    /** 本仓库「相邻成组」的整组成员（规则和 standalone 的并仓完全一致）。 */
+    public Seq<CombinedStorageBuild> cluster() {
+      Seq<CombinedStorageBuild> out = new Seq<>();
+      ObjectSet<CombinedStorageBuild> seen = new ObjectSet<>();
+      Queue<CombinedStorageBuild> queue = new Queue<>();
+      queue.addLast(this);
+      seen.add(this);
+      while (!queue.isEmpty()) {
+        CombinedStorageBuild cur = queue.removeFirst();
+        out.add(cur);
+        if (!cur.coreMergeStorage())
+          continue; // 强化版仓库（coreMerge=false）不并仓
+        for (Building nb : cur.proximity) {
+          if (nb instanceof CombinedStorageBuild other && other.team == team
+              && other.coreMergeStorage() && ComboReflect.inWorld(other) && seen.add(other)) {
+            queue.addLast(other);
+          }
+        }
+      }
+      return out;
+    }
+
+    /**
+     * 这张网络里**不属于本仓库组**的成员（连接器/节点接过来的工厂之类），面板上只报个名字。
+     * 它们的容量已经算进组容量里了，所以不再单独列一遍数字，免得出现两个互相矛盾的池子。
+     */
+    public String extraNetworkText() {
+      ObjectSet<Building> mine = new ObjectSet<>();
+      for (CombinedStorageBuild s : cluster())
+        mine.add(s);
+      ObjectIntMap<Block> counts = new ObjectIntMap<>();
+      // 同样遍历组里每个成员的网络（没接进网络的那些从它出发只能查到自己）
+      ObjectSet<Building> seen = new ObjectSet<>();
+      for (CombinedStorageBuild s : cluster()) {
+        for (Building m : ComboNet.componentMembers(s)) {
+          if (!ComboReflect.inWorld(m) || mine.contains(m) || !seen.add(m))
+            continue;
+          if (m.block instanceof CombinedStorageBlock)
+            continue; // 仓库（含网络接过来的）已经算进"组合仓库组 x N / 容量"里了
+          counts.increment(m.block, 1);
+        }
+      }
+      StringBuilder sb = new StringBuilder();
+      for (Block b : counts.keys()) {
+        if (sb.length() > 0)
+          sb.append("  ");
+        sb.append(b.localizedName).append("*").append(counts.get(b, 0));
+      }
+      return sb.toString();
+    }
+
     /** 池子内容：活数据（供面板每帧重画）。 */
     public void buildPool(Table table) {
       table.add(poolLabel()).left();
+      String extra = extraNetworkText();
+      if (extra.length() > 0) {
+        table.row();
+        table.add("[lightgray]网络另有: " + extra + "[]").left();
+      }
       if (items != null) {
         for (Item item : content.items()) {
           if (items.get(item) <= 0)
