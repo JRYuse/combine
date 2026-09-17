@@ -158,8 +158,29 @@ public class LinkWall extends Wall {
       linksDirty = true;
     }
 
+    /**
+     * 这面墙要不要参与"组合"（连成一组、共享一个血池）。
+     *
+     * 只有**有玩家的队伍**才组合：纯 AI 势力（战役/进攻图里的敌方等，队伍里没有玩家）
+     * 的组合墙保持原版单格行为 —— 否则"组=一整面墙"的血池会把敌方整片墙的血叠在一起，
+     * 既不平衡，也容易出现"打一处、整片一起掉/一起死"的怪现象。
+     * PvP 里两边都有玩家，会各自照常组合。
+     */
+    public boolean groupAllowed() {
+      return team != null && !team.isOnlyAI();
+    }
+
     public void rebuildLinks() {
       Seq<LinkWallBuild> found = new Seq<>();
+      // 不组合的队伍：自己就是一组（组员只有自己 → 伤害/治疗/门开关都退回原版单格行为）
+      if (!groupAllowed()) {
+        links = found;
+        found.add(this);
+        linkLeader = null;
+        linksDirty = false;
+        seqSize = 1;
+        return;
+      }
       ObjectSet<LinkWallBuild> visited = new ObjectSet<>();
       Queue<LinkWallBuild> queue = new Queue<>();
       queue.addLast(this);
