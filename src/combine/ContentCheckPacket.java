@@ -1,5 +1,4 @@
 package combine;
-
 import arc.util.io.Reads;
 import arc.util.io.Writes;
 import mindustry.net.NetConnection;

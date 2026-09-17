@@ -1,5 +1,5 @@
 package combine;
-
+import combine.coop.CoopCombo;
 import arc.struct.Seq;
 import mindustry.world.Block;
 

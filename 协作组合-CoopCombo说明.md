@@ -1,7 +1,7 @@
 # 协作组合（CoopCombo）—— 让"继承原版类但写了新功能"的方块也能组合
 
 > 这个仓库是 `combine`（组合工厂）的实验分支：**原仓库 `/root/combine` 一个字节都没动**，
-> 本仓库 = 原仓库的一份拷贝 + 一个新机制 `src/combine/CoopCombo.java`。
+> 本仓库 = 原仓库的一份拷贝 + 一个新机制 `src/combine/coop/CoopCombo.java`。
 > 不想要这个机制就把 `CoopCombo.enabled` 置 false，行为立刻退回原仓库。
 
 ## 1. 要解决的问题

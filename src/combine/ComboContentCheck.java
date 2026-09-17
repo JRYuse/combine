@@ -1,5 +1,4 @@
 package combine;
-
 import arc.Events;
 import arc.struct.ObjectMap;
 import arc.struct.Seq;
