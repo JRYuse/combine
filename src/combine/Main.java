@@ -371,6 +371,9 @@ public class Main extends Mod {
         continue;
       if (list.contains(b.name))
         continue;
+      // 不组合名单（按类，含 js/java 子类）：传送带/管道/桥/分流器这类运输方块
+      if (NoCombo.blocked(b))
+        continue;
       if (isExact(b, Incinerator.class))
         continue;
 
@@ -572,6 +575,8 @@ public class Main extends Mod {
     for (var c : snapshot) {
       Block b = (Block) c;
       if (b instanceof LinkWall)
+        continue;
+      if (NoCombo.blocked(b))
         continue;
       boolean isWall = isExact(b, Wall.class);
       boolean isDoor = isExact(b, mindustry.world.blocks.defense.Door.class);

@@ -239,6 +239,8 @@ public class CoopCombo {
 
   private static boolean computeEligible(Block b) {
     if (!enabled) return false;
+    // 【不组合名单】传输类等明确不该组合的类（含 js/java 子类）直接排除
+    if (NoCombo.blocked(b)) return false;
     if (b.getClass().getName().startsWith("combine.")) return false;
     // 原版方块一律不碰：combine 该替换的已经替换掉了，剩下没被替换的原版方块
     // （例如 oil-extractor/Fracker 这类"子类但不是匿名类"的）保持原样，别顺手把它们也连起来。
