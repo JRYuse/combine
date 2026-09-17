@@ -128,6 +128,9 @@ public class CoopCombo {
   /** 已登记的可协作方块（不能靠 created() 挂钩子，只能自己在放置/读档时登记）。 */
   private static final ObjectSet<Building> tracked = new ObjectSet<>();
 
+  /** 已登记的组合节点（mod 自己的方块，created()/onRemoved() 里登记；它的 links 能跨距离连协作方块）。 */
+  private static final ObjectSet<Building> trackedNodes = new ObjectSet<>();
+
   /** 组员数 > 1 的组（每帧"组级收料"用）。 */
   private static final Seq<Seq<Building>> intakeGroups = new Seq<>();
   private static int intakeCounter = 0;
@@ -233,8 +236,20 @@ public class CoopCombo {
     if (a == null || b == null || a == b) return false;
     if (!a.isValid() || !b.isValid()) return false;
     if (a.team != b.team) return false;
+    if (isLinker(a) || isLinker(b)) return true;      // 组合连接器/节点当导线，谁来都能接
     if (!eligible(a.block) || !eligible(b.block)) return false;
     return a.block == b.block || allowCrossType;
+  }
+
+  /** 组合连接器 / 组合节点：跨组合体的"导线"（不进成员表）。 */
+  public static boolean isLinker(Building b) {
+    return b instanceof ComboConnector.ComboConnectorBuild
+        || b instanceof ComboNode.ComboNodeBuild;
+  }
+
+  /** 能不能被接进组合体：协作组合方块本身，或者连接件。 */
+  static boolean joinable(Building b) {
+    return b != null && b.isValid() && (eligible(b.block) || isLinker(b));
   }
 
   /** 抓取基础容量：内容装配刚结束时调用，此时还没有任何放大。 */
@@ -268,16 +283,26 @@ public class CoopCombo {
     return v;
   }
 
-  // ==================== 登记 ====================
+  /** 组合节点登记 / 注销（由 {@link ComboNode.ComboNodeBuild} 自己调用）。 */
+  public static void trackNode(Building node) {
+    if (node != null && trackedNodes.add(node)) dirty = true;
+  }
+
+  public static void untrackNode(Building node) {
+    if (node != null && trackedNodes.remove(node)) dirty = true;
+  }
+
+  /** 仓库登记 / 注销（由 {@link CombinedStorageBuild} 自己调用）。 */
 
   /** 读档后全图扫一遍重建登记表。 */
   public static void rescan() {
     tracked.clear();
+    trackedNodes.clear();
     if (world != null && world.tiles != null) {
       for (Tile tile : world.tiles) {
-        if (tile != null && tile.build != null && eligible(tile.block())) {
-          tracked.add(tile.build);
-        }
+        if (tile == null || tile.build == null) continue;
+        if (eligible(tile.block())) tracked.add(tile.build);
+        if (tile.build instanceof ComboNode.ComboNodeBuild) trackedNodes.add(tile.build);
       }
     }
     dirty = true;
@@ -338,7 +363,18 @@ public class CoopCombo {
       }
       for (Building b : dead) tracked.remove(b);
 
-      // ---- 1) 连通分量：同队 + 4 邻接 +（同方块 或 允许跨类型） ----
+      // ---- 0) 组合节点跨距离连线：成员 -> 链到它的节点们 ----
+      ObjectMap<Building, Seq<Building>> linkedByNodes = new ObjectMap<>();
+      for (Building nb : trackedNodes) {
+        if (nb == null || !nb.isValid() || !(nb instanceof ComboNode.ComboNodeBuild node) || node.links == null) continue;
+        for (int i = 0; i < node.links.size; i++) {
+          Building link = world.build(node.links.get(i));
+          if (link == null || !link.isValid() || !eligible(link.block)) continue;
+          linkedByNodes.get(link, Seq::new).add(node);
+        }
+      }
+
+      // ---- 1) 连通分量：同队 + 4 邻接 +（同方块 或 允许跨类型），并可穿过连接器/节点 ----
       ObjectSet<Building> visited = new ObjectSet<>();
       Seq<Seq<Building>> comps = new Seq<>();
       for (Building start : tracked) {
@@ -347,12 +383,34 @@ public class CoopCombo {
         Queue<Building> queue = new Queue<>();
         queue.addLast(start);
         visited.add(start);
+        ObjectSet<Building> seen = new ObjectSet<>();
+        seen.add(start);
         while (!queue.isEmpty()) {
           Building cur = queue.removeFirst();
-          comp.add(cur);
+          // 连接件只当"导线"穿过去，不进成员表（它没有物品/液体模块）
+          if (!isLinker(cur)) comp.add(cur);
           for (Building nb : cur.proximity) {
-            if (linkable(cur, nb) && visited.add(nb)) {
+            if (linkable(cur, nb) && seen.add(nb)) {
+              if (!isLinker(nb)) visited.add(nb);
               queue.addLast(nb);
+            }
+          }
+          // 被"远处组合节点"链到的成员：从该成员出发也能走到那些节点（节点再连回它的其它目标）
+          Seq<Building> viaNodes = linkedByNodes.get(cur);
+          if (viaNodes != null) {
+            for (Building n : viaNodes) {
+              if (seen.add(n)) queue.addLast(n);
+            }
+          }
+          // 组合节点：它激光连出去的 links 也算连通
+          if (cur instanceof ComboNode.ComboNodeBuild node && node.links != null) {
+            for (int i = 0; i < node.links.size; i++) {
+              Building link = world.build(node.links.get(i));
+              if (link != null && link.isValid() && link.team == cur.team
+                  && joinable(link) && seen.add(link)) {
+                if (!isLinker(link)) visited.add(link);
+                queue.addLast(link);
+              }
             }
           }
         }

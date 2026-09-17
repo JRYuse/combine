@@ -117,9 +117,15 @@ public class ComboNode extends Block {
         stats.add(Stat.powerConnections, maxNodes, StatUnit.none);
     }
 
+    /** 能不能作为连接目标：原版替换出来的组合方块，或协作组合（js/java 子类）方块。 */
+    public static boolean linkTarget(Building b){
+        return b != null && b.isValid()
+            && (ComboReflect.isComboBuild(b) || CoopCombo.eligible(b.block));
+    }
+
     public boolean linkValid(Building tile, Building link, boolean checkMaxNodes){
         if(tile == null || link == null || tile == link || !link.isValid() || tile.team != link.team) return false;
-        if(!ComboReflect.isComboBuild(link)) return false;
+        if(!linkTarget(link)) return false;
         if(checkMaxNodes && link instanceof ComboNodeBuild node && node.links.size >= maxNodes) return false;
         if(PowerNode.insulated(tile, link)) return false;
         return overlaps(tile, link, laserRange * tilesize);
@@ -175,7 +181,7 @@ public class ComboNode extends Block {
         float wx = tileX * tilesize + offset, wy = tileY * tilesize + offset;
         for(Building other : Groups.build){
             if(other == null || !other.isValid() || other.team != team || other == self) continue;
-            if(!ComboReflect.isComboBuild(other)) continue;
+            if(!linkTarget(other)) continue;
             if(!arc.math.geom.Intersector.overlaps(new arc.math.geom.Circle(wx, wy, laserRange * tilesize),
                 other.tile.getHitbox(arc.util.Tmp.r1))) continue;
             if(PowerNode.insulated(tileX, tileY, other.tileX(), other.tileY())) continue;
@@ -196,7 +202,7 @@ public class ComboNode extends Block {
             if(!net.client() && links.size == 0){
                 Seq<Building> candidates = new Seq<>();
                 for(Building other : Groups.build){
-                    if(other != this && other.team == team && ComboReflect.isComboBuild(other)
+                    if(other != this && other.team == team && linkTarget(other)
                         && linkValid(this, other, true) && !links.contains(other.pos())){
                         candidates.add(other);
                     }
@@ -207,6 +213,7 @@ public class ComboNode extends Block {
                 }
             }
             ComboNet.markDirty();
+            CoopCombo.markDirty();
         }
 
         @Override
@@ -215,7 +222,7 @@ public class ComboNode extends Block {
                 if(links.size == 0){
                     Seq<Building> candidates = new Seq<>();
                     for(Building b : Groups.build){
-                        if(b != this && b.team == team && ComboReflect.isComboBuild(b)
+                        if(b != this && b.team == team && linkTarget(b)
                             && linkValid(this, b, true) && !links.contains(b.pos())){
                             candidates.add(b);
                         }
@@ -265,7 +272,7 @@ public class ComboNode extends Block {
             int h = 19;
             for(int i = 0; i < links.size; i++){
                 Building link = world.build(links.get(i));
-                if(link != null && link.isValid() && ComboReflect.isComboBuild(link)){
+                if(link != null && link.isValid() && linkTarget(link)){
                     h = h * 31 + link.pos();
                 }
             }
@@ -273,6 +280,7 @@ public class ComboNode extends Block {
         }
 
         public void addLink(Building other){
+            CoopCombo.markDirty();
             if(other == null || !other.isValid()) return;
             links.addUnique(other.pos());
             if(power != null && other.power != null){
@@ -303,7 +311,15 @@ public class ComboNode extends Block {
         }
 
         @Override
+        public void created(){
+            super.created();
+            // 登记给协作组合：节点的 links 能把 js/java 子类方块跨距离接进同一个组合体
+            CoopCombo.trackNode(this);
+        }
+
+        @Override
         public void onRemoved(){
+            CoopCombo.untrackNode(this);
             for(int i = links.size - 1; i >= 0; i--){
                 Building other = world.build(links.get(i));
                 if(other != null){
