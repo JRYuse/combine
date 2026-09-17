@@ -42,7 +42,7 @@ public class NoCombo {
       mindustry.world.blocks.distribution.Sorter.class,
       mindustry.world.blocks.distribution.OverflowGate.class,
       mindustry.world.blocks.distribution.DirectionalUnloader.class,
-      mindustry.world.blocks.distribution.MassDriver.class, CoreBlock.class
+      mindustry.world.blocks.distribution.MassDriver.class
 
   );
 
