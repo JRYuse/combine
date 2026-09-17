@@ -27,4 +27,22 @@ public class ComboUi {
       }
     }
   }
+
+  /**
+   * 给组合面板画一条"电力"条：按**整组**耗电 × 电网状态显示；组里没人耗电就不画。
+   *
+   * 注意不要用原版 displayBars() —— 它会把原版注册的那些条一起带出来，其中"液体条"读的是
+   * block.liquidCapacity（组合建筑为了不让管道算出负流量把它抬成了 9999 假容量），
+   * 于是面板上会多出一条 水 160/9.99K 的假条，还和组合自己的液条重复。
+   */
+  public static void addPowerBar(arc.scene.ui.layout.Table table, mindustry.gen.Building self, float totalUsage) {
+    if (table == null || self == null || self.power == null || totalUsage <= 0.001f) return;
+    final float usage = totalUsage;
+    final mindustry.world.modules.PowerModule pw = self.power;
+    table.add(new mindustry.ui.Bar(
+        () -> "电力 " + arc.util.Strings.fixed(usage * pw.status * 60f, 1) + " ⚡/s",
+        () -> mindustry.graphics.Pal.power,
+        () -> pw.status)).growX().height(18f).pad(4).left();
+    table.row();
+  }
 }

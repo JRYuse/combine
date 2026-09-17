@@ -513,10 +513,21 @@ public class CombinedSolidPump extends SolidPump {
                 barsTable.update(() -> {
                     barsTable.clearChildren();
                     barsTable.defaults().growX().height(18f).pad(4);
-                    // 用原版 bars：血条 + **电力条**（原版 Block.setBars 在 consPower != null 时会注册
-                    // "power" 条）。以前这里只手绘了血条，所以耗电的机器面板上看不到电力，
-                    // 玩家就会碰到"水是满的、状态却是 noinput"这种看不懂的情况。
-                    displayBars(barsTable);
+                    // 血条：手绘（不要用 displayBars —— 它会把原版那条按假容量 9999 算的液条也带出来，
+                    // 和组合自己的液条重复）
+                    if (!Mathf.zero(block.health, 0.001f)) {
+                        final float h = health, mh = maxHealth;
+                        barsTable.add(new Bar(
+                                () -> Core.bundle.get("stat.health", "Health") + " " + (int) Math.max(h, 0),
+                                () -> Pal.health, () -> Mathf.clamp(h / mh)));
+                        barsTable.row();
+                    }
+                    // 电力条：按整组耗电显示（组里没人耗电就不画）
+                    float totalPowerUsage = 0f;
+                    for (CombinedSolidPumpBuild member : group())
+                        if (member.isValid() && member.block.consPower != null)
+                            totalPowerUsage += member.block.consPower.usage;
+                    ComboUi.addPowerBar(barsTable, this, totalPowerUsage);
                     LiquidModule liq = liquids;
                     if (liq == null) {
                         CombinedSolidPumpBuild l = leader();
@@ -556,11 +567,18 @@ public class CombinedSolidPump extends SolidPump {
                                 () -> out.barColor != null ? out.barColor : out.color,
                                 () -> t2 / c));
                         barsTable.row();
-                        final float lp = lastPump;
+                        // 泵送速度显示**整组**的合计：面板上其它数字（池子/上限）都是整组口径，
+                        // 只显示本格的话，站在没水/没油地格上的那一台会一直显示 0.0/秒，
+                        // 看起来像"整组不干活"，其实水是同伴在抽。
+                        float groupPump = 0f;
+                        for (CombinedSolidPumpBuild m : group())
+                            if (m.isValid())
+                                groupPump += m.lastPump;
+                        final float lp = groupPump;
                         barsTable.add(new Bar(
                                 () -> Core.bundle.formatFloat("bar.pumpspeed", lp * 60, 1),
                                 () -> Pal.ammo,
-                                () -> warmup * efficiency));
+                                () -> lp > 0.001f ? 1f : 0f));
                         barsTable.row();
                     }
                 });
