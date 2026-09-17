@@ -434,6 +434,11 @@ public class LinkWall extends Wall {
 
     @Override
     public void display(Table table) {
+      // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+      ComboUi.safe("linkwall:display", () -> displayInner(table));
+    }
+
+    void displayInner(Table table) {
       super.display(table);
       if (Vars.player.team() == this.team) {
         table.row();
@@ -442,6 +447,6 @@ public class LinkWall extends Wall {
         table.label(() -> isDoor() ? (open ? "模式: 门(开)" : "模式: 门(关)") : (isShield() ? "模式: 相位盾" : "模式: 墙")).pad(4)
             .wrap().width(200f).left();
       }
-    }
+        }
   }
 }

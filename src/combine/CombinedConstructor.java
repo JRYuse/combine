@@ -155,20 +155,7 @@ public IUnitCombo comboLeader;
         public boolean acceptItem(Building source, Item item) {
             if (!block.hasItems)
                 return false;
-            boolean needed = false;
-            for (IUnitCombo member : group()) {
-                if (((Building) member).isValid()
-                        && ((Constructor.ConstructorBuild) member).recipe() != null) {
-                    for (ItemStack stack : ((Constructor.ConstructorBuild) member).recipe().requirements) {
-                        if (stack.item == item) {
-                            needed = true;
-                            break;
-                        }
-                    }
-                }
-                if (needed)
-                    break;
-            }
+            boolean needed = ComboReflect.groupNeedsItem(this, item);
             return needed && items.get(item) < getMaximumAccepted(item);
         }
 
@@ -181,6 +168,11 @@ public IUnitCombo comboLeader;
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combinedconstructor:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             super.display(table);
             int count = group().size;
             if (count <= 1)
@@ -225,7 +217,7 @@ public IUnitCombo comboLeader;
                 }
             });
             table.add(bars).growX().left();
-        }
+                }
 
         // -------------------- 序列化 --------------------
         /**

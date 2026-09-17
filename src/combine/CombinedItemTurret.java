@@ -223,6 +223,10 @@ public class CombinedItemTurret extends ItemTurret {
 
   public class CombinedItemTurretBuild extends ItemTurretBuild {
 
+    /** perItemCap() 的每-tick 缓存（组总弹容），避免收弹路径每次都遍历整组。 */
+    public long comboAmmoCapTick = Long.MIN_VALUE;
+    public float comboAmmoCapSum = 1f;
+
     /** 内容按组合体同步，但 peek()/any() 只返回本建筑当前可使用的弹药。 */
     private class DisplayAmmoSeq extends Seq<Turret.AmmoEntry> {
       @Override
@@ -277,11 +281,17 @@ public class CombinedItemTurret extends ItemTurret {
 
     
     public float perItemCap() {
-      float total = 0f;
-      for (CombinedItemTurretBuild b : group())
-        if (b.isValid())
-          total += ((Turret) b.block).maxAmmo;
-      return Math.max(total, 1f);
+      // 装弹/收弹路径每次都要问组总弹容，原先每次都遍历整组 → 按 tick 缓存
+      CombinedItemTurretBuild l = leader();
+      if (l.comboAmmoCapTick != state.updateId) {
+        l.comboAmmoCapTick = state.updateId;
+        float total = 0f;
+        for (CombinedItemTurretBuild b : l.group())
+          if (b.isValid())
+            total += ((Turret) b.block).maxAmmo;
+        l.comboAmmoCapSum = Math.max(total, 1f);
+      }
+      return l.comboAmmoCapSum;
     }
 
     // FIX[liquid]: 组总容量 = 各成员 baseLiquidCapacity 之和
@@ -450,6 +460,7 @@ public class CombinedItemTurret extends ItemTurret {
         }
       }
       newLeader.comboLeader = null;
+      newLeader.comboAmmoCapTick = Long.MIN_VALUE;
 
       newLeader.ammo.clear();
       int mergedCap = (int)Math.max(0, newLeader.perItemCap());
@@ -929,6 +940,11 @@ public class CombinedItemTurret extends ItemTurret {
 
     @Override
         public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combineditemturret:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
       table.table(cont -> {
         cont.top().left();
         cont.defaults().growX().left();
@@ -961,7 +977,7 @@ public class CombinedItemTurret extends ItemTurret {
         });
         cont.add(comboIO).growX().left();
       }).width(260f).left();
-    }
+            }
 
     public void buildComboIO(Table table) {
       table.left();

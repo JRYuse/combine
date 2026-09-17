@@ -12,8 +12,10 @@ import arc.scene.ui.layout.Table;
 import arc.struct.IntSeq;
 import arc.struct.Seq;
 import arc.util.Strings;
+import arc.util.Nullable;
 import arc.util.io.Reads;
 import arc.util.io.Writes;
+import mindustry.game.Team;
 import mindustry.gen.Building;
 import mindustry.gen.Groups;
 import mindustry.gen.Unit;
@@ -73,7 +75,7 @@ public class ComboNode extends Block {
                     new mindustry.world.blocks.power.PowerGraph().reflow(entity);
                     entity.updatePowerGraph();
                 }
-                ComboNet.rebuild();
+                ComboNet.markDirty();
             }else if(valid && entity.links.size < maxNodes){
                 entity.addLink(other);
             }
@@ -134,7 +136,52 @@ public class ComboNode extends Block {
         Lines.stroke(1f);
         Draw.color(Pal.placing);
         Drawf.circles(x * tilesize + offset, y * tilesize + offset, laserRange * tilesize);
+        drawLinkHints(x, y);
         Draw.reset();
+    }
+
+    /**
+     * 放置**建造计划（预设建筑 / 蓝图里的每一个格子）**时也要给"能连上的组合体"加蓝框。
+     * 原版电力节点只在鼠标那一个格子上画预览(drawPlace)，预设是一串计划、走的是 drawPlan，
+     * 所以两处都得挂。
+     */
+    @Override
+    public void drawPlan(mindustry.entities.units.BuildPlan plan, arc.util.Eachable<mindustry.entities.units.BuildPlan> list, boolean valid){
+        super.drawPlan(plan, list, true);
+        drawLinkHints(plan.x, plan.y);
+    }
+
+    /** 把"这个位置能连上的组合体"框成蓝框（同原版电力节点放置预览的 Pal.place 方框）。 */
+    void drawLinkHints(int tileX, int tileY){
+        try{
+            if(player == null || player.team() == null) return;
+            for(Building other : potentialLinks(tileX, tileY, player.team(), null)){
+                Drawf.square(other.x, other.y, other.block.size * tilesize / 2f + 2f, Pal.place);
+            }
+        }catch(Throwable ignored){
+        }
+    }
+
+    /**
+     * 这个位置能连到哪些组合体（放置预览、预设预览和测试共用）。
+     * 判据和 linkValid 一致：同队 + 是组合建筑 + 在激光范围内 + 没被绝缘方块挡住。
+     */
+    public Seq<Building> potentialLinks(int tileX, int tileY, Team team, @Nullable Building self){
+        Seq<Building> out = new Seq<>();
+        if(team == null || world == null) return out;
+        mindustry.world.Tile tile = world.tile(tileX, tileY);
+        if(tile == null) return out;
+
+        float wx = tileX * tilesize + offset, wy = tileY * tilesize + offset;
+        for(Building other : Groups.build){
+            if(other == null || !other.isValid() || other.team != team || other == self) continue;
+            if(!ComboReflect.isComboBuild(other)) continue;
+            if(!arc.math.geom.Intersector.overlaps(new arc.math.geom.Circle(wx, wy, laserRange * tilesize),
+                other.tile.getHitbox(arc.util.Tmp.r1))) continue;
+            if(PowerNode.insulated(tileX, tileY, other.tileX(), other.tileY())) continue;
+            out.add(other);
+        }
+        return out;
     }
 
     public class ComboNodeBuild extends Building implements HeatBlock {
@@ -159,7 +206,7 @@ public class ComboNode extends Block {
                     configureAny(candidates.get(i).pos());
                 }
             }
-            ComboNet.rebuild();
+            ComboNet.markDirty();
         }
 
         @Override
@@ -196,7 +243,7 @@ public class ComboNode extends Block {
         @Override
         public void configured(Unit builder, Object value){
             super.configured(builder, value);
-            ComboNet.rebuild();
+            ComboNet.markDirty();
         }
 
         @Override
@@ -205,7 +252,7 @@ public class ComboNode extends Block {
             int hash = linkHash();
             if(hash != lastLinkHash){
                 lastLinkHash = hash;
-                ComboNet.rebuild();
+                ComboNet.markDirty();
             }
             if(enabled){
                 ComboNet.updateHeatNode(this);
@@ -237,7 +284,7 @@ public class ComboNode extends Block {
                     power.graph.addGraph(other.power.graph);
                 }
             }
-            ComboNet.rebuild();
+            ComboNet.markDirty();
         }
 
         public void removeLink(Building other){
@@ -252,7 +299,7 @@ public class ComboNode extends Block {
                 updatePowerGraph();
                 other.updatePowerGraph();
             }
-            ComboNet.rebuild();
+            ComboNet.markDirty();
         }
 
         @Override
@@ -272,7 +319,7 @@ public class ComboNode extends Block {
                 new mindustry.world.blocks.power.PowerGraph().reflow(this);
                 updatePowerGraph();
             }
-            ComboNet.rebuildExcluding(this);
+            ComboNet.markDirty();
             super.onRemoved();
         }
 
@@ -335,7 +382,12 @@ public class ComboNode extends Block {
         }
 
         @Override
-        public void display(Table table){
+        public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combonode:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             super.display(table);
             int members = ComboNet.componentMembers(this).size;
             table.row();
@@ -349,7 +401,7 @@ public class ComboNode extends Block {
             table.row();
             table.add("网络热量: " + Strings.fixed(heat, 1) + "/" + Strings.fixed(heatCap, 1))
                 .color(Pal.lightOrange).left();
-        }
+                }
 
         @Override
         public byte version(){

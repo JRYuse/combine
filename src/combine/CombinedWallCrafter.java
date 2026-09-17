@@ -392,6 +392,14 @@ public class CombinedWallCrafter extends WallCrafter {
         }
 
         @Override
+        public boolean shouldAmbientSound() {
+            // FIX[声音线程崩溃]: MindustryX 的环境音在独立 AudioThread（20fps）上调用
+            // shouldAmbientSound()，原版默认实现转调 shouldConsume()；
+            // 组合建筑这一路会读库存/遍历共享序列，跨线程相撞就是
+            // NoSuchElementException。组合建筑统一禁用环境音循环。
+            return false;
+        }
+
         public boolean shouldConsume() {
             return items.get(output) < Math.max(comboTotalItemCap, 1);
         }
@@ -443,7 +451,8 @@ public class CombinedWallCrafter extends WallCrafter {
 
             totalTime += edelta() * warmup * (eff <= 0f ? 0f : 1f);
 
-            if (timer(timerDump, dumpTime / timeScale)) {
+            // FIX[搬运粒度]: 同上，按每 tick 搬运
+            if (timer(timerDump, CombinedCrafter.comboDumpInterval / timeScale)) {
                 dump(output);
             }
         }
@@ -451,6 +460,11 @@ public class CombinedWallCrafter extends WallCrafter {
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combinedwallcrafter:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             table.table(cont -> {
                 cont.top().left();
                 cont.defaults().growX().left();
@@ -510,7 +524,7 @@ public class CombinedWallCrafter extends WallCrafter {
                 });
                 cont.add(comboIO).growX().left();
             }).width(260f).left();
-        }
+                }
 
         public void buildComboIO(Table table) {
             table.left();

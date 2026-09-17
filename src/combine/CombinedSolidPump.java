@@ -345,6 +345,14 @@ public class CombinedSolidPump extends SolidPump {
 
         // -------------------- 核心逻辑（复刻 SolidPumpBuild，容量换组容量） --------------------
         @Override
+        public boolean shouldAmbientSound() {
+            // FIX[声音线程崩溃]: MindustryX 的环境音在独立 AudioThread（20fps）上调用
+            // shouldAmbientSound()，原版默认实现转调 shouldConsume()；
+            // 组合建筑这一路会读库存/遍历共享序列，跨线程相撞就是
+            // NoSuchElementException。组合建筑统一禁用环境音循环。
+            return false;
+        }
+
         public boolean shouldConsume() {
             return liquids.get(result) < Math.max(comboTotalLiquidCap, 1f) - 0.01f;
         }
@@ -374,7 +382,7 @@ public class CombinedSolidPump extends SolidPump {
 
             liquidDrop = result;
             float fraction = Math.max(validTiles + boost + (attribute == null ? 0 : attribute.env()), 0);
-            float room = Math.max(0f, comboTotalLiquidCap - ComboReflect.liquidTotal(liquids));
+            float room = Math.max(0f, comboTotalLiquidCap - liquids.get(result));
 
             if (efficiency > 0 && room > 0.001f) {
                 float maxPump = Math.min(room, pumpAmount * delta() * fraction * efficiency);
@@ -423,6 +431,11 @@ public class CombinedSolidPump extends SolidPump {
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combinedsolidpump:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             table.table(cont -> {
                 cont.top().left();
                 cont.defaults().growX().left();
@@ -486,7 +499,7 @@ public class CombinedSolidPump extends SolidPump {
                 });
                 cont.add(comboIO).growX().left();
             }).width(260f).left();
-        }
+                }
 
         public void buildComboIO(Table table) {
             table.left();

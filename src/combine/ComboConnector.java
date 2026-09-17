@@ -79,13 +79,13 @@ public class ComboConnector extends PowerBlock {
         @Override
         public void placed(){
             super.placed();
-            ComboNet.rebuild();
+            ComboNet.markDirty();
         }
 
         @Override
         public void onProximityUpdate(){
             super.onProximityUpdate();
-            ComboNet.rebuild();
+            ComboNet.markDirty();
         }
 
         @Override
@@ -94,7 +94,7 @@ public class ComboConnector extends PowerBlock {
             int hash = linkHash();
             if(hash != lastLinkHash){
                 lastLinkHash = hash;
-                ComboNet.rebuild();
+                ComboNet.markDirty();
             }
         }
 
@@ -111,7 +111,7 @@ public class ComboConnector extends PowerBlock {
 
         @Override
         public void onRemoved(){
-            ComboNet.rebuildExcluding(this);
+            ComboNet.markDirty();
             super.onRemoved();
         }
 
@@ -126,7 +126,12 @@ public class ComboConnector extends PowerBlock {
         }
 
         @Override
-        public void display(Table table){
+        public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("comboconnector:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             super.display(table);
             table.row();
             table.add("[accent]组合连接器[]").left();
@@ -168,7 +173,7 @@ public class ComboConnector extends PowerBlock {
                 table.row();
                 table.add("未连接任何组合体").color(Pal.accent).left();
             }
-        }
+                }
 
         @Override
         public byte version(){

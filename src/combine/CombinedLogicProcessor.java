@@ -57,6 +57,9 @@ public class CombinedLogicProcessor extends LogicBlock {
     public CombinedLogicProcessorBuild comboLeader;
     public Seq<CombinedLogicProcessorBuild> comboGroup = new Seq<>();
     public boolean comboDirty = true;
+    /** totalIpt 的每-tick 缓存（组内算力总和） */
+    public long comboIptTick = Long.MIN_VALUE;
+    public float comboIptSum = 0.001f;
     /** 共享指令池（仅 leader 的值有意义）：本组当前剩余的可执行指令余量 */
     public float comboPool = 0f;
 
@@ -77,13 +80,19 @@ public class CombinedLogicProcessor extends LogicBlock {
       return l.comboGroup;
     }
 
-    /** 组总算力 = Σ 各成员 ipt（指令/tick，显示时 ×60 换算成 /秒） */
+    /** 组总算力 = Σ 各成员 ipt（指令/tick，显示时 ×60 换算成 /秒）。
+     *  每 tick 都会被执行循环和 UI 读，按 tick 缓存一次，避免整组 O(N) 反复扫描。 */
     public float totalIpt() {
-      float total = 0f;
-      for (CombinedLogicProcessorBuild b : group())
-        if (b.isValid())
-          total += Math.max(b.ipt, 0);
-      return Math.max(total, 0.001f);
+      CombinedLogicProcessorBuild l = leader();
+      if (l.comboIptTick != state.updateId) {
+        l.comboIptTick = state.updateId;
+        float total = 0f;
+        for (CombinedLogicProcessorBuild b : l.group())
+          if (b.isValid())
+            total += Math.max(b.ipt, 0);
+        l.comboIptSum = Math.max(total, 0.001f);
+      }
+      return l.comboIptSum;
     }
 
     /** 池占用率（bar 用）：池余量 / 上限 */
@@ -95,6 +104,7 @@ public class CombinedLogicProcessor extends LogicBlock {
     }
 
     public void rebuildCombo() {
+      comboIptTick = Long.MIN_VALUE;
       comboGroup = new Seq<>();
       comboGroup.add(this);
       IntSet visited = new IntSet();
@@ -126,6 +136,7 @@ public class CombinedLogicProcessor extends LogicBlock {
         }
       }
       newLeader.comboLeader = null;
+      newLeader.comboIptTick = Long.MIN_VALUE;
     }
 
     @Override
@@ -217,6 +228,11 @@ public class CombinedLogicProcessor extends LogicBlock {
 
     @Override
     public void display(Table table) {
+      // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+      ComboUi.safe("combinedlogicprocessor:display", () -> displayInner(table));
+    }
+
+    void displayInner(Table table) {
       table.table(cont -> {
         cont.top().left();
         cont.defaults().growX().left();
@@ -256,7 +272,7 @@ public class CombinedLogicProcessor extends LogicBlock {
         });
         cont.add(comboIO).growX().left();
       }).width(260f).left();
-    }
+        }
 
     public void buildComboBars(Table table) {
       // 总算力（数字）+ 指令池占用

@@ -356,7 +356,7 @@ public class CombinedLaunchPad extends LaunchPad {
                         for (Liquid liquid : content.liquids()) {
                             float amt = m.liquids.get(liquid);
                             if (amt > 0.001f) {
-                                float canAccept = Math.max(0f, totalLiquidCap - ComboReflect.liquidTotal(leader.liquids));
+                                float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.get(liquid));
                                 float transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0.001f)
                                     leader.liquids.add(liquid, transfer);
@@ -520,18 +520,10 @@ public class CombinedLaunchPad extends LaunchPad {
             if (isLeader() && comboDirty)
                 rebuildCombo();
             if (liquids != null && comboTotalLiquidCap > 0.001f) {
-                float excess = ComboReflect.liquidTotal(liquids) - comboTotalLiquidCap;
-                if (excess > 0.001f) {
-                    for (Liquid l : content.liquids()) {
-                        float amt = liquids.get(l);
-                        if (amt > 0.001f) {
-                            float remove = Math.min(amt, excess);
-                            liquids.remove(l, remove);
-                            excess -= remove;
-                            if (excess <= 0.001f)
-                                break;
-                        }
-                    }
+                for (Liquid l : content.liquids()) {
+                    float amt = liquids.get(l);
+                    if (amt > comboTotalLiquidCap + 0.001f)
+                        liquids.remove(l, amt - comboTotalLiquidCap);
                 }
             }
             if ((launchCounter += edelta()) >= launchTime && items.total() >= comboTotalItemCap) {
@@ -577,13 +569,7 @@ public class CombinedLaunchPad extends LaunchPad {
         public boolean acceptLiquid(Building source, Liquid liquid) {
             if (!block.hasLiquids)
                 return false;
-            boolean needed = false;
-            for (CombinedLaunchPadBuild member : group()) {
-                if (member.isValid() && member.block.consumesLiquid(liquid)) {
-                    needed = true;
-                    break;
-                }
-            }
+            boolean needed = ComboReflect.groupConsumesLiquid(this, liquid);
             return needed && liquids.get(liquid) < comboTotalLiquidCap - 0.001f;
         }
 
@@ -591,8 +577,7 @@ public class CombinedLaunchPad extends LaunchPad {
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float currentTotal = ComboReflect.liquidTotal(liquids);
-            float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
+            float canAccept = Math.max(0f, comboTotalLiquidCap - liquids.get(liquid));
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
@@ -604,6 +589,11 @@ public class CombinedLaunchPad extends LaunchPad {
 
         @Override
         public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combinedlaunchpad:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             table.table(cont -> {
                 cont.top().left();
                 cont.defaults().growX().left();
@@ -640,7 +630,7 @@ public class CombinedLaunchPad extends LaunchPad {
                 });
                 cont.add(comboIO).growX().left();
             }).width(260f).left();
-        }
+                }
 
         public void buildComboBars(Table table) {
             if (!Mathf.zero(block.health, 0.001f)) {

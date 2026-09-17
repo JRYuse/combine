@@ -51,7 +51,7 @@ public class Replacer {
         if (list.get(i) == combo) { list.remove(i); break; }
     }
 
-    // 2) 名字映射：移除临时名，登记正式名（contentNameMap 是 private，反射更新）
+    // 2) 名字映射：移除临时名，登记正式名（contentNameMap / nameMap 都是 private，反射更新）
     try {
       Field f = mindustry.core.ContentLoader.class.getDeclaredField("contentNameMap");
       f.setAccessible(true);
@@ -60,6 +60,19 @@ public class Replacer {
       if (tempName != null)
         maps[ContentType.block.ordinal()].remove(tempName);
       maps[ContentType.block.ordinal()].put(orig.name, (MappableContent) combo);
+
+      // FIX[联机客户端丢建筑]: ContentLoader.nameMap 是“全局按名反查”表，
+      // content.byName() 走的正是它 —— JsonIO 的 UnlockableContent 序列化器
+      // （rules.researched 整个集合）、MapObjectives、编辑器内容框都用它反查。
+      // 之前只改了 contentNameMap（getByName(type,name)），nameMap 仍指向被替换掉的
+      // 原版实例：联机时客户端读服务端发来的 rules，researched 里装的全是原版方块，
+      // UnlockableContent.unlockedHost() 查 researched.contains(组合方块) 一个都命不中，
+      // 建造菜单里所有组合建筑就全部消失了（房主本机解锁标记有效所以看不出来）。
+      Field globalF = mindustry.core.ContentLoader.class.getDeclaredField("nameMap");
+      globalF.setAccessible(true);
+      ObjectMap<String, MappableContent> global =
+          (ObjectMap<String, MappableContent>) globalF.get(Vars.content);
+      global.put(orig.name, (MappableContent) combo);
     } catch (Throwable t) {
       Log.warn("[Replacer] name map update failed: @", t.getMessage());
     }
@@ -151,5 +164,47 @@ public class Replacer {
       up = false;
     }
     return sb.toString();
+  }
+
+  /**
+   * 入服/读档后把"按名字反查错"的内容引用就地换回组合实例。
+   *
+   * 地图/规则都是从对端整包发过来的，里面的内容引用按名字写、在本地按名字反查。
+   * 联机时客户端的 {@code rules.researched} 如果装的是被替换掉的原版实例，
+   * {@code unlockedHost()}/{@code unlockedNowHost()}（建造菜单、单位建造、蓝图校验都要用）
+   * 会认为组合建筑统统没解锁 → 客户端组不出任何组合建筑。名字表已在
+   * {@link #replace(Block, Block, String)} 里修正，这里再兜一层：旧档、
+   * 其他模组按引用塞进来的残留实例也一并纠正。
+   */
+  public static void remapStaleContent() {
+    if (replaced.isEmpty() || Vars.state == null || Vars.state.rules == null)
+      return;
+    remap(Vars.state.rules.researched);
+    remap(Vars.state.rules.bannedBlocks);
+    remap(Vars.state.rules.revealedBlocks);
+  }
+
+  /** 集合里凡是"被替换掉的原实例"都换成组合实例；其余（含组合实例本身）原样保留。 */
+  private static <T extends mindustry.ctype.UnlockableContent> void remap(
+      arc.struct.ObjectSet<T> set) {
+    if (set == null || set.isEmpty())
+      return;
+    Seq<Block> stale = null;
+    for (T c : set) {
+      if (c instanceof Block b && replaced.containsKey(b)) {
+        if (stale == null)
+          stale = new Seq<>();
+        stale.add(b);
+      }
+    }
+    if (stale == null)
+      return;
+    for (Block b : stale) {
+      Block combo = replaced.get(b);
+      if (combo == null)
+        continue;
+      set.remove((T) b);
+      set.add((T) combo);
+    }
   }
 }

@@ -49,6 +49,35 @@ public class ComboNet {
      */
     private static boolean loadingWorld = false;
 
+    /**
+     * 延迟重建标记。
+     *
+     * 【性能】放一个连接器/节点，会连着触发 placed()、自己和四周邻居的 onProximityUpdate()、
+     * updateTile() 里的 linkHash 变化、还有 Main 的 TileChangeEvent —— 一次放置能叫 5~10 遍
+     * rebuild()。每遍都要把全图建筑过一遍、重建网络图，几百栋建筑时单遍就是几毫秒，
+     * 叠起来就是"在组合体之间放连接器那一瞬间疯狂掉帧"。
+     * 现在这些事件只置脏标记，真正的重建每帧最多跑一次（Trigger.update 在建筑 update 之前，
+     * 所以下一帧开始前网络就已经是新的，逻辑上只差一帧）。
+     */
+    private static boolean dirty = false;
+
+    /** 在 Main.init() 里注册一次：每帧最多重建一次。 */
+    public static void register(){
+        arc.Events.run(mindustry.game.EventType.Trigger.update, ComboNet::flush);
+    }
+
+    /** 网络结构变了：置脏，交给本帧的 flush 统一重建。 */
+    public static void markDirty(){
+        dirty = true;
+    }
+
+    /** 每帧一次的收口：只有真的脏了才重建。 */
+    private static void flush(){
+        if(!dirty) return;
+        dirty = false;
+        rebuild();
+    }
+
     public static void rebuild(){
         rebuild(null, false);
     }
@@ -71,84 +100,111 @@ public class ComboNet {
         }
     }
 
-    /** 只读查询：返回某个连接器/节点所在连通分量里的所有组合建筑成员，用于 display。 */
+    /**
+     * 只读查询：返回某个连接器/节点/组合建筑所在连通分量里的所有组合建筑成员。
+     *
+     * 【性能】这里是信息面板每帧都要调用的东西（displayMembers / effectiveItemCap /
+     * effectiveLiquidCap 都会转进来，一次面板刷新就调 3~5 次）。原实现每次都
+     * {@code Groups.build.copy()} 把全世界的建筑拷一遍再建全局图 —— 建筑一多，
+     * 选中一台组合建筑就每帧卡好几毫秒（也就是"点一下组合建筑就掉帧"）。
+     * 现在改成从给定的那个点做局部 BFS：只走这个连通分量里的连接器/节点/组合体，
+     * 复杂度只和网络大小有关，与全图建筑数无关；同 tick 内再按"组 leader 的 pos"记忆一份，
+     * 一帧只算一次。
+     */
     public static Seq<Building> componentMembers(Building linker){
-        Seq<Building> out = new Seq<>();
-        if(world == null || Groups.build == null || linker == null || !linker.isValid()) return out;
-        if(ComboReflect.isComboBuild(linker)){
-            Building l = ComboReflect.leader(linker);
-            if(l != null) linker = l;
-        }
+        Seq<Building> empty = new Seq<>();
+        if(world == null || linker == null || !linker.isValid()) return empty;
 
-        Seq<Building> all = new Seq<>();
-        for(Building b : Groups.build.copy()){
-            if(b != null && b.isValid()) all.add(b);
-        }
-
-        Seq<Building> groupLeaders = new Seq<>();
-        ObjectSet<Building> seenLeaders = new ObjectSet<>();
-        for(Building b : all){
-            if(!ComboReflect.isComboBuild(b)) continue;
-            Building l = ComboReflect.leader(b);
-            if(l != null && seenLeaders.add(l)) groupLeaders.add(l);
-        }
-
-        Seq<Building> vertices = new Seq<>();
-        ObjectSet<Building> vertexSet = new ObjectSet<>();
-        for(Building b : all){
-            if(b instanceof ComboConnector.ComboConnectorBuild
-                || b instanceof ComboNode.ComboNodeBuild){
-                if(vertexSet.add(b)) vertices.add(b);
+        // 缓存：同一帧内、同一个网络只算一次（组合建筑按组 leader 归并）
+        Building key = ComboReflect.isComboBuild(linker) ? ComboReflect.leader(linker) : linker;
+        if(key == null || !key.isValid()) key = linker;
+        boolean cacheable = state != null;
+        if(cacheable){
+            if(componentCacheTick != state.updateId){
+                componentCacheTick = state.updateId;
+                componentCache.clear();
             }
-        }
-        for(Building l : groupLeaders){
-            if(vertexSet.add(l)) vertices.add(l);
+            Seq<Building> cached = componentCache.get(key.pos());
+            if(cached != null) return cached;
         }
 
-        ObjectMap<Building, Seq<Building>> edges = new ObjectMap<>();
-        for(Building v : vertices) edges.put(v, new Seq<>());
-        for(Building v : vertices){
+        Seq<Building> out = new Seq<>();
+        ObjectSet<Building> visited = new ObjectSet<>();     // 已入队的连接器/节点
+        ObjectSet<Building> visitedGroups = new ObjectSet<>();// 已收集的组合体(以 leader 计)
+        Queue<Building> queue = new Queue<>();
+
+        if(isLinker(key)){
+            enqueueVertex(key, visited, queue);
+        }else if(ComboReflect.isComboBuild(key)){
+            collectGroup(key, out, visitedGroups, visited, queue);
+        }
+
+        while(!queue.isEmpty()){
+            Building v = queue.removeFirst();
             if(v instanceof ComboConnector.ComboConnectorBuild c){
                 for(Building nb : c.proximity){
                     if(nb == null || !nb.isValid()) continue;
-                    if(nb instanceof ComboConnector.ComboConnectorBuild && vertexSet.contains(nb)){
-                        addEdge(edges, c, nb);
+                    if(isLinker(nb)){
+                        enqueueVertex(nb, visited, queue);
                     }else if(ComboReflect.isComboBuild(nb)){
-                        Building l = ComboReflect.leader(nb);
-                        if(l != null && vertexSet.contains(l)) addEdge(edges, c, l);
+                        collectGroup(nb, out, visitedGroups, visited, queue);
                     }
                 }
             }else if(v instanceof ComboNode.ComboNodeBuild n){
                 for(int i = 0; i < n.links.size; i++){
                     Building link = world.build(n.links.get(i));
-                    if(link == null || !link.isValid() || !ComboReflect.isComboBuild(link)) continue;
-                    Building l = ComboReflect.leader(link);
-                    if(l != null && vertexSet.contains(l)) addEdge(edges, n, l);
+                    if(link == null || !link.isValid()) continue;
+                    if(isLinker(link)){
+                        enqueueVertex(link, visited, queue);
+                    }else if(ComboReflect.isComboBuild(link)){
+                        collectGroup(link, out, visitedGroups, visited, queue);
+                    }
                 }
             }
         }
 
-        if(!vertexSet.contains(linker)) return out;
-        ObjectSet<Building> visited = new ObjectSet<>();
-        Queue<Building> queue = new Queue<>();
-        queue.addLast(linker);
-        visited.add(linker);
-        while(!queue.isEmpty()){
-            Building cur = queue.removeFirst();
-            if(ComboReflect.isComboBuild(cur)){
-                for(Building m : ComboReflect.group(cur)){
-                    if(m.isValid()) out.addUnique(m);
-                }
-            }
-            Seq<Building> es = edges.get(cur);
-            if(es == null) continue;
-            for(Building nb : es){
-                if(visited.add(nb)) queue.addLast(nb);
-            }
-        }
+        if(cacheable) componentCache.put(key.pos(), out);
         return out;
     }
 
+    /** 同 tick 内的连通分量缓存（key = 组 leader / 连接器 / 节点的 pos）。 */
+    private static long componentCacheTick = Long.MIN_VALUE;
+    private static final arc.struct.IntMap<Seq<Building>> componentCache = new arc.struct.IntMap<>();
+
+    /** 清掉分量缓存（网络结构变化时调用，避免同一帧内显示旧网络）。 */
+    static void invalidateComponentCache(){
+        componentCacheTick = Long.MIN_VALUE;
+        componentCache.clear();
+    }
+
+    private static boolean isLinker(Building b){
+        return b instanceof ComboConnector.ComboConnectorBuild
+            || b instanceof ComboNode.ComboNodeBuild;
+    }
+
+    private static void enqueueVertex(Building v, ObjectSet<Building> visited, Queue<Building> queue){
+        if(v == null || !v.isValid()) return;
+        if(visited.add(v)) queue.addLast(v);
+    }
+
+    /**
+     * 把一个组合体整组收进来，并把这个组相邻的连接器/节点也排进 BFS
+     * （原图里组合体 leader 也是顶点，和相邻连接器有双向边，这里等价展开）。
+     */
+    private static void collectGroup(Building member, Seq<Building> out, ObjectSet<Building> visitedGroups,
+                                     ObjectSet<Building> visited, Queue<Building> queue){
+        Building leader = ComboReflect.leader(member);
+        if(leader == null) leader = member;
+        if(!visitedGroups.add(leader)) return;
+        for(Building m : ComboReflect.group(leader)){
+            if(m == null || !m.isValid()) continue;
+            out.addUnique(m);
+            for(Building nb : m.proximity){
+                if(nb == null || !nb.isValid()) continue;
+                if(isLinker(nb)) enqueueVertex(nb, visited, queue);
+            }
+        }
+    }
 
     /** 显示/生产用的有效物品容量：网络组合存在时按网络成员合计，否则回退到本地缓存值。 */
     public static int effectiveItemCap(Building self){
@@ -245,8 +301,15 @@ public class ComboNet {
         return true;
     }
 
+    /** 临时排查用：打印各阶段耗时（默认关）。 */
+    public static boolean timeDebug = false;
+
     private static void rebuild(Building excluded, boolean loading){
         if(world == null || Groups.build == null) return;
+        long _t0 = System.nanoTime(), _tA = _t0, _tB = _t0, _tC = _t0, _tD = _t0, _tE = _t0, _tF = _t0;
+
+        // 网络结构变了：显示用的连通分量缓存立刻作废（同帧内别拿旧网络画面板）
+        invalidateComponentCache();
 
         // endMapLoad 阶段连接器/节点会随 proximity 刷新提前触发 rebuild，
         // 那时各本地组合体手里还是存档写下的重复副本，必须按读档语义处理。
@@ -257,9 +320,11 @@ public class ComboNet {
             for(Building b : Groups.build.copy()){
                 if(b != null && b.isValid() && b != excluded) all.add(b);
             }
+            _tA = System.nanoTime();
 
             // 1) 先让所有本地组合体完成自己的 leader 选举/邻接重建，再在其上架网络。
             settleLocalGroups(all);
+            _tB = System.nanoTime();
 
             // 2) 找出所有本地组合体的 leader（同一组合体只出现一次）。
             Seq<Building> groupLeaders = new Seq<>();
@@ -347,11 +412,19 @@ public class ComboNet {
             }
 
             // 6) 断开连接器/节点时：被多个分量共用的模块按分量容量比例拆开，总值不变。
+            _tC = System.nanoTime();
             splitAcrossComponents(compMembers);
+            _tD = System.nanoTime();
 
             // 7) 分量内合并共享池：运行期“相加”，读档窗口“去重”。
             for(Seq<Building> members : compMembers){
                 mergeComponent(members, loadPhase);
+            }
+            _tE = System.nanoTime();
+            if(timeDebug){
+                Log.info("[combine][time] 快照=@ms settle=@ms 建图=@ms 拆池=@ms 合池=@ms 合计=@ms all=@ verts=@ comps=@",
+                    (_tA-_t0)/1e6, (_tB-_tA)/1e6, (_tC-_tB)/1e6, (_tD-_tC)/1e6, (_tE-_tD)/1e6, (_tE-_t0)/1e6,
+                    all.size, vertices.size, components.size);
             }
 
             // 读档语义只在读档过程中生效；任何一次运行期重建都意味着读档已经结束

@@ -360,7 +360,7 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
                         for (Liquid liquid : content.liquids()) {
                             float amt = m.liquids.get(liquid);
                             if (amt > 0.001f) {
-                                float canAccept = Math.max(0f, totalLiquidCap - ComboReflect.liquidTotal(leader.liquids));
+                                float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.get(liquid));
                                 float transfer = amt; // 全额并入：总量必然 ≤ 合并后容量，截断只会丢物品
                                 if (transfer > 0.001f)
                                     leader.liquids.add(liquid, transfer);
@@ -524,18 +524,10 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
             if (isLeader() && comboDirty)
                 rebuildCombo();
             if (liquids != null && comboTotalLiquidCap > 0.001f) {
-                float excess = ComboReflect.liquidTotal(liquids) - comboTotalLiquidCap;
-                if (excess > 0.001f) {
-                    for (Liquid l : content.liquids()) {
-                        float amt = liquids.get(l);
-                        if (amt > 0.001f) {
-                            float remove = Math.min(amt, excess);
-                            liquids.remove(l, remove);
-                            excess -= remove;
-                            if (excess <= 0.001f)
-                                break;
-                        }
-                    }
+                for (Liquid l : content.liquids()) {
+                    float amt = liquids.get(l);
+                    if (amt > comboTotalLiquidCap + 0.001f)
+                        liquids.remove(l, amt - comboTotalLiquidCap);
                 }
             }
             super.updateTile();
@@ -552,13 +544,7 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
         public boolean acceptItem(Building source, Item item) {
             if (!block.hasItems)
                 return false;
-            boolean needed = false;
-            for (CombinedOverdriveProjectorBuild member : group()) {
-                if (member.isValid() && member.block.consumesItem(item)) {
-                    needed = true;
-                    break;
-                }
-            }
+            boolean needed = ComboReflect.groupConsumesItem(this, item);
             return needed && items.get(item) < getMaximumAccepted(item); // 按种类检查：每种原料各有份额，先到的不堵死其它的：不再按种类各装满一份
         }
 
@@ -576,13 +562,7 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
         public boolean acceptLiquid(Building source, Liquid liquid) {
             if (!block.hasLiquids)
                 return false;
-            boolean needed = false;
-            for (CombinedOverdriveProjectorBuild member : group()) {
-                if (member.isValid() && member.block.consumesLiquid(liquid)) {
-                    needed = true;
-                    break;
-                }
-            }
+            boolean needed = ComboReflect.groupConsumesLiquid(this, liquid);
             return needed && liquids.get(liquid) < comboTotalLiquidCap - 0.001f;
         }
 
@@ -590,8 +570,7 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
         public void handleLiquid(Building source, Liquid liquid, float amount) {
             if (amount <= 0.001f)
                 return;
-            float currentTotal = ComboReflect.liquidTotal(liquids);
-            float canAccept = Math.max(0f, comboTotalLiquidCap - currentTotal);
+            float canAccept = Math.max(0f, comboTotalLiquidCap - liquids.get(liquid));
             float actual = Math.min(amount, canAccept);
             if (actual > 0.001f)
                 liquids.add(liquid, actual);
@@ -603,6 +582,11 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
 
         @Override
         public void display(Table table) {
+          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+          ComboUi.safe("combinedoverdriveprojector:display", () -> displayInner(table));
+        }
+
+        void displayInner(Table table) {
             table.table(cont -> {
                 cont.top().left();
                 cont.defaults().growX().left();
@@ -639,7 +623,7 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
                 });
                 cont.add(comboIO).growX().left();
             }).width(260f).left();
-        }
+                }
 
         public void buildComboBars(Table table) {
             if (!Mathf.zero(block.health, 0.001f)) {

@@ -326,7 +326,7 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
             for (Liquid liquid : content.liquids()) {
               float amt = m.liquids.get(liquid);
               if (amt > 0.001f) {
-                float canAccept = Math.max(0f, totalLiqCap - ComboReflect.liquidTotal(leader.liquids));
+                float canAccept = Math.max(0f, totalLiqCap - leader.liquids.get(liquid));
                 float transfer = Math.min(amt, canAccept);
                 if (transfer > 0.001f)
                   leader.liquids.add(liquid, transfer);
@@ -595,13 +595,7 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
       // 输入限制：只接受本炮塔的弹药液体（非弹药液体一律拒之门外）
       if (!((CombinedContinuousLiquidTurret) block).ammoTypes.containsKey(liquid))
         return false;
-      boolean needed = false;
-      for (CombinedContinuousLiquidTurretBuild m : group()) {
-        if (m.isValid() && m.block.consumesLiquid(liquid)) {
-          needed = true;
-          break;
-        }
-      }
+      boolean needed = ComboReflect.groupConsumesLiquid(this, liquid);
       // 每种液体独立容量（各 = 组总量）：该液体自身未满即收
       return needed && liquids != null
           && liquids.get(liquid) < perLiquidCap() - 0.001f;
@@ -627,6 +621,11 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
 
     @Override
     public void display(Table table) {
+      // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+      ComboUi.safe("combinedcontinuousliquidturret:display", () -> displayInner(table));
+    }
+
+    void displayInner(Table table) {
       table.table(cont -> {
         cont.top().left();
         cont.defaults().growX().left();
@@ -659,7 +658,7 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
         });
         cont.add(comboIO).growX().left();
       }).width(260f).left();
-    }
+        }
 
     public void buildComboIO(Table table) {
       table.left();
