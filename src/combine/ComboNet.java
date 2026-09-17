@@ -486,7 +486,11 @@ public class ComboNet {
 
         // endMapLoad 阶段连接器/节点会随 proximity 刷新提前触发 rebuild，
         // 那时各本地组合体手里还是存档写下的重复副本，必须按读档语义处理。
-        boolean loadPhase = loading || loadingWorld || world.isGenerating();
+        // 读档窗口还要看"本地组合"那边的去重标志有没有用掉：读档后每台机器手里都写着
+        // 同一份池子的副本，谁先合并谁就必须按"内容相同的副本只留一份"来算。
+        // ComboNet 每帧跑在它们之前，所以要以它们的标志为准，否则第一帧就把副本当三份真库存相加了。
+        boolean loadPhase = loading || loadingWorld || world.isGenerating()
+            || CombinedStorageBlock.pendingDedupe() || CoopCombo.pendingDedupe();
 
         try{
             Seq<Building> all = new Seq<>();
@@ -505,7 +509,11 @@ public class ComboNet {
             ObjectSet<Building> seenLeaders = new ObjectSet<>();
             for(Building b : all){
                 if(!ComboReflect.isComboBuild(b)) continue;
-                Building l = ComboReflect.leader(b);
+                // 用 localGroupRep：组合仓库/容器按"相邻成簇"算一个组合体。
+                // 否则同一条仓库链里的每台都会成为独立顶点，它们共用的那份物品模块会被
+                // splitAcrossComponents 当成"断开残留"再拆成每人一份（读档后"名义连在一起、
+                // 模块却不共享"就是这个）。
+                Building l = ComboNode.groupRep(b);
                 if(l != null && seenLeaders.add(l)) groupLeaders.add(l);
             }
 
@@ -533,7 +541,7 @@ public class ComboNet {
                             && vertexSet.contains(nb)){
                             addEdge(edges, c, nb);
                         }else if(ComboReflect.isComboBuild(nb)){
-                            Building l = ComboReflect.leader(nb);
+                            Building l = ComboNode.groupRep(nb);
                             if(l != null && vertexSet.contains(l)) addEdge(edges, c, l);
                         }
                     }
@@ -541,7 +549,7 @@ public class ComboNet {
                     for(int i = 0; i < n.links.size; i++){
                         Building link = world.build(n.links.get(i));
                         if(link == null || !link.isValid() || !ComboReflect.isComboBuild(link)) continue;
-                        Building l = ComboReflect.leader(link);
+                        Building l = ComboNode.groupRep(link);
                         if(l != null && vertexSet.contains(l)) addEdge(edges, n, l);
                     }
                 }
@@ -579,7 +587,7 @@ public class ComboNet {
             for(int i = 0; i < components.size; i++) compMembers.add(new Seq<Building>());
             for(Building b : all){
                 if(!ComboReflect.isComboBuild(b)) continue;
-                Building l = ComboReflect.leader(b);
+                Building l = ComboNode.groupRep(b);
                 if(l == null) l = b;
                 Integer idx = leaderComponent.get(l);
                 if(idx != null) compMembers.get(idx).add(b);

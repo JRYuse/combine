@@ -74,6 +74,15 @@ public class CombinedStorageBlock extends StorageBlock {
     Events.on(EventType.BlockBuildEndEvent.class, e -> dirty = true);
   }
 
+  /**
+   * 读档那一轮"去重语义"还没用掉。
+   * ComboNet 重建网络时也读它：读档后每台仓库手里都写了一份同一池子的副本，
+   * 这时候合并必须"内容相同的副本只留一份"，不能当三份真库存相加（否则物品直接翻三倍）。
+   */
+  public static boolean pendingDedupe() {
+    return dedupeOnce;
+  }
+
   /** 组合连接器/节点网络要用：仓库不在 Groups.build 里，得把这个登记表交出去。 */
   public static ObjectSet<CombinedStorageBuild> trackedSet() {
     return tracked;

@@ -199,6 +199,11 @@ public class CoopCombo {
     CoopPanel.register();
   }
 
+  /** 读档那一轮"去重语义"还没用掉（同 CombinedStorageBlock.pendingDedupe，供 ComboNet 判断）。 */
+  public static boolean pendingDedupe() {
+    return dedupeOnce;
+  }
+
   /** 外部也可以主动叫一次（例如其它机制改动了方块）。 */
   public static void markDirty() {
     dirty = true;
