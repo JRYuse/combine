@@ -439,13 +439,10 @@ public class CombinedPump extends Pump {
                 barsTable.update(() -> {
                     barsTable.clearChildren();
                     barsTable.defaults().growX().height(18f).pad(4);
-                    if (!Mathf.zero(block.health, 0.001f)) {
-                        final float h = health, mh = maxHealth;
-                        barsTable.add(new Bar(
-                                () -> Core.bundle.get("stat.health", "Health") + " " + (int) Math.max(h, 0),
-                                () -> Pal.health, () -> Mathf.clamp(h / mh)));
-                        barsTable.row();
-                    }
+                    // 用原版 bars：血条 + **电力条**（原版 Block.setBars 在 consPower != null 时会注册
+                    // "power" 条）。以前这里只手绘了血条，所以耗电的机器面板上看不到电力，
+                    // 玩家就会碰到"水是满的、状态却是 noinput"这种看不懂的情况。
+                    displayBars(barsTable);
                     LiquidModule liq = liquids;
                     if (liq == null) {
                         CombinedPumpBuild l = leader();
