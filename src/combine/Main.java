@@ -1,5 +1,34 @@
 package combine;
-
+import combine.coop.CoopCombo;
+import combine.defense.CombinedForceProjector;
+import combine.defense.CombinedMendProjector;
+import combine.defense.CombinedOverdriveProjector;
+import combine.defense.CombinedRegenProjector;
+import combine.defense.LinkWall;
+import combine.logic.CombinedLogicProcessor;
+import combine.net.ComboConnector;
+import combine.net.ComboNet;
+import combine.net.ComboNode;
+import combine.production.CombinedCrafter;
+import combine.production.CombinedDrill;
+import combine.production.CombinedFracker;
+import combine.production.CombinedGenerator;
+import combine.production.CombinedPump;
+import combine.production.CombinedSolidPump;
+import combine.production.CombinedWallCrafter;
+import combine.saves.SafeW11;
+import combine.saves.SafeWLegacy;
+import combine.saves.SafeWShort;
+import combine.saves.SafeWVer;
+import combine.storage.CombinedStorageBlock;
+import combine.turret.CombinedContinuousLiquidTurret;
+import combine.turret.CombinedItemTurret;
+import combine.turret.CombinedLiquidTurret;
+import combine.turret.CombinedTurret;
+import combine.units.CombinedLaunchPad;
+import combine.units.CombinedReconstructor;
+import combine.units.CombinedUnitFactory;
+import combine.util.ComboReflect;
 import arc.Events;
 import arc.files.Fi;
 import arc.struct.ObjectMap;
@@ -394,6 +423,9 @@ public class Main extends Mod {
         continue;
       if (list.contains(b.name))
         continue;
+      // 不组合名单（按类，含 js/java 子类）：传送带/管道/桥/分流器这类运输方块
+      if (NoCombo.blocked(b))
+        continue;
       if (isExact(b, Incinerator.class))
         continue;
 
@@ -595,6 +627,8 @@ public class Main extends Mod {
     for (var c : snapshot) {
       Block b = (Block) c;
       if (b instanceof LinkWall)
+        continue;
+      if (NoCombo.blocked(b))
         continue;
       boolean isWall = isExact(b, Wall.class);
       boolean isDoor = isExact(b, mindustry.world.blocks.defense.Door.class);

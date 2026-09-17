@@ -1,5 +1,4 @@
 package combine;
-
 import arc.graphics.g2d.Draw;
 import arc.graphics.g2d.Fill;
 import arc.graphics.g2d.Lines;

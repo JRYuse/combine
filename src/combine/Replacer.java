@@ -1,5 +1,4 @@
 package combine;
-
 import arc.struct.ObjectMap;
 import arc.struct.Seq;
 import arc.util.Log;
