@@ -80,6 +80,7 @@ public class Main extends Mod {
 
   @Override
   public void init() {
+    Settings.load();
     // 施工替换：残留的旧实例引用（其他模组静态字段等）→ 组合实例。
     Events.on(BlockBuildBeginEvent.class, e -> {
       if (e.breaking)
@@ -140,16 +141,16 @@ public class Main extends Mod {
   public static void addBuildWeapons() {
     for (var b : Vars.content.blocks()) {
       if (b instanceof CoreBlock c && c.unitType != null) {
-        addBuildWeapons(c.unitType, c.size);
+        addTestBuildWeapons(c.unitType, c.size);
       }
     }
-    addBuildWeapons(UnitTypes.poly, 2);
-    addBuildWeapons(UnitTypes.mega, 3);
-    addBuildWeapons(UnitTypes.quad, 4);
-    addBuildWeapons(UnitTypes.oct, 5);
-    addBuildWeapons(UnitTypes.nova, 1);
-    addBuildWeapons(UnitTypes.pulsar, 2);
-    addBuildWeapons(UnitTypes.quasar, 3);
+    addTestBuildWeapons(UnitTypes.poly, 2);
+    addTestBuildWeapons(UnitTypes.mega, 3);
+    addTestBuildWeapons(UnitTypes.quad, 4);
+    addTestBuildWeapons(UnitTypes.oct, 5);
+    addTestBuildWeapons(UnitTypes.nova, 1);
+    addTestBuildWeapons(UnitTypes.pulsar, 2);
+    addTestBuildWeapons(UnitTypes.quasar, 3);
   }
 
   /** 兼容旧调用名 */
@@ -183,6 +184,28 @@ public class Main extends Mod {
         w.load();
       unit.weapons.add(w);
     }
+    // 已经存在的单位补挂座（新造单位的挂座由 Unit 自己按 weapons.size 补齐）
+    Groups.unit.each(un -> un.type == unit, un -> un.setupWeapons(unit));
+  }
+
+  public static void addTestBuildWeapons(UnitType unit, int count) {
+    if (unit == null || count <= 0)
+      return;
+
+    for (Weapon weapon : unit.weapons) {
+      if (weapon instanceof TestMultiBuildWeapon tw)
+        tw.maxBuild = count;
+    }
+      TestMultiBuildWeapon w = new TestMultiBuildWeapon();
+      w.mirror = false;
+      w.x = 0f;
+      w.y = 2f;
+      w.speedMulti = 1f;
+      w.maxBuild = count;
+      if (visuals()) // 专用服务端没有图集，贴图字段跳过即可，不影响建造逻辑
+        w.load();
+      unit.weapons.add(w);
+
     // 已经存在的单位补挂座（新造单位的挂座由 Unit 自己按 weapons.size 补齐）
     Groups.unit.each(un -> un.type == unit, un -> un.setupWeapons(unit));
   }

@@ -17,7 +17,7 @@ public class Settings {
     static void register() {
         if (Vars.headless || Vars.ui == null || Vars.ui.settings == null) return;
         Vars.ui.settings.addCategory("组合工厂设置", Icon.settings, table -> {
-            table.sliderPref(maxBuild, 5, -1, 50, 1,i -> i > 0 ? "" + i : "自动");
+            table.sliderPref(maxBuild, 5, 0, 50, 1,i -> i > 0 ? "" + i : "自动");
             table.checkPref(buildBoost, false);
         });
     }
