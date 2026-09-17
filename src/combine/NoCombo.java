@@ -3,6 +3,7 @@ package combine;
 import combine.coop.CoopCombo;
 import arc.struct.Seq;
 import mindustry.world.Block;
+import mindustry.world.blocks.production.Incinerator;
 
 /**
  * 【不被组合的方块类】
@@ -45,7 +46,8 @@ public class NoCombo {
       mindustry.world.blocks.distribution.MassDriver.class,
 
       // ——— mindustry.world.blocks.liquid（液体运输：导管、液体路由器、液体桥…）———
-      // 加 LiquidBlock 一个就覆盖了 Conduit/ArmoredConduit/LiquidJunction/LiquidRouter/LiquidBridge，
+      // 加 LiquidBlock 一个就覆盖了
+      // Conduit/ArmoredConduit/LiquidJunction/LiquidRouter/LiquidBridge，
       // 也覆盖模组里继承它们写的"液体分流器""气体泵"这类方块（VE 里就有好几个）
       mindustry.world.blocks.liquid.LiquidBlock.class,
       mindustry.world.blocks.liquid.Conduit.class,
@@ -64,14 +66,12 @@ public class NoCombo {
       mindustry.world.blocks.payloads.PayloadVoid.class,
 
       // ——— 装卸器（类在 storage 包里，但语义是运输）———
-      mindustry.world.blocks.storage.Unloader.class
-
-  );
+      mindustry.world.blocks.storage.Unloader.class, Incinerator.class);
 
   /**
    * 这个方块是不是"不组合"：
-   *   · 类在 {@link #classes} 里（含 js/java 子类）；
-   *   · 或者被玩家在设置界面里手动标了"不组合"（见 {@link CoopCombo#isBlocked}）。
+   * · 类在 {@link #classes} 里（含 js/java 子类）；
+   * · 或者被玩家在设置界面里手动标了"不组合"（见 {@link CoopCombo#isBlocked}）。
    * 两条路径都走这里：方块替换（Main.processModBlocks / processWalls）和协作组合。
    */
   public static boolean blocked(Block b) {

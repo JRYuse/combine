@@ -78,6 +78,10 @@ public class CoopPanel {
     if (!enabled || Vars.headless || !built) return;
     try {
       Building b = tile == null ? null : tile.build;
+      // 同一次点击可能触发两回 TapEvent（手机端点按、别的模组转发、原版再派发一次…），
+      // 而 showFor 对"同一台建筑"是切换语义 —— 于是面板会"闪一下就没了"。
+      // 这里做一次去抖：短时间内对同一台的重复点击直接忽略。
+      if (!acceptTap(b)) return;
       if (showable(b)) {
         showFor(b);
       } else {
@@ -86,6 +90,27 @@ public class CoopPanel {
     } catch (Throwable t) {
       Log.err("[combine] 协作组合面板点击处理失败（不影响游戏运行）", t);
     }
+  }
+
+  /** 同一次点击里的重复事件窗口（秒）。 */
+  public static final float TAP_DEBOUNCE = 0.35f;
+  private static Building lastTapBuild;
+  private static float lastTapTime = -999f;
+
+  /**
+   * 这次点击要不要真的处理：同一台建筑在 {@link #TAP_DEBOUNCE} 秒内的重复点击会被忽略
+   * （一次点击触发多回 TapEvent 时，面板就不会"闪一下"）。超过窗口的再次点击 = 真的要收起。
+   */
+  public static boolean acceptTap(Building b) {
+    float now = Time.time;
+    boolean same = b != null && b == lastTapBuild;
+    if (same && now - lastTapTime < TAP_DEBOUNCE) {
+      lastTapTime = now;
+      return false;
+    }
+    lastTapBuild = b;
+    lastTapTime = now;
+    return true;
   }
 
   /** 这个方块要不要给面板？—— 只给"协作组合接管的、改不了 display 的"方块。 */
