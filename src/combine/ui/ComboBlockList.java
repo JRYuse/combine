@@ -194,33 +194,30 @@ public class ComboBlockList {
         }
         for (Block b : blocks) {
           final boolean blockedNow = CoopCombo.isBlocked(b.name);
+          int kind = kind(b);
           list.table(row -> {
             row.left();
             if (b.uiIcon != null)
               row.image(b.uiIcon).size(24f).padRight(6f);
-            int kind = kind(b);
             String tag = kind == 0 ? "[accent]扩展[]" : (kind == 1 ? "[gray]替换[]" : "[darkGray]—[]");
-            row.add(tag + " " + b.localizedName + "   [gray]" + b.name + "[]").left().width(280f);
-            // 状态用文字写明、按钮只写"动作" —— 免得把"可组合"当成"点一下就能组合"，
-            // 结果点下去反而把它关掉了。
+            String state = kind != 0 ? "" : (blockedNow ? "[scarlet]关[] " : "[accent]开[] ");
+            // 名字一栏**让它自己伸缩 + 换行**：手机屏窄，写死宽度会把右边的按钮顶出可视区，
+            // 于是"按钮看得见一半、点不到"（见用户截图）。
+            // 这里必须用 wrap 而不是 ellipsis：arc 的 Label 只有 wrap 才会把"最小宽度"降成 0
+            // （ellipsis 只影响绘制），否则长中文名仍会把整行撑宽、把按钮挤出去。
+            row.add(state + tag + " " + b.localizedName + " [gray]" + b.name + "[]")
+                .left().growX().wrap().minWidth(0f);
             if (kind != 0) {
               // 替换接管 / 本来就不组合：这两类不吃设置里的开关
-              row.add(kind == 1 ? "[gray]由组合方块接管[]" : "[darkGray]不参与组合[]")
-                  .left().width(150f).padLeft(6f);
-            } else if (blockedNow) {
-              row.add("[scarlet]已关闭组合[]").left().width(110f).padLeft(6f);
-              row.button("恢复组合", () -> {
-                CoopCombo.setBlocked(b.name, false);
-                defer(rebuild);
-              }).width(120f).height(30f).padLeft(6f);
+              row.add(kind == 1 ? "[gray]替换接管[]" : "[darkGray]不参与[]")
+                  .right().padLeft(4f).padRight(4f);
             } else {
-              row.add("[accent]组合已开启[]").left().width(110f).padLeft(6f);
-              row.button("关闭组合", () -> {
-                CoopCombo.setBlocked(b.name, true);
+              row.button(blockedNow ? "恢复组合" : "关闭组合", () -> {
+                CoopCombo.setBlocked(b.name, !blockedNow);
                 defer(rebuild);
-              }).width(120f).height(30f).padLeft(6f);
+              }).size(96f, 34f).padLeft(4f).padRight(8f);
             }
-          }).left().row();
+          }).growX().left().row();
         }
         if (!searching && blocks.size >= 120)
           list.add("[gray]…只显示前 120 个，输入名字搜索全部[]").left().padTop(4f).row();
@@ -230,11 +227,10 @@ public class ComboBlockList {
     };
 
     table.add("[accent]组合工厂[] [lightgray]· 建筑组合开关").left().padBottom(4f).row();
-    table.add("[lightgray]「扩展」= js/java 功能扩展建筑（协作组合接管的），可以开关；[]").left().row();
-    table.add("[lightgray]「替换」= 已经被组合方块顶掉的建筑，由组合方块接管，不吃这个开关。[]").left().row();
-    table.add("[lightgray]开关立刻生效：关掉后该建筑不再共享物品/液体/电力，容量还原。[]").left().row();
-    table.add("[lightgray]名单是本机偏好，不改内容表 —— 联机两端不会因为本地开关错位。[]")
-        .left().padBottom(8f).row();
+    table.add("[lightgray]开/关 = 这个建筑现在能不能组合（点右边按钮切换，立刻生效）。[]")
+        .left().wrap().row();
+    table.add("[lightgray]「替换」= 已被组合方块顶掉，由组合方块接管，不吃这个开关。[]")
+        .left().wrap().padBottom(8f).row();
 
     TextField field = new TextField();
     field.setMessageText("搜索建筑（英文名 / 中文名）");
@@ -242,7 +238,7 @@ public class ComboBlockList {
       query[0] = field.getText();
       rebuild[0].run();
     });
-    table.add(field).width(430f).left().row();
+    table.add(field).growX().left().row();
 
     table.table(filters -> {
       filters.left();
@@ -252,9 +248,9 @@ public class ComboBlockList {
         filters.button(names[i], () -> {
           filter[0] = mode;
           rebuild[0].run();
-        }).width(150f).height(30f).padRight(6f);
+        }).growX().minWidth(0f).height(32f).padRight(6f);
       }
-    }).left().padTop(4f).row();
+    }).growX().left().padTop(4f).row();
 
     table.table(btns -> {
       btns.left();
@@ -262,18 +258,18 @@ public class ComboBlockList {
         for (Block b : list(query[0], 0, filter[0]))
           CoopCombo.setBlocked(b.name, false);
         defer(rebuild);
-      }).width(140f).height(30f).padRight(6f);
+      }).growX().minWidth(0f).height(32f).padRight(6f);
       btns.button("全部不组合", () -> {
         for (Block b : list(query[0], 0, filter[0]))
           CoopCombo.setBlocked(b.name, true);
         defer(rebuild);
-      }).width(140f).height(30f).padRight(6f);
+      }).growX().minWidth(0f).height(32f).padRight(6f);
       btns.button("清空手动名单", () -> {
         for (String name : CoopCombo.blockedNames())
           CoopCombo.setBlocked(name, false);
         defer(rebuild);
-      }).width(160f).height(30f);
-    }).left().padTop(6f).row();
+      }).growX().minWidth(0f).height(32f);
+    }).growX().left().padTop(6f).row();
 
     table.label(() -> {
       int total = Vars.content.blocks().size;
@@ -281,12 +277,17 @@ public class ComboBlockList {
       int off = CoopCombo.blockedNames().size;
       return "[lightgray]共 " + total + " 个方块（其中 " + ext + " 个扩展建筑会组合），"
           + Strings.fixed(off, 0) + " 个被标为不组合[]";
-    }).left().padTop(4f).row();
+    }).left().wrap().padTop(4f).row();
 
     ScrollPane pane = new ScrollPane(list);
     pane.setFadeScrollBars(false);
-    pane.setScrollingDisabledX(true);
-    table.add(pane).width(460f).height(360f).padTop(6f).left().row();
+    // 只允许竖着滚：横着能滚的话，比面板宽的行会被推到右边，右边的按钮就"看得见一半、点不到"
+    // （用户截图里就是这个现象）。
+    pane.setScrollingDisabled(true, false);
+    pane.setOverscroll(false, false);
+    // 宽度跟着设置面板走（只 growX，不写死）：写死宽度在窄屏上会超出面板，
+    // 行里的按钮就被挤到面板外面——看得到、点不到。
+    table.add(pane).growX().height(380f).padTop(6f).left().row();
 
     rebuild[0].run();
   }
