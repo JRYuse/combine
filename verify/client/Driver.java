@@ -3,21 +3,46 @@ import arc.*; import arc.util.*; import arc.util.Timer;
 import mindustry.*; import mindustry.content.*; import mindustry.game.*; import mindustry.gen.*; import mindustry.mod.*;
 import mindustry.ui.dialogs.*; import mindustry.world.*; import mindustry.world.modules.*; import mindustry.type.*;
 
-/** 验证驱动：截图 + 开设置列表 + 打开 CoopPanel 并改池子看是否实时刷新。 */
+/**
+ * 验证驱动：截图 + 开设置列表 + 打开 CoopPanel 并改池子看是否实时刷新。
+ *
+ * 截图输出目录：-Ddrv.out=<目录>（默认 ~/sd/shots）。文件按**跨次运行的连续序号**命名：
+ *   001_main.png、002_settings_menu.png …  这样多次跑不会互相覆盖，也能看出先后顺序。
+ */
 public class Driver extends Mod{
-    static final String OUT = System.getProperty("drv.out", "/tmp/cl/shots/") + (System.getProperty("drv.out", "/tmp/cl/shots/").endsWith("/") ? "" : "/");
+    static String outDir = System.getProperty("drv.out", System.getProperty("user.home") + "/sd/shots");
     static ClassLoader ml;
     static Building b1, b2;
+
+    /** 目录里已有的最大序号 + 1（没有目录就从 1 开始）。 */
+    static int nextIndex(){
+        int max = 0;
+        try{
+            arc.files.Fi d = Core.files.absolute(outDir);
+            d.mkdirs();
+            for(arc.files.Fi f : d.list()){
+                String n = f.name();
+                int i = 0;
+                while(i < n.length() && Character.isDigit(n.charAt(i))) i++;
+                if(i > 0) max = Math.max(max, Integer.parseInt(n.substring(0, i)));
+            }
+        }catch(Throwable t){ Log.err("[drv] 读取截图目录失败", t); }
+        return max + 1;
+    }
+
+    static int counter = -1;
 
     @Override public void init(){
         Events.on(EventType.ClientLoadEvent.class, e -> {
             Log.info("[drv] ClientLoadEvent mods=@ blocks=@ mode=@", Vars.mods.list().size, Vars.content.blocks().size, mode);
-            try{ Core.files.absolute(OUT).mkdirs(); }catch(Throwable t){}
+            try{ Core.files.absolute(outDir).mkdirs(); }catch(Throwable t){}
+            counter = nextIndex();
+            Log.info("[drv] 截图目录 @（从序号 @ 开始）", Core.files.absolute(outDir).absolutePath(), counter);
             ml = Vars.mods.getMod("combine").main.getClass().getClassLoader();
             if(mode.equals("coop")){
                 Timer.schedule(Driver::hideDialogs, 3f);
                 Timer.schedule(Driver::setupWorld, 5f);
-                Timer.schedule(() -> { shot("11_panel_open"); }, 8f);
+                Timer.schedule(() -> { shot("coop_panel_open"); }, 8f);
                 Timer.schedule(() -> {
                     try{
                         Class<?> coopPanel = Class.forName("combine.coop.CoopPanel", true, ml);
@@ -33,7 +58,7 @@ public class Driver extends Mod{
                         Log.info("[drv] t=@ paused=@ describe=@", arc.util.Time.time, Vars.state.isPaused(), desc);
                     }catch(Throwable t){ Log.err("[drv] describe failed", t); }
                 }, 11f);
-                Timer.schedule(() -> { shot("12_panel_after"); }, 20f);
+                Timer.schedule(() -> { shot("coop_panel_after"); }, 20f);
                 Timer.schedule(() -> { Log.info("[drv] done frames=see dbg"); Core.app.exit(); }, 22f);
             }else{
                 Timer.schedule(Driver::step1, 4f);
@@ -57,10 +82,10 @@ public class Driver extends Mod{
 
     static void step1(){
         ml = Vars.mods.getMod("combine").main.getClass().getClassLoader();
-        shot("01_main");
+        shot("main");
         Vars.ui.settings.show();
-        Timer.schedule(() -> { shot("02_settings_menu"); clickButton("组合工厂"); }, 2.5f);
-        Timer.schedule(() -> { shot("03_list"); }, 5f);
+        Timer.schedule(() -> { shot("settings_menu"); clickButton("组合工厂"); }, 2.5f);
+        Timer.schedule(() -> { shot("settings_list"); }, 5f);
         Timer.schedule(() -> { Log.info("[drv] list 模式结束"); Core.app.exit(); }, 6.5f);
     }
 
@@ -92,8 +117,10 @@ public class Driver extends Mod{
 
     static void shot(String name){
         try{
-            ScreenUtils.saveScreenshot(Core.files.absolute(OUT + name + ".png"));
-            Log.info("[drv] shot @  (@x@)", name, Core.graphics.getWidth(), Core.graphics.getHeight());
+            if(counter < 0) counter = nextIndex();
+            arc.files.Fi f = Core.files.absolute(outDir).child(String.format("%03d_%s.png", counter++, name));
+            ScreenUtils.saveScreenshot(f);
+            Log.info("[drv] shot @  (@x@)", f.name(), Core.graphics.getWidth(), Core.graphics.getHeight());
         }catch(Throwable t){ Log.err("[drv] shot failed: @", name, t); }
     }
 
@@ -124,6 +151,9 @@ public class Driver extends Mod{
             hideDialogs();
             var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
             Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            // 别让它因为"没有核心"判负：一旦弹结算界面，CoopPanel 就被盖住了
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
             Vars.logic.play();
             Class<?> coop = Class.forName("combine.coop.CoopCombo", true, ml);
             java.lang.reflect.Method eligible = coop.getMethod("eligible", Block.class);

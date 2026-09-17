@@ -57,13 +57,13 @@ verify/run-client.sh vanilla /tmp/mp_coop/data coop    # CoopPanel 实时刷新
 verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑一遍
 ```
 
-截图落在 `verify/shots/`：
+截图落在 `~/sd/shots/`（脚本会自动建目录；文件名带跨次运行的连续序号 001_、002_…，多次跑不会互相覆盖）：
 
 | 文件 | 内容 |
 |---|---|
 | `01_main.png` | 主菜单（证明客户端真的起来了） |
 | `02_settings_menu.png` / `03_list.png` | 设置列表页（看行布局、按钮有没有被挤出面板） |
-| `11_panel_open.png` / `12_panel_after.png` | CoopPanel 打开时 vs 往池子里加料后（两张不一样 = 实时刷新 OK） |
+| `..._panel_open.png` / `..._panel_after.png` | CoopPanel 打开时 vs 往池子里加料后（两张不一样 = 实时刷新 OK） |
 
 原理：`Xvfb` 提供离屏 X，`SDL_VIDEODRIVER=offscreen` 让 SDL 走 EGL，Mesa 软渲染（llvmpipe）出画面；
 截图由 `verify/client/Driver.java`（一个驱动 mod）用 `ScreenUtils.saveScreenshot` 自己抓。

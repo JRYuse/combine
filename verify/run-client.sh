@@ -16,7 +16,7 @@ MINDUSTRY_JAR="${MINDUSTRY_JAR:-$HOME/Mindustry/desktop/build/libs/Mindustry.jar
 MINDX_JAR="${MINDX_JAR:-/root/sd/x.jar}"
 NATIVE="${NATIVE:-$HERE/native/libsdl-arcarm64.so}"
 DISPLAY_NUM="${DISPLAY_NUM:-:99}"
-DRV_OUT="${DRV_OUT:-$HERE/shots}"
+DRV_OUT="${DRV_OUT:-$HOME/sd/shots}"   # 截图统一放 ~/sd/shots（按 001_ 002_ 序号排）
 
 if [ $# -lt 3 ]; then
   echo "用法: $0 <mx|vanilla|jar路径> <数据目录> [list|coop]" >&2
@@ -47,7 +47,8 @@ cp "$SRC_JAR" "$HERE/build/game.jar"
 (cd "$HERE/native" && zip -q -g "$HERE/build/game.jar" libsdl-arcarm64.so)   # 条目名必须是 libsdl-arcarm64.so（arc 按这个名找）
 
 # 3) Xvfb（离屏 X，SDL 要一个显示；GL 走 EGL/llvmpipe）
-if ! xdpyinfo -display "$DISPLAY_NUM" >/dev/null 2>&1; then
+X_SOCK="/tmp/.X11-unix/X${DISPLAY_NUM#:}"
+if [ ! -e "$X_SOCK" ]; then
   echo "[verify] 启动 Xvfb $DISPLAY_NUM"
   nohup Xvfb "$DISPLAY_NUM" -screen 0 1280x800x24 -nolisten tcp > "$HERE/build/xvfb.log" 2>&1 &
   sleep 3
