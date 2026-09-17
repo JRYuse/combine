@@ -52,8 +52,20 @@ public class ComboBlockList {
     return list(query, cap, FILTER_EXT);
   }
 
-  /** 过滤：只看扩展建筑 / 只看会参与组合的 / 全部。 */
-  public static final int FILTER_EXT = 0, FILTER_HANDLED = 1, FILTER_ALL = 2;
+  /**
+   * 过滤：
+   * · {@link #FILTER_EXT} 只看"扩展建筑"（协作组合接管的那些，能手动开关）
+   * · {@link #FILTER_HANDLED} 只看会参与组合的（扩展 + 已被替换接管的）
+   * · {@link #FILTER_ALL} 全部方块
+   * · {@link #FILTER_ON}/{@link #FILTER_OFF} **只列能手动开关组合的建筑**，
+   *   再按"当前是可组合 / 不可组合"分（也就是扩展建筑里没被关掉的 / 已关掉的）
+   */
+  public static final int FILTER_EXT = 0, FILTER_HANDLED = 1, FILTER_ALL = 2, FILTER_ON = 3, FILTER_OFF = 4;
+
+  /** 这个方块能不能手动开关组合（就是"扩展建筑"那一类）。 */
+  public static boolean manuallySwitchable(Block b) {
+    return kind(b) == 0;
+  }
 
   public static Seq<Block> list(String query, int cap, int filter) {
     String q = query == null ? "" : query.trim().toLowerCase();
@@ -71,6 +83,11 @@ public class ComboBlockList {
       if (filter == FILTER_EXT && k != 0)
         continue;
       if (filter == FILTER_HANDLED && k == 2)
+        continue;
+      // 这两个过滤只列"能手动选择开关组合"的建筑，再按当前状态分
+      if (filter == FILTER_ON && (k != 0 || CoopCombo.isBlocked(b.name)))
+        continue;
+      if (filter == FILTER_OFF && (k != 0 || !CoopCombo.isBlocked(b.name)))
         continue;
       if (k == 0) hit.add(b); else rest.add(b);
     }
@@ -175,9 +192,41 @@ public class ComboBlockList {
     });
   }
 
+  /** 一排过滤按钮；当前生效的那个会高亮（点它会整块重画，好让高亮跟着走）。 */
+  private static void addFilterRow(SettingsTable table, Runnable[] whole, int[] modes, String[] names) {
+    table.table(filters -> {
+      filters.left();
+      for (int i = 0; i < modes.length; i++) {
+        final int mode = modes[i];
+        boolean active = filterMode == mode;
+        String label = active ? "[accent]▶ " + names[i] + "[]" : names[i];
+        filters.button(label, () -> {
+          filterMode = mode;
+          defer(whole);       // 整块重画（按钮也要跟着高亮），下一帧做，别在点击派发里清表
+        }).growX().minWidth(0f).height(32f).padRight(6f);
+      }
+    }).growX().left().padTop(4f).row();
+  }
+
+  /** 界面状态（放在静态里：整块重画/重新打开设置都不会丢当前选择和搜索词）。 */
+  private static int filterMode = FILTER_EXT;
+  private static String searchText = "";
+
   private static void build(SettingsTable table) {
-    final String[] query = {""};
-    final int[] filter = {FILTER_EXT};
+    build(table, new Runnable[1]);
+  }
+
+  /**
+   * @param whole 整块重画（点了过滤按钮后要用它，因为过滤按钮自己也要跟着高亮当前选择）
+   */
+  private static void build(SettingsTable table, Runnable[] whole) {
+    whole[0] = () -> {
+      table.clearChildren();
+      build(table, whole);
+    };
+
+    final String[] query = {searchText};
+    final int[] filter = {filterMode};
     final Table list = new Table();
     list.top().left();
     list.defaults().left();
@@ -234,23 +283,19 @@ public class ComboBlockList {
 
     TextField field = new TextField();
     field.setMessageText("搜索建筑（英文名 / 中文名）");
+    field.setText(searchText);
     field.changed(() -> {
+      searchText = field.getText();
       query[0] = field.getText();
       rebuild[0].run();
     });
     table.add(field).growX().left().row();
 
-    table.table(filters -> {
-      filters.left();
-      String[] names = {"只看扩展建筑", "只看会组合的", "全部方块"};
-      for(int i = 0; i < 3; i++){
-        final int mode = i;
-        filters.button(names[i], () -> {
-          filter[0] = mode;
-          rebuild[0].run();
-        }).growX().minWidth(0f).height(32f).padRight(6f);
-      }
-    }).growX().left().padTop(4f).row();
+    // 过滤按钮分两排（手机屏窄，一排塞不下五个）。当前选中的那个前面加个标记。
+    addFilterRow(table, whole, new int[]{FILTER_EXT, FILTER_ON, FILTER_OFF},
+        new String[]{"只看扩展建筑", "显示可组合", "显示不可组合"});
+    addFilterRow(table, whole, new int[]{FILTER_HANDLED, FILTER_ALL},
+        new String[]{"只看会组合的", "全部方块"});
 
     table.table(btns -> {
       btns.left();
