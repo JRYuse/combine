@@ -132,6 +132,11 @@ public class Main extends Mod {
     // 跨组合体网络（连接器/节点）：每帧最多重建一次，避免放一个连接器就重建 5~10 遍
     ComboNet.register();
 
+    // 协作组合（机制本体在 CoopCombo 里）：给"继承原版类但写了新功能的方块"（isExact 过滤掉
+    // 的那些子类 / JS 模组方块）用另一条路组合 —— 不替换方块、不动它们的 build 类，
+    // 只把相邻同类机器的库存模块接在一起，因此它们自己的配方/配置/更新逻辑全部保留。
+    CoopCombo.register();
+
     // 组合仓库并仓（机制本体在 CombinedStorageBlock 里）：没连核心时像其它组合建筑一样
     // 共用物品模块（容量相加），连到核心时整块并进核心给核心扩容（任意深度链式）
     CombinedStorageBlock.register();
@@ -250,6 +255,8 @@ public class Main extends Mod {
       }
       // 启动日志汇总（逐类刷屏已在 BlockCloner 里合并成一行）
       BlockCloner.logFallbackSummary();
+      // 协作组合：抓取"放大前"的基础容量（必须在任何世界加载之前）
+      CoopCombo.captureBaseCaps();
     } catch (Throwable t) {
       Log.err("[combine] content setup failed", t);
     }
@@ -380,8 +387,18 @@ public class Main extends Mod {
       boolean isRegen = isExact(b, RegenProjector.class);
       boolean isOverdrive = isExact(b, OverdriveProjector.class);
       boolean isMend = isExact(b, MendProjector.class);
+      // FIX[JS 力墙]: js（或 java）写的 ForceProjector **子类**，只要用到相位护盾这套参数
+      // （phaseUseTime / itemConsumer / phaseShieldBoost —— 都是 ForceProjector 上的普通字段，
+      //  BlockCloner 会原样拷到组合力墙上），也纳入组合力墙的替换范围。
+      // 用反射读，避免依赖编译期版本有没有这些字段；不想要可以写进 assets/whitelist.json 黑名单。
       boolean isForce = isExact(b, ForceProjector.class);
-      // CoreBlock 是 StorageBlock 的具名子类，精确匹配下自动被排除，无需额外判断
+      if (!isForce && b instanceof ForceProjector) {
+        boolean usesPhase = fieldFloat(b, "phaseUseTime", 0f) > 0f
+            || fieldFloat(b, "phaseShieldBoost", 0f) > 0f
+            || ComboReflect.fieldValue(b, "itemConsumer") != null;
+        isForce = usesPhase;
+      }
+
       boolean isStorage = isExact(b, StorageBlock.class);
       // 可选：接上之前一直闲置的 CombinedPump / CombinedWallCrafter
       boolean isLogic = isExact(b, LogicBlock.class);

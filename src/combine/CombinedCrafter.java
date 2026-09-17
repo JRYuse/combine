@@ -1576,9 +1576,13 @@ public class CombinedCrafter extends GenericCrafter {
                     if (cb.results != null) {
                         for (ItemStack result : cb.results) {
                             boolean isIntermediate = isConsumedInCombo(result.item);
-                            boolean shouldDump = !isIntermediate || shouldDumpIntermediate(result.item);
+                            // 同上：有人吃的料只在它自己这一格 >=90% 满时才外送
+                            float resultAmt = items.get(result.item);
+                            boolean shouldDump = !isIntermediate
+                                    || (shouldDumpIntermediate(result.item)
+                                            && resultAmt >= getMaximumAccepted(result.item) * 0.9f);
                             boolean forceDump = isIntermediate
-                                    && items.get(result.item) >= getMaximumAccepted(result.item) * 0.99f;
+                                    && resultAmt >= getMaximumAccepted(result.item) * 0.99f;
                             if (shouldDump || forceDump) {
                                 dump(result.item);
                             }
@@ -1597,9 +1601,16 @@ public class CombinedCrafter extends GenericCrafter {
                         if (output.item == null)
                             continue;
                         boolean isIntermediate = isConsumedInCombo(output.item);
-                        boolean shouldDump = !isIntermediate || shouldDumpIntermediate(output.item);
+                        // FIX[原料被当产出倒出去]: 组内有人吃的料（含"上游产的 + 下游当原料用的"），
+                        // 只在**它自己**在这一格的池子里 >=90% 满时才外送 —— 和液体那套完全一致。
+                        // 原先只看"产率>耗率"(needPerCraft*2 就能触发)，结果像 大型硅厂 这种
+                        // "隔壁有产煤机 + 自己烧煤"的组合会把作为原料的 coal 当成品倒到输出带上。
+                        float itemAmt = items.get(output.item);
+                        boolean shouldDump = !isIntermediate
+                                || (shouldDumpIntermediate(output.item)
+                                        && itemAmt >= getMaximumAccepted(output.item) * 0.9f);
                         boolean forceDump = isIntermediate
-                                && items.get(output.item) >= getMaximumAccepted(output.item) * 0.99f;
+                                && itemAmt >= getMaximumAccepted(output.item) * 0.99f;
                         if (shouldDump || forceDump)
                             dump(output.item);
                     }
