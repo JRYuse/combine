@@ -5,6 +5,7 @@ import mindustry.gen.Building;
 import mindustry.type.Item;
 import mindustry.type.Liquid;
 import mindustry.world.Block;
+import mindustry.world.Tile;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
 
@@ -13,6 +14,7 @@ import java.lang.reflect.Method;
 
 import static mindustry.Vars.content;
 import static mindustry.Vars.state;
+import static mindustry.Vars.world;
 
 /**
  * 反射访问所有 Combined* / IUnitCombo 建筑共有的组合字段。
@@ -28,7 +30,25 @@ public class ComboReflect {
         if(b == null) return false;
         if(b instanceof IUnitCombo) return true;
         if(b.block instanceof CombinedStorageBlock) return true;
+        // 协作组合（继承原版类、自己写了新功能的 js/java 方块）也当成组合方块：
+        // 这样 ComboNet 的池子合并/拆分、连接器/节点、信息面板都能一视同仁。
+        if(CoopCombo.eligible(b.block)) return true;
         return hasField(b, "comboGroup") || hasField(b, "comboLeader");
+    }
+
+    /**
+     * 这台机器还属于**当前世界**吗？
+     *
+     * 读档会重建整个世界：旧世界留下的 Building 对象 {@code isValid()} 仍然是 true
+     * （Mindustry 不逐个调用 remove()），只有 {@code world.tile(x,y).build} 才能分辨出
+     * "这块地上的建筑已经换成新对象了"。各处的登记表/网络索引都必须用它过滤，
+     * 否则读档后新旧两批机器会被当成两组、容量直接翻倍（倾倒站那种）。
+     */
+    public static boolean inWorld(Building b){
+        if(b == null || !b.isValid()) return false;
+        if(b.tile == null) return false;
+        Tile t = world == null ? null : world.tile(b.tileX(), b.tileY());
+        return t != null && t.build == b;
     }
 
     public static Building leader(Building b){
@@ -37,6 +57,7 @@ public class ComboReflect {
             IUnitCombo l = u.leader();
             return l instanceof Building bl ? bl : b;
         }
+        if(CoopCombo.eligible(b.block)) return CoopCombo.coopLeader(b);
         Object r = call(b, "leader");
         return r instanceof Building bl ? bl : b;
     }
@@ -56,6 +77,7 @@ public class ComboReflect {
             return out;
         }
 
+        if(CoopCombo.eligible(b.block)) return CoopCombo.coopGroup(b);
         Object r = call(b, "group");
         if(r instanceof Seq<?> seq){
             for(Object o : seq){
@@ -69,6 +91,9 @@ public class ComboReflect {
     /** 用于容量计算的本机容量，绝不要读 comboTotal*（跨组合并后会变成全局值）。 */
     public static int baseItemCap(Building b){
         if(b == null || b.items == null || b.block == null) return 0;
+        // 协作组合的方块容量是"放大后"的（组容量），统计组容量时必须用放大前的基础值
+        Integer coopBase = CoopCombo.coopBaseItemCap(b);
+        if(coopBase != null) return coopBase;
         return b.block.itemCapacity;
     }
 
@@ -86,6 +111,8 @@ public class ComboReflect {
     /** 用于容量计算的本机液体容量。 */
     public static float baseLiquidCap(Building b){
         if(b == null || b.liquids == null || b.block == null) return 0f;
+        Float coopBase = CoopCombo.coopBaseLiquidCap(b);
+        if(coopBase != null) return coopBase;
         Float base = getFloat(b.block, "baseLiquidCapacity");
         if(base != null && base > 0f) return base;
         return Math.max(b.block.liquidCapacity, 0f);

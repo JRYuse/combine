@@ -128,6 +128,33 @@ public class CoopCombo {
   /** 已登记的可协作方块（不能靠 created() 挂钩子，只能自己在放置/读档时登记）。 */
   private static final ObjectSet<Building> tracked = new ObjectSet<>();
 
+  /** 协作组合的分组结果：pos -> 组长、组长 pos -> 组员（每次重算刷新），供 ComboReflect/ComboNet/面板共用。 */
+  private static final arc.struct.IntMap<Building> groupLeaderByPos = new arc.struct.IntMap<>();
+  private static final arc.struct.IntMap<Seq<Building>> groupByLeaderPos = new arc.struct.IntMap<>();
+  private static boolean groupsReady = false;
+  private static long lastGroupSignature = 0L;
+
+  /** 协作组合方块所在组的组长（{@link ComboReflect#leader} 桥接过来）。 */
+  public static Building coopLeader(Building b) {
+    if (b == null) return null;
+    Building l = groupsReady ? groupLeaderByPos.get(b.pos()) : null;
+    return l != null && l.isValid() ? l : b;
+  }
+
+  /** 协作组合方块所在组的成员（{@link ComboReflect#group} 桥接过来）。 */
+  public static Seq<Building> coopGroup(Building b) {
+    Seq<Building> out = new Seq<>();
+    if (b == null) return out;
+    Building l = coopLeader(b);
+    Seq<Building> g = groupsReady && l != null ? groupByLeaderPos.get(l.pos()) : null;
+    if (g != null && g.size > 0) return g;
+    out.add(b);
+    return out;
+  }
+
+  /** 已登记的组合节点（mod 自己的方块，created()/onRemoved() 里登记；它的 links 能跨距离连协作方块）。 */
+  private static final ObjectSet<Building> trackedNodes = new ObjectSet<>();
+
   /** 组员数 > 1 的组（每帧"组级收料"用）。 */
   private static final Seq<Seq<Building>> intakeGroups = new Seq<>();
   private static int intakeCounter = 0;
@@ -172,6 +199,11 @@ public class CoopCombo {
     CoopPanel.register();
   }
 
+  /** 读档那一轮"去重语义"还没用掉（同 CombinedStorageBlock.pendingDedupe，供 ComboNet 判断）。 */
+  public static boolean pendingDedupe() {
+    return dedupeOnce;
+  }
+
   /** 外部也可以主动叫一次（例如其它机制改动了方块）。 */
   public static void markDirty() {
     dirty = true;
@@ -189,8 +221,24 @@ public class CoopCombo {
    * 方块是否交给协作组合处理。
    * combine 自己替换出来的组合方块（combine.* 包下的类）一律跳过 —— 它们走原本那套机制。
    */
+  private static final ObjectMap<Block, Boolean> eligibleCache = new ObjectMap<>();
+
+  /** 改了 anyFamily / blacklist 之后叫一下，清掉资格缓存。 */
+  public static void clearEligibilityCache() {
+    eligibleCache.clear();
+  }
+
   public static boolean eligible(Block b) {
-    if (!enabled || b == null) return false;
+    if (b == null) return false;
+    Boolean cached = eligibleCache.get(b);
+    if (cached != null) return cached;
+    boolean r = computeEligible(b);
+    eligibleCache.put(b, r);
+    return r;
+  }
+
+  private static boolean computeEligible(Block b) {
+    if (!enabled) return false;
     if (b.getClass().getName().startsWith("combine.")) return false;
     // 原版方块一律不碰：combine 该替换的已经替换掉了，剩下没被替换的原版方块
     // （例如 oil-extractor/Fracker 这类"子类但不是匿名类"的）保持原样，别顺手把它们也连起来。
@@ -231,19 +279,40 @@ public class CoopCombo {
 
   static boolean linkable(Building a, Building b) {
     if (a == null || b == null || a == b) return false;
-    if (!a.isValid() || !b.isValid()) return false;
+    if (!ComboReflect.inWorld(a) || !ComboReflect.inWorld(b)) return false;
     if (a.team != b.team) return false;
+    // 连接件当导线：只连"协作组合方块 / 别的连接件"，绝不把普通方块（传送带、容器、核心…）卷进组
+    if (isLinker(a)) return joinable(b);
+    if (isLinker(b)) return joinable(a);
     if (!eligible(a.block) || !eligible(b.block)) return false;
     return a.block == b.block || allowCrossType;
   }
 
-  /** 抓取基础容量：内容装配刚结束时调用，此时还没有任何放大。 */
+  /** 组合连接器 / 组合节点：跨组合体的"导线"（不进成员表）。 */
+  public static boolean isLinker(Building b) {
+    return b instanceof ComboConnector.ComboConnectorBuild
+        || b instanceof ComboNode.ComboNodeBuild;
+  }
+
+  /** 能不能被接进组合体：协作组合方块本身，或者连接件。 */
+  static boolean joinable(Building b) {
+    return ComboReflect.inWorld(b) && (eligible(b.block) || isLinker(b));
+  }
+
+  /**
+   * 抓取基础容量：内容装配刚结束时调用，此时还没有任何放大。
+   *
+   * 【重要】只认第一次抓到的值。itemCapacity / liquidCapacity / conductivePower 这几个
+   * 字段组合逻辑自己会按组放大（applyCapacities / applyPowerSharing），而这个方法在
+   * {@code WorldLoadEvent} 上也会被叫一次 —— 如果那时再抓一遍，抓到的就是"已经放大过"
+   * 的值，于是每存/读档一次容量就翻一倍（饱和火力倾倒站那种"读写后容量一直涨"）。
+   */
   public static void captureBaseCaps() {
     for (Block b : content.blocks()) {
       if (!eligible(b)) continue;
-      baseItemCap.put(b, b.itemCapacity);
-      baseLiquidCap.put(b, b.liquidCapacity);
-      baseConductive.put(b, b.conductivePower);
+      if (!baseItemCap.containsKey(b)) baseItemCap.put(b, b.itemCapacity);
+      if (!baseLiquidCap.containsKey(b)) baseLiquidCap.put(b, b.liquidCapacity);
+      if (!baseConductive.containsKey(b)) baseConductive.put(b, b.conductivePower);
     }
   }
 
@@ -268,16 +337,39 @@ public class CoopCombo {
     return v;
   }
 
-  // ==================== 登记 ====================
+  /** 组合节点登记 / 注销（由 {@link ComboNode.ComboNodeBuild} 自己调用）。 */
+  public static void trackNode(Building node) {
+    if (node != null && trackedNodes.add(node)) dirty = true;
+  }
+
+  public static void untrackNode(Building node) {
+    if (node != null && trackedNodes.remove(node)) dirty = true;
+  }
+
+  /**
+   * 已登记的协作组合方块（拷贝一份）。
+   *
+   * 【ComboNet 用】存储类方块（container/vault/各种 mod 仓库）都是 {@code update = false}，
+   * 根本不在 {@code Groups.build} 里 —— ComboNet.rebuild 只看 Groups.build 的话，
+   * 它们就永远进不了网络分量，"放两个仓库下去应该同池"这种就失效了。
+   */
+  public static Seq<Building> trackedBuildings() {
+    Seq<Building> out = new Seq<>();
+    for (Building b : tracked) out.add(b);
+    return out;
+  }
+
+  /** 仓库登记 / 注销（由 {@link CombinedStorageBuild} 自己调用）。 */
 
   /** 读档后全图扫一遍重建登记表。 */
   public static void rescan() {
     tracked.clear();
+    trackedNodes.clear();
     if (world != null && world.tiles != null) {
       for (Tile tile : world.tiles) {
-        if (tile != null && tile.build != null && eligible(tile.block())) {
-          tracked.add(tile.build);
-        }
+        if (tile == null || tile.build == null) continue;
+        if (eligible(tile.block())) tracked.add(tile.build);
+        if (tile.build instanceof ComboNode.ComboNodeBuild) trackedNodes.add(tile.build);
       }
     }
     dirty = true;
@@ -334,11 +426,23 @@ public class CoopCombo {
       // 清掉已经消失的成员
       ObjectSet<Building> dead = new ObjectSet<>();
       for (Building b : tracked) {
-        if (b == null || !b.isValid() || !eligible(b.block)) dead.add(b);
+        // 读档后旧世界的对象 isValid() 还是 true，只有 inWorld 能认出来
+        if (!ComboReflect.inWorld(b) || !eligible(b.block)) dead.add(b);
       }
       for (Building b : dead) tracked.remove(b);
 
-      // ---- 1) 连通分量：同队 + 4 邻接 +（同方块 或 允许跨类型） ----
+      // ---- 0) 组合节点跨距离连线：成员 -> 链到它的节点们 ----
+      ObjectMap<Building, Seq<Building>> linkedByNodes = new ObjectMap<>();
+      for (Building nb : trackedNodes) {
+        if (!ComboReflect.inWorld(nb) || !(nb instanceof ComboNode.ComboNodeBuild node) || node.links == null) continue;
+        for (int i = 0; i < node.links.size; i++) {
+          Building link = world.build(node.links.get(i));
+          if (link == null || !link.isValid() || !eligible(link.block)) continue;
+          linkedByNodes.get(link, Seq::new).add(node);
+        }
+      }
+
+      // ---- 1) 连通分量：同队 + 4 邻接 +（同方块 或 允许跨类型），并可穿过连接器/节点 ----
       ObjectSet<Building> visited = new ObjectSet<>();
       Seq<Seq<Building>> comps = new Seq<>();
       for (Building start : tracked) {
@@ -347,33 +451,71 @@ public class CoopCombo {
         Queue<Building> queue = new Queue<>();
         queue.addLast(start);
         visited.add(start);
+        ObjectSet<Building> seen = new ObjectSet<>();
+        seen.add(start);
         while (!queue.isEmpty()) {
           Building cur = queue.removeFirst();
-          comp.add(cur);
+          // 连接件只当"导线"穿过去，不进成员表（它没有物品/液体模块）
+          if (!isLinker(cur)) comp.add(cur);
           for (Building nb : cur.proximity) {
-            if (linkable(cur, nb) && visited.add(nb)) {
+            if (joinable(nb) && linkable(cur, nb) && seen.add(nb)) {
+              if (!isLinker(nb)) visited.add(nb);
               queue.addLast(nb);
+            }
+          }
+          // 被"远处组合节点"链到的成员：从该成员出发也能走到那些节点（节点再连回它的其它目标）
+          Seq<Building> viaNodes = linkedByNodes.get(cur);
+          if (viaNodes != null) {
+            for (Building n : viaNodes) {
+              if (seen.add(n)) queue.addLast(n);
+            }
+          }
+          // 组合节点：它激光连出去的 links 也算连通
+          if (cur instanceof ComboNode.ComboNodeBuild node && node.links != null) {
+            for (int i = 0; i < node.links.size; i++) {
+              Building link = world.build(node.links.get(i));
+              if (link != null && link.isValid() && link.team == cur.team
+                  && joinable(link) && seen.add(link)) {
+                if (!isLinker(link)) visited.add(link);
+                queue.addLast(link);
+              }
             }
           }
         }
         comps.add(comp);
       }
 
-      // ---- 2) 每个分量：合并库存、共用模块 ----
+      // ---- 2) 记下分组结果（组长选举），供 ComboReflect/ComboNet/面板共用 ----
+      long sig = 1125899906842597L;
+      groupLeaderByPos.clear();
+      groupByLeaderPos.clear();
       for (Seq<Building> comp : comps) {
         if (comp.isEmpty()) continue;
-
         Building leader = comp.first();
+        for (Building b : comp) if (b.pos() < leader.pos()) leader = b;
         for (Building b : comp) {
-          if (b.pos() < leader.pos()) leader = b;
+          groupLeaderByPos.put(b.pos(), leader);
+          sig = sig * 31 + b.pos();
         }
-        mergeInto(comp, leader, dedupe);
+        sig = sig * 31 + leader.pos();
+        groupByLeaderPos.put(leader.pos(), comp);
+      }
+      groupsReady = true;
+      // 分组变了 → 让 ComboNet 重算：物品/液体池的合并与拆分交给它统一处理，
+      // 这样协作组合方块和原版替换出来的组合方块才能共享同一个池、互相显示。
+      // 这里同步重算而不是置脏：CoopCombo.rebuild 本身最多每帧一次（事件都只置脏，
+      // 由 Trigger.update 统一调），同步做掉既是"放下去立刻同池"的旧手感，
+      // 也不会多出重建次数；真在 ComboNet 内部（重入）时退回置脏。
+      if (sig != lastGroupSignature) {
+        lastGroupSignature = sig;
+        if (ComboNet.rebuilding()) {
+          ComboNet.markDirty();
+        } else {
+          ComboNet.rebuild();
+        }
       }
 
-      // ---- 3) 刚被拆开的组之间可能还共用同一个模块：按容量比例分开 ----
-      splitSharedModules(comps);
-
-      // ---- 4) 组容量 = 组内各成员基础容量之和（每种方块按它出现过的最大组取） ----
+      // ---- 3) 组容量：按"这一整张网络"的基础容量之和（ComboNet 统一算） ----
       applyCapacities(comps);
 
       // ---- 5) 搬运顺序：把"会吃这种料"的邻居排前面，护住跨类型组里的中间产物 ----
@@ -402,7 +544,12 @@ public class CoopCombo {
     }
   }
 
-  /** 把一个分量的库存并到 leader 的模块上，并让所有成员共用该模块。 */
+  /**
+   * 把一个分量的库存并到 leader 的模块上，并让所有成员共用该模块。
+   *
+   * 【遗留】并池/拆池现在统一由 {@link ComboNet} 负责（协作组合和原版组合方块要在
+   * 同一张网络里共用一份模块，只能有一个地方做这件事），这个方法已经不再被调用。
+   */
   private static void mergeInto(Seq<Building> comp, Building leader, boolean dedupe) {
     ItemModule pool = leader.items != null ? leader.items : new ItemModule();
     LiquidModule liquidPool = leader.liquids != null ? leader.liquids : new LiquidModule();
@@ -426,7 +573,7 @@ public class CoopCombo {
     }
   }
 
-  /** 同一模块被多个分量引用（刚拆组）时按"分量容量占比"拆分，物品和液体都拆。 */
+  /** 同一模块被多个分量引用（刚拆组）时按"分量容量占比"拆分，物品和液体都拆。同 {@link #mergeInto}：已由 ComboNet 接管。 */
   private static void splitSharedModules(Seq<Seq<Building>> comps) {
     ObjectMap<ItemModule, Seq<Seq<Building>>> itemUsers = new ObjectMap<>();
     ObjectMap<LiquidModule, Seq<Seq<Building>>> liquidUsers = new ObjectMap<>();
@@ -532,12 +679,12 @@ public class CoopCombo {
 
     for (Seq<Building> comp : comps) {
       if (comp.isEmpty()) continue;
-      int itemTotal = 0;
-      float liquidTotal = 0f;
-      for (Building b : comp) {
-        itemTotal += baseItemCap(b.block);
-        liquidTotal += baseLiquidCap(b.block);
-      }
+      Building sample = comp.first();
+      if (sample == null || !sample.isValid()) continue;
+      // 容量按"整张网络"算：协作组合方块 + 通过连接器/节点接上的原版组合方块，
+      // 都由 ComboNet 统计（它的 effective*Cap 就是各组员基础容量之和）。
+      int itemTotal = ComboNet.effectiveItemCap(sample);
+      float liquidTotal = ComboNet.effectiveLiquidCap(sample);
       for (Building b : comp) {
         Block block = b.block;
         wantItems.put(block, Math.max(wantItems.get(block, 0), itemTotal));
@@ -545,9 +692,6 @@ public class CoopCombo {
       }
     }
 
-    for (ObjectMap.Entry<Block, Integer> e : wantItems) {
-      if (debug) Log.info("[combine] 组容量: @ 基础=@ -> @", e.key.name, baseItemCap(e.key), e.value);
-    }
     for (Block b : content.blocks()) {
       if (!eligible(b)) continue;
       int want = wantItems.get(b, baseItemCap(b));
@@ -558,11 +702,18 @@ public class CoopCombo {
         b.liquidCapacity = wantLiq;
       }
     }
-    if (debug) {
-      for (Block b : content.blocks()) {
-        if (eligible(b) && wantItems.containsKey(b)) Log.info("[combine] 应用后 @.itemCapacity=@", b.name, b.itemCapacity);
-      }
-    }
+  }
+
+  /** 网络/界面计算用：这个方块交给协作组合时"放大前"的基础物品容量；不属于协作组合返回 null。 */
+  public static Integer coopBaseItemCap(Building b) {
+    if (b == null || b.block == null || !eligible(b.block)) return null;
+    return baseItemCap(b.block);
+  }
+
+  /** 同上，液体版。 */
+  public static Float coopBaseLiquidCap(Building b) {
+    if (b == null || b.block == null || !eligible(b.block)) return null;
+    return baseLiquidCap(b.block);
   }
 
   // ==================== 搬运顺序 / 中间产物保护 ====================

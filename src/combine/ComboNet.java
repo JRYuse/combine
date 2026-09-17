@@ -71,11 +71,40 @@ public class ComboNet {
         dirty = true;
     }
 
+    /** 是否正在 rebuild 内部（防止 CoopCombo → ComboNet → CoopCombo 的重入）。 */
+    public static boolean rebuilding(){
+        return inRebuild;
+    }
+
+    private static boolean inRebuild = false;
+
     /** 每帧一次的收口：只有真的脏了才重建。 */
     private static void flush(){
         if(!dirty) return;
         dirty = false;
         rebuild();
+    }
+
+    /**
+     * 当前世界里所有「可能与组合逻辑有关」的建筑。
+     *
+     * 注意不能只看 {@code Groups.build}：组合仓库/容器、以及各种 mod 的仓库方块都是
+     * {@code update = false}，Mindustry 根本不把它们放进 Groups.build。组合节点找连接目标、
+     * 蓝框预览、网络重建都得用这份完整名单（否则"节点连不上旁边的组合仓库"）。
+     */
+    public static Seq<Building> allComboBuildings(){
+        Seq<Building> all = new Seq<>();
+        ObjectSet<Building> set = new ObjectSet<>();
+        for(Building b : Groups.build){
+            if(ComboReflect.inWorld(b) && set.add(b)) all.add(b);
+        }
+        for(CombinedStorageBlock.CombinedStorageBuild sb : CombinedStorageBlock.trackedSet()){
+            if(ComboReflect.inWorld(sb) && set.add(sb)) all.add(sb);
+        }
+        for(Building cb : CoopCombo.trackedBuildings()){
+            if(ComboReflect.inWorld(cb) && set.add(cb)) all.add(cb);
+        }
+        return all;
     }
 
     public static void rebuild(){
@@ -114,6 +143,30 @@ public class ComboNet {
     public static Seq<Building> componentMembers(Building linker){
         Seq<Building> empty = new Seq<>();
         if(world == null || linker == null || !linker.isValid()) return empty;
+
+        // 组合节点是**跨距离**连接的：节点不在成员的 proximity 里，
+        // 从成员出发的局部 BFS 根本走不到节点，于是"点开一台只能看到自己那一格"。
+        // rebuild 时算好的 netByPos 才是权威，有记录就直接用（并确认这份记录确实是它的）。
+        Seq<Building> indexed = netByPos.get(linker.pos());
+        if(indexed != null && indexed.size > 0){
+            boolean found = false;
+            for(int i = 0; i < indexed.size; i++){
+                if(indexed.get(i) == linker){ found = true; break; }
+            }
+            if(found){
+                boolean allValid = true;
+                for(int i = 0; i < indexed.size; i++){
+                    // 必须用 inWorld：读档后旧世界的建筑 isValid() 仍是 true
+                    if(!ComboReflect.inWorld(indexed.get(i))){ allValid = false; break; }
+                }
+                if(allValid) return indexed;
+                Seq<Building> filtered = new Seq<>();
+                for(int i = 0; i < indexed.size; i++){
+                    if(ComboReflect.inWorld(indexed.get(i))) filtered.add(indexed.get(i));
+                }
+                if(filtered.size > 0 && filtered.contains(linker, true)) return filtered;
+            }
+        }
 
         // 缓存：同一帧内、同一个网络只算一次（组合建筑按组 leader 归并）
         Building key = ComboReflect.isComboBuild(linker) ? ComboReflect.leader(linker) : linker;
@@ -242,50 +295,161 @@ public class ComboNet {
         return ComboReflect.group(self);
     }
 
+    // ==================== 给"本地组合"用的网络查询 ====================
+    //
+    // 组合仓库/容器有自己的并仓逻辑（CombinedStorageBlock），它按"仓库↔仓库相邻"求分量。
+    // 连接器/节点接起来的那部分网络，ComboNet 才是权威：容量、模块都得以整张网络算，
+    // 不然就会出现"池子是同一份、容量却只算自己那格"（用户看到的"容量没相加"）。
+
+    /** 这个建筑所在网络的成员；不在任何网络里时只有它自己。 */
+    public static Seq<Building> networkMembers(Building self){
+        if(self == null) return new Seq<>();
+        // 优先用 rebuild 时算好的全局索引：组合节点是跨距离连接的，
+        // 从成员出发做局部 BFS 根本走不到那个节点（节点不在它的 proximity 里）。
+        Seq<Building> indexed = netByPos.get(self.pos());
+        if(indexed != null) return indexed;
+        return componentMembers(self);
+    }
+
+    /** 成员 pos -> 该网络的全部成员（只有成员数 > 1 的网络才登记），每次 rebuild 重建。 */
+    private static final arc.struct.IntMap<Seq<Building>> netByPos = new arc.struct.IntMap<>();
+    /** 上一次的网络结构签名（用来判断"要不要叫组合仓库重算"）。 */
+    private static long lastNetSignature = 0L;
+
+    /** 网络成员数（不在网络里返回 1）。 */
+    public static int networkSize(Building self){
+        return Math.max(networkMembers(self).size, 1);
+    }
+
+    /** 网络合计物品容量；不在网络里（只有自己一台）返回 0。 */
+    public static int networkItemCap(Building self){
+        Seq<Building> members = networkMembers(self);
+        if(members.size <= 1) return 0;
+        int total = 0;
+        for(Building m : members){
+            if(m.isValid()) total += ComboReflect.baseItemCap(m);
+        }
+        return total;
+    }
+
+    /** 网络合计液体容量；不在网络里返回 0。 */
+    public static float networkLiquidCap(Building self){
+        Seq<Building> members = networkMembers(self);
+        if(members.size <= 1) return 0f;
+        float total = 0f;
+        for(Building m : members){
+            if(m.isValid()) total += ComboReflect.baseLiquidCap(m);
+        }
+        return total;
+    }
+
+    /** 同一张网络里的建筑返回同一个编号；不在网络里返回 0。 */
+    public static int networkKey(Building self){
+        Seq<Building> members = networkMembers(self);
+        if(members.size <= 1) return 0;
+        int min = Integer.MAX_VALUE;
+        for(Building m : members){
+            if(m.isValid() && m.pos() < min) min = m.pos();
+        }
+        return min == Integer.MAX_VALUE ? 0 : min;
+    }
+
+    /**
+     * 网络里"应该共用"的那份物品模块（ComboNet 并池时会选中的那份）。
+     * 网络成员已经共用一份时返回 null —— 调用方保持原样即可。
+     */
+    public static ItemModule poolModuleFor(Building self){
+        Seq<Building> members = networkMembers(self);
+        if(members.size <= 1) return null;
+        Seq<ItemModule> mods = new Seq<>();
+        for(Building m : members){
+            if(m.items != null && !mods.contains(m.items, true)) mods.add(m.items);
+        }
+        return mods.size <= 1 ? null : moduleOfFirst(members, mods);
+    }
+
+    /** 同上，液体版。 */
+    public static LiquidModule poolLiquidFor(Building self){
+        Seq<Building> members = networkMembers(self);
+        if(members.size <= 1) return null;
+        Seq<LiquidModule> mods = new Seq<>();
+        for(Building m : members){
+            if(m.liquids != null && !mods.contains(m.liquids, true)) mods.add(m.liquids);
+        }
+        return mods.size <= 1 ? null : moduleOfFirstLiquid(members, mods);
+    }
+
     /** 给任意 Combined* 建筑的 display 追加网络组合面板。 */
     public static boolean addNetworkDisplay(Table table, Building self, int localCount){
         if(self == null || table == null) return false;
-        Seq<Building> members = componentMembers(self);
-        if(members.size <= localCount) return false;
+        if(componentMembers(self).size <= localCount) return false;
 
+        // 同 showPool：面板只在切换目标时重建一次，数字必须每帧重取
+        Table net = new Table();
+        net.left();
+        net.update(() -> {
+            net.clearChildren();
+            net.defaults().left();
+            ComboUi.safe("combonet:network", () -> buildNetworkContent(net, self, localCount));
+        });
         table.row();
+        table.add(net).growX().left();
+        return true;
+    }
+
+    /** 网络面板上一条物品条的文字：每次调用取当前值。 */
+    public static String poolItemText(Building pool, int cap, Item item){
+        return item.localizedName + ": " + (pool == null || pool.items == null ? 0 : pool.items.get(item))
+            + "/" + Math.max(cap, 1);
+    }
+
+    /** 同上，液体版。 */
+    public static String poolLiquidText(Building pool, float cap, Liquid liquid){
+        return liquid.localizedName + ": "
+            + Strings.fixed(pool == null || pool.liquids == null ? 0f : pool.liquids.get(liquid), 1)
+            + "/" + Strings.fixed(Math.max(cap, 1f), 1);
+    }
+
+    /** 网络面板内容：活数据（供面板每帧重画）。 */
+    public static void buildNetworkContent(Table table, Building self, int localCount){
+        Seq<Building> members = componentMembers(self);
+        if(members.size <= localCount) return;
+
         table.add("[accent]网络组合 x" + members.size + "[] " + self.block.localizedName).left();
 
         Building itemPool = null, liquidPool = null;
         int totalItemCap = 0;
         float totalLiquidCap = 0f;
         for(Building m : members){
+            if(!m.isValid()) continue;
             totalItemCap += ComboReflect.baseItemCap(m);
             totalLiquidCap += ComboReflect.baseLiquidCap(m);
             if(m.items != null && (itemPool == null || m.pos() < itemPool.pos())) itemPool = m;
             if(m.liquids != null && (liquidPool == null || m.pos() < liquidPool.pos())) liquidPool = m;
         }
+        final Building fi = itemPool, fl = liquidPool;
+        final int icap = Math.max(totalItemCap, 1);
+        final float lcap = Math.max(totalLiquidCap, 1f);
 
-        if(itemPool != null && itemPool.items != null){
+        if(fi != null && fi.items != null){
             for(Item item : content.items()){
-                int amount = itemPool.items.get(item);
-                if(amount <= 0) continue;
-                final int a = amount;
-                final int cap = Math.max(totalItemCap, 1);
+                if(fi.items.get(item) <= 0) continue;
                 table.row();
                 table.add(new Bar(
-                    () -> item.localizedName + ": " + a + "/" + cap,
+                    () -> poolItemText(fi, icap, item),
                     () -> item.color,
-                    () -> (float)a / cap)).growX().height(18f).pad(4).left();
+                    () -> fi.items == null ? 0f : (float)fi.items.get(item) / icap)).growX().height(18f).pad(4).left();
             }
         }
 
-        if(liquidPool != null && liquidPool.liquids != null){
+        if(fl != null && fl.liquids != null){
             for(Liquid liquid : content.liquids()){
-                float amount = liquidPool.liquids.get(liquid);
-                if(amount <= 0.001f) continue;
-                final float a = amount;
-                final float cap = Math.max(totalLiquidCap, 1f);
+                if(fl.liquids.get(liquid) <= 0.001f) continue;
                 table.row();
                 table.add(new Bar(
-                    () -> liquid.localizedName + ": " + Strings.fixed(a, 1) + "/" + Strings.fixed(cap, 1),
+                    () -> poolLiquidText(fl, lcap, liquid),
                     () -> liquid.barColor != null ? liquid.barColor : liquid.color,
-                    () -> a / cap)).growX().height(18f).pad(4).left();
+                    () -> fl.liquids == null ? 0f : fl.liquids.get(liquid) / lcap)).growX().height(18f).pad(4).left();
             }
         }
 
@@ -298,7 +462,6 @@ public class ComboNet {
         }
         table.row();
         table.add("[lightgray]构成: " + comp + "[]").left();
-        return true;
     }
 
     /** 临时排查用：打印各阶段耗时（默认关）。 */
@@ -306,6 +469,16 @@ public class ComboNet {
 
     private static void rebuild(Building excluded, boolean loading){
         if(world == null || Groups.build == null) return;
+        if(inRebuild) return;
+        inRebuild = true;
+        try{
+            rebuildInner(excluded, loading);
+        }finally{
+            inRebuild = false;
+        }
+    }
+
+    private static void rebuildInner(Building excluded, boolean loading){
         long _t0 = System.nanoTime(), _tA = _t0, _tB = _t0, _tC = _t0, _tD = _t0, _tE = _t0, _tF = _t0;
 
         // 网络结构变了：显示用的连通分量缓存立刻作废（同帧内别拿旧网络画面板）
@@ -313,12 +486,17 @@ public class ComboNet {
 
         // endMapLoad 阶段连接器/节点会随 proximity 刷新提前触发 rebuild，
         // 那时各本地组合体手里还是存档写下的重复副本，必须按读档语义处理。
-        boolean loadPhase = loading || loadingWorld || world.isGenerating();
+        // 读档窗口还要看"本地组合"那边的去重标志有没有用掉：读档后每台机器手里都写着
+        // 同一份池子的副本，谁先合并谁就必须按"内容相同的副本只留一份"来算。
+        // ComboNet 每帧跑在它们之前，所以要以它们的标志为准，否则第一帧就把副本当三份真库存相加了。
+        boolean loadPhase = loading || loadingWorld || world.isGenerating()
+            || CombinedStorageBlock.pendingDedupe() || CoopCombo.pendingDedupe();
 
         try{
             Seq<Building> all = new Seq<>();
-            for(Building b : Groups.build.copy()){
-                if(b != null && b.isValid() && b != excluded) all.add(b);
+            ObjectSet<Building> allSet = new ObjectSet<>();
+            for(Building b : allComboBuildings()){
+                if(b != excluded && allSet.add(b)) all.add(b);
             }
             _tA = System.nanoTime();
 
@@ -331,7 +509,11 @@ public class ComboNet {
             ObjectSet<Building> seenLeaders = new ObjectSet<>();
             for(Building b : all){
                 if(!ComboReflect.isComboBuild(b)) continue;
-                Building l = ComboReflect.leader(b);
+                // 用 localGroupRep：组合仓库/容器按"相邻成簇"算一个组合体。
+                // 否则同一条仓库链里的每台都会成为独立顶点，它们共用的那份物品模块会被
+                // splitAcrossComponents 当成"断开残留"再拆成每人一份（读档后"名义连在一起、
+                // 模块却不共享"就是这个）。
+                Building l = ComboNode.groupRep(b);
                 if(l != null && seenLeaders.add(l)) groupLeaders.add(l);
             }
 
@@ -359,7 +541,7 @@ public class ComboNet {
                             && vertexSet.contains(nb)){
                             addEdge(edges, c, nb);
                         }else if(ComboReflect.isComboBuild(nb)){
-                            Building l = ComboReflect.leader(nb);
+                            Building l = ComboNode.groupRep(nb);
                             if(l != null && vertexSet.contains(l)) addEdge(edges, c, l);
                         }
                     }
@@ -367,7 +549,7 @@ public class ComboNet {
                     for(int i = 0; i < n.links.size; i++){
                         Building link = world.build(n.links.get(i));
                         if(link == null || !link.isValid() || !ComboReflect.isComboBuild(link)) continue;
-                        Building l = ComboReflect.leader(link);
+                        Building l = ComboNode.groupRep(link);
                         if(l != null && vertexSet.contains(l)) addEdge(edges, n, l);
                     }
                 }
@@ -405,7 +587,7 @@ public class ComboNet {
             for(int i = 0; i < components.size; i++) compMembers.add(new Seq<Building>());
             for(Building b : all){
                 if(!ComboReflect.isComboBuild(b)) continue;
-                Building l = ComboReflect.leader(b);
+                Building l = ComboNode.groupRep(b);
                 if(l == null) l = b;
                 Integer idx = leaderComponent.get(l);
                 if(idx != null) compMembers.get(idx).add(b);
@@ -419,6 +601,27 @@ public class ComboNet {
             // 7) 分量内合并共享池：运行期“相加”，读档窗口“去重”。
             for(Seq<Building> members : compMembers){
                 mergeComponent(members, loadPhase);
+            }
+            // 8) 登记"网络成员 -> 整张网络"的索引，给组合仓库那套本地并仓逻辑查（见 networkMembers）。
+            netByPos.clear();
+            long netSig = 1125899906842597L;
+            for(Seq<Building> members : compMembers){
+                if(members.size <= 1) continue;
+                for(Building m : members){
+                    if(m != null && m.isValid()){
+                        netByPos.put(m.pos(), members);
+                        netSig = netSig * 31 + m.pos();
+                    }
+                }
+                netSig = netSig * 31 + 7;
+            }
+            // 网络结构变了 → 两边"本地组合"逻辑都要跟着重算（容量/面板/池子都按整张网络）。
+            // 它们自己只认方块变化事件，连接器/节点的"连上/断开"不会触发它们，
+            // 不叫一声就会出现"池子共享了、容量和面板还是自己那格"。
+            if(netSig != lastNetSignature){
+                lastNetSignature = netSig;
+                CombinedStorageBlock.markDirty();
+                CoopCombo.markDirty();
             }
             _tE = System.nanoTime();
             if(timeDebug){
@@ -642,8 +845,29 @@ public class ComboNet {
         return loadPhase ? mergeDistinctLiquids(members, mods) : moduleOfFirstLiquid(members, mods);
     }
 
-    /** 取 pos 最小的成员手里的那份模块，保证每次重建选到同一个池对象。 */
+    /** 这台机器是不是"已经并进核心"的组合仓库（它的模块就是核心库存）。 */
+    private static boolean coreLinked(Building m){
+        return m instanceof CombinedStorageBlock.CombinedStorageBuild sb
+            && sb.linkedCore != null && sb.linkedCore.isValid();
+    }
+
+    /**
+     * 取 pos 最小的成员手里的那份模块，保证每次重建选到同一个池对象。
+     *
+     * 例外：并进核心的组合仓库，它的模块**就是核心库存**。如果网络里有这么一台，
+     * 目标模块必须是它 —— 否则整个网络换成别的模块时，核心会凭空少掉这些物品。
+     */
     private static ItemModule moduleOfFirst(Seq<Building> members, Seq<ItemModule> candidates){
+        ItemModule core = null;
+        int corePos = Integer.MAX_VALUE;
+        for(Building m : members){
+            if(m.items != null && coreLinked(m) && candidates.contains(m.items, true) && m.pos() < corePos){
+                core = m.items;
+                corePos = m.pos();
+            }
+        }
+        if(core != null) return core;
+
         ItemModule best = null;
         int bestPos = Integer.MAX_VALUE;
         for(Building m : members){
@@ -656,6 +880,16 @@ public class ComboNet {
     }
 
     private static LiquidModule moduleOfFirstLiquid(Seq<Building> members, Seq<LiquidModule> candidates){
+        LiquidModule core = null;
+        int corePos = Integer.MAX_VALUE;
+        for(Building m : members){
+            if(m.liquids != null && coreLinked(m) && candidates.contains(m.liquids, true) && m.pos() < corePos){
+                core = m.liquids;
+                corePos = m.pos();
+            }
+        }
+        if(core != null) return core;
+
         LiquidModule best = null;
         int bestPos = Integer.MAX_VALUE;
         for(Building m : members){

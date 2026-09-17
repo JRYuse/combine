@@ -136,6 +136,9 @@ public class Main extends Mod {
     // 协作组合（机制本体在 CoopCombo 里）：给"继承原版类但写了新功能的方块"（isExact 过滤掉
     // 的那些子类 / JS 模组方块）用另一条路组合 —— 不替换方块、不动它们的 build 类，
     // 只把相邻同类机器的库存模块接在一起，因此它们自己的配方/配置/更新逻辑全部保留。
+    // 注册顺序有意放在 ComboNet 之后：ComboNet 每帧先收口网络（并在网络变化时叫醒本地组合），
+    // 同一帧里 CoopCombo/组合仓库再按整张网络算容量与面板，"放下去"和"生效"还是同一帧。
+    // （协作分组自己变了的时候，CoopCombo.rebuild 会同步调 ComboNet.rebuild，不靠这个顺序。）
     CoopCombo.register();
 
     // 组合仓库并仓（机制本体在 CombinedStorageBlock 里）：没连核心时像其它组合建筑一样
@@ -169,11 +172,6 @@ public class Main extends Mod {
     addTestBuildWeapons(UnitTypes.nova, 1);
     addTestBuildWeapons(UnitTypes.pulsar, 2);
     addTestBuildWeapons(UnitTypes.quasar, 3);
-  }
-
-  /** 兼容旧调用名 */
-  public static void addBuild(UnitType unit, int amount) {
-    addBuildWeapons(unit, amount);
   }
 
   /**
@@ -337,8 +335,8 @@ public class Main extends Mod {
     comboNode.health = 120;
     comboNode.size = 1;
     comboNode.alwaysUnlocked = true;
-    comboNode.maxNodes = 3;
-    comboNode.laserRange = 6f;
+    comboNode.maxNodes = 6;
+    comboNode.laserRange = 18f;
     comboNode.init();
     comboNode.postInit();
     if (visuals()) {
@@ -412,7 +410,7 @@ public class Main extends Mod {
       boolean isMend = isExact(b, MendProjector.class);
       // FIX[JS 力墙]: js（或 java）写的 ForceProjector **子类**，只要用到相位护盾这套参数
       // （phaseUseTime / itemConsumer / phaseShieldBoost —— 都是 ForceProjector 上的普通字段，
-      //  BlockCloner 会原样拷到组合力墙上），也纳入组合力墙的替换范围。
+      // BlockCloner 会原样拷到组合力墙上），也纳入组合力墙的替换范围。
       // 用反射读，避免依赖编译期版本有没有这些字段；不想要可以写进 assets/whitelist.json 黑名单。
       boolean isForce = isExact(b, ForceProjector.class);
       if (!isForce && b instanceof ForceProjector) {

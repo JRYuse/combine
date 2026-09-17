@@ -124,6 +124,8 @@ public class LinkWall extends Wall {
     public LinkWallBuild linkLeader;
     public boolean linksDirty = true;
     public int seqSize = 1;
+    /** 上一次"是否允许组合"的判定结果：队伍里玩家有变动时自动重算一次。 */
+    public boolean groupAllowedLast = true;
     public boolean open = false;
 
     // ===== 相位盾（shield 模式）运行时状态 =====
@@ -158,8 +160,37 @@ public class LinkWall extends Wall {
       linksDirty = true;
     }
 
+    /**
+     * 这面墙要不要参与"组合"（连成一组、共享一个血池）。
+     *
+     * 判据是"这个队伍里**有没有玩家**"，而不是队伍名、也不是 Team.isOnlyAI()：
+     *   · Team.isOnlyAI() 只在"有波次/进攻模式/战役"里成立 —— 沙盒、自定义这些模式里
+     *     敌方队伍会被算成"不是 AI"，照样组合（实测就是这样漏的）；
+     *   · 按队伍名硬编码（只让 sharded 组合）又会破坏 PvP。
+     * 所以：队伍里有玩家（PvP 两边、联机各方、玩家自己切到的队伍）→ 组合；
+     * 纯 AI 势力的墙保持原版单格行为（血池不叠、不被"打一处整片掉"）。
+     */
+    public boolean groupAllowed() {
+      if (team == null)
+        return false;
+      if (!team.data().players.isEmpty())
+        return true;
+      // 兜底：本地玩家所在的队伍（专用服务器上没有本地玩家，返回 null）
+      return Vars.player != null && Vars.player.team() == team;
+    }
+
     public void rebuildLinks() {
       Seq<LinkWallBuild> found = new Seq<>();
+      // 不组合的队伍：自己就是一组（组员只有自己 → 伤害/治疗/门开关都退回原版单格行为）
+      groupAllowedLast = groupAllowed();
+      if (!groupAllowedLast) {
+        links = found;
+        found.add(this);
+        linkLeader = null;
+        linksDirty = false;
+        seqSize = 1;
+        return;
+      }
       ObjectSet<LinkWallBuild> visited = new ObjectSet<>();
       Queue<LinkWallBuild> queue = new Queue<>();
       queue.addLast(this);
@@ -205,6 +236,10 @@ public class LinkWall extends Wall {
     public void updateTile() {
       super.updateTile();
       if (linksDirty && !dead())
+        rebuildLinks();
+      // 队伍里玩家来了/走了（PvP 换边、联机加入等）→ 判定变了就重算一次：
+      // 该组合的重新连起来，不该组合的拆回单格
+      if (!linksDirty && !dead() && groupAllowedLast != groupAllowed())
         rebuildLinks();
       // FIX[shield]: 相位盾回复/破盾计时/盾半径动画（原版 ShieldWallBuild.updateTile 移植）
       if (isShield()) {
@@ -361,21 +396,19 @@ public class LinkWall extends Wall {
       }
     }
 
+    /**
+     * 【平衡】修复只作用在"被治疗的那一台"上，和原版墙一样。
+     *
+     * 以前是把治疗量按上限比例摊给**整条链路**，于是：
+     *   · 修复投影/修复塔是按"射程内每一台各 heal 一次"来的，一个修复源旁边站几格墙，
+     *     就等于在给整面组合墙（包括射程外的那些）同时回血；
+     *   · 组合墙本来就共用血池，结果就是"几格墙 + 一个修复源 = 基本打不动"。
+     * 现在治疗只补被点中的那一格（伤害仍然按组池分摊，"组=一整面墙"的机制保留），
+     * 一个修复源能管到的范围就回到"它实际射程内的那几格"，和原版一个量级。
+     */
     @Override
     public void heal(float amount) {
-      Seq<LinkWallBuild> members = new Seq<>(group());
-      float totalMax = 0f;
-      for (LinkWallBuild b : members)
-        totalMax += b.maxHealth;
-      if (totalMax <= 0.001f) {
-        super.heal(amount);
-        return;
-      }
-      for (LinkWallBuild b : members) {
-        b.health += amount * (b.maxHealth / totalMax);
-        b.clampHealth();
-        b.healthChanged();
-      }
+      super.heal(amount);
     }
 
     @Override

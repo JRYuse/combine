@@ -183,23 +183,32 @@ public class MultiBuildWeapon extends Weapon {
 
     if (plans.size > 0) {
       BuildPlan first = plans.first();
-      // FIX[优先补在建]: 顺序改成"先帮着把**已经在施工**的格子造完"（一把武器帮一格，几把就分摊到几格），
-      // 只有当前没有在建的格子可帮时，才去开新格（从队列里挑下一个还没开工的）。
-      // 队首那格如果已经开工，也允许帮（原版自己也在造它）。
+      // 认领顺序（队首始终留给单位自己的建造逻辑）：
+      //   1. 队首**以外**已经在施工的格子（一把武器帮一格，几把就分摊到几格）
+      //   2. 队首以外还没开工的格子（开新格）
+      //   3. 都没有时，才允许帮队首那格一起造（避免多把武器全空转）
+      // 第 1 步以前是允许连队首一起认领的，于是"1 把原版武器 + N 把本模组武器"里会有一把
+      // 和原版抢同一格 —— 同时施工的建筑数变成 N 而不是 N+1（beta 那种 core.size+1 的设计
+      // 就只能同时造 core.size 个）。
       for (int pass = 0; pass < 2; pass++) {
         boolean assist = pass == 0;
-        for (int i = 0; i < plans.size; i++) {
+        for (int i = 1; i < plans.size; i++) {
           BuildPlan p = plans.get(i);
           if (p == null)
             continue;
-          if (!assist && p == first)
-            continue; // 开新格时队首归它自己的建造逻辑
           if (assist && !(world.build(p.x, p.y) instanceof ConstructBlock.ConstructBuild))
             continue; // 这一轮只认"已经开工"的
-          if (!claimable(weaponUnit, tm, p, !assist, assist))
+          if (!assist && world.build(p.x, p.y) instanceof ConstructBlock.ConstructBuild)
+            continue; // 这一轮只认"还没开工"的
+          if (!claimable(weaponUnit, tm, p, !assist, false))
             continue;
           return p;
         }
+      }
+      // 兜底：队列里只剩队首那一格（或其余都够不着）时，允许帮它一起造
+      if (first != null && claimable(weaponUnit, tm, first,
+          !(world.build(first.x, first.y) instanceof ConstructBlock.ConstructBuild), true)) {
+        return first;
       }
 
       // 顺手清掉"已经造好"的残留计划，别让它一直堵在队列里（原版只清队首）
@@ -218,6 +227,18 @@ public class MultiBuildWeapon extends Weapon {
     // 空闲时替别人/替队伍计划表施工是给 AI 建造单位的功能；对玩家单位来说，
     // 清空队列就该停手，否则会出现"取消了还在造"。
     if (weaponUnit.isPlayer())
+      return null;
+
+    // FIX[敌方自动重建]: 队伍里没有玩家的势力（战役/进攻图里的敌方、沙盒里随便放的敌方队）
+    // 只能"帮着造所跟随单位的队列"，不能去认领下面那两条"主动找活"的来源 ——
+    // 因为它们的队伍计划表(team.data().plans)正是 BaseBuilderAI 排的基地蓝图
+    // （含被摧毁建筑的原地重建）。每把挂座认领一格 = 敌方多线程重建基地，
+    // 表现就是玩家报的"敌方建造机自动重建被摧毁的敌方建筑"。
+    // 2.1 及之前根本没有这两条来源，所以没有这个现象；玩家队伍（含联机多方）保持原样。
+    // 判据用"队伍里有没有玩家"，不用 Team.isOnlyAI()：后者只在有波次/进攻/战役时成立，
+    // 沙盒、自定义模式里敌方队伍会被算成"不是 AI"，照样会去认领。
+    if (weaponUnit.team != null && weaponUnit.team.data().players.isEmpty()
+        && (mindustry.Vars.player == null || mindustry.Vars.player.team() != weaponUnit.team))
       return null;
 
     // 附近同队单位的队列（玩家排好的预设、其它工程车正在排的活都在这）
