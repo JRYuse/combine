@@ -361,21 +361,19 @@ public class LinkWall extends Wall {
       }
     }
 
+    /**
+     * 【平衡】修复只作用在"被治疗的那一台"上，和原版墙一样。
+     *
+     * 以前是把治疗量按上限比例摊给**整条链路**，于是：
+     *   · 修复投影/修复塔是按"射程内每一台各 heal 一次"来的，一个修复源旁边站几格墙，
+     *     就等于在给整面组合墙（包括射程外的那些）同时回血；
+     *   · 组合墙本来就共用血池，结果就是"几格墙 + 一个修复源 = 基本打不动"。
+     * 现在治疗只补被点中的那一格（伤害仍然按组池分摊，"组=一整面墙"的机制保留），
+     * 一个修复源能管到的范围就回到"它实际射程内的那几格"，和原版一个量级。
+     */
     @Override
     public void heal(float amount) {
-      Seq<LinkWallBuild> members = new Seq<>(group());
-      float totalMax = 0f;
-      for (LinkWallBuild b : members)
-        totalMax += b.maxHealth;
-      if (totalMax <= 0.001f) {
-        super.heal(amount);
-        return;
-      }
-      for (LinkWallBuild b : members) {
-        b.health += amount * (b.maxHealth / totalMax);
-        b.clampHealth();
-        b.healthChanged();
-      }
+      super.heal(amount);
     }
 
     @Override

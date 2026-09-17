@@ -1593,49 +1593,77 @@ public class CombinedCrafter extends GenericCrafter {
             }
 
             // Generic / Attribute 的原有逻辑
+            // 【混着输出】组里共用一份池子，所以任何一台的输出口都可以外送**整组**的产物
+            // （2.2 就是这样：逐台遍历整组的 outputItems 再 dump）。
+            // 后来为了性能改成"只搬自己这一格的产出"——因为逐台遍历整组是 O(N²)，
+            // 大组合体每 tick 要搬 N² 次、直接掉帧。这里改成第三种写法：
+            // 读组级聚合数据（ensureComboAggregate 每 tick 只在 leader 上算一次，
+            // 里面有"整组产出哪些物品/液体"），每台只按**物品数**循环一遍 ——
+            // 既恢复了混着输出，也没有 N² 的代价。
+            CombinedCrafterBuild lead = leader();
+            if (lead == null)
+                return;
+
             if (timer(timerDump, comboDumpInterval / timeScale)) {
-                // 只处理自己这一格的产出：原来每台设备都遍历整组，N 台就是每 tick N² 次搬运，
-                // 大组合体放下去直接帧数崩盘；组内共享同一个池，逐台各搬自己的产出即可。
-                if (cb.outputItems != null) {
-                    for (ItemStack output : cb.outputItems) {
-                        if (output.item == null)
+                lead.ensureComboAggregate();
+                float[] produce = lead.comboItemProduceRate;
+                if (produce != null) {
+                    for (int id = 0; id < produce.length; id++) {
+                        if (produce[id] <= 0.0001f)
                             continue;
-                        boolean isIntermediate = isConsumedInCombo(output.item);
+                        Item item = content.item(id);
+                        if (item == null)
+                            continue;
+                        boolean isIntermediate = isConsumedInCombo(item);
                         // FIX[原料被当产出倒出去]: 组内有人吃的料（含"上游产的 + 下游当原料用的"），
-                        // 只在**它自己**在这一格的池子里 >=90% 满时才外送 —— 和液体那套完全一致。
+                        // 只在它在这一格的池子里 >=90% 满时才外送 —— 和液体那套完全一致。
                         // 原先只看"产率>耗率"(needPerCraft*2 就能触发)，结果像 大型硅厂 这种
                         // "隔壁有产煤机 + 自己烧煤"的组合会把作为原料的 coal 当成品倒到输出带上。
-                        float itemAmt = items.get(output.item);
+                        float itemAmt = items.get(item);
                         boolean shouldDump = !isIntermediate
-                                || (shouldDumpIntermediate(output.item)
-                                        && itemAmt >= getMaximumAccepted(output.item) * 0.9f);
+                                || (shouldDumpIntermediate(item)
+                                        && itemAmt >= getMaximumAccepted(item) * 0.9f);
                         boolean forceDump = isIntermediate
-                                && itemAmt >= getMaximumAccepted(output.item) * 0.99f;
+                                && itemAmt >= getMaximumAccepted(item) * 0.99f;
                         if (shouldDump || forceDump)
-                            dump(output.item);
+                            dump(item);
                     }
                 }
             }
-            // 液体同理：只外送自己这一格的产出液体（组内共享池、方向取本格配置）
-            if (cb.outputLiquids != null) {
-                for (int i = 0; i < cb.outputLiquids.length; i++) {
-                    var output = cb.outputLiquids[i];
-                    if (output.liquid == null)
-                        continue;
-                    int dir = liquidOutputDirections.length > i ? liquidOutputDirections[i] : -1;
-                    boolean isIntermediate = isLiquidConsumedInCombo(output.liquid);
-                    // FIX[矿渣外流]: 旧逻辑"产率>耗率就外送"——熔炉名义产率远大于分离机
-                    // 消耗, 矿渣被当过剩产物不断导出: 共享池恒空, 只泼溅邻近方块(越远越少)。
-                    // 改为: 中间产物只在池子>=90%满容时才外送, 平时留在组内共享池
-                    // 阈值看"这种产出液体自己"占了多少容量（每种液体独立储存）
-                    float liqAmt = liquids.get(output.liquid);
-                    boolean shouldDump = !isIntermediate
-                            || (shouldDumpIntermediateLiquid(output.liquid)
-                                    && liqAmt >= comboTotalLiquidCap * 0.9f);
-                    boolean forceDump = isIntermediate
-                            && liqAmt >= comboTotalLiquidCap * 0.99f;
-                    if (shouldDump || forceDump)
-                        dumpLiquid(output.liquid, 2f, dir);
+            // 液体同理：整组的产出液体都能从本格的输出口外送（方向优先取本格自己的配置）
+            if (liquids != null) {
+                lead.ensureComboAggregate();
+                float[] produceLiquid = lead.comboLiquidProduceRate;
+                if (produceLiquid != null) {
+                    for (int id = 0; id < produceLiquid.length; id++) {
+                        if (produceLiquid[id] <= 0.0001f)
+                            continue;
+                        Liquid liquid = content.liquid(id);
+                        if (liquid == null)
+                            continue;
+                        int dir = -1;
+                        if (cb.outputLiquids != null) {
+                            for (int k = 0; k < cb.outputLiquids.length; k++) {
+                                if (cb.outputLiquids[k].liquid == liquid) {
+                                    dir = liquidOutputDirections.length > k ? liquidOutputDirections[k] : -1;
+                                    break;
+                                }
+                            }
+                        }
+                        boolean isIntermediate = isLiquidConsumedInCombo(liquid);
+                        // FIX[矿渣外流]: 旧逻辑"产率>耗率就外送"——熔炉名义产率远大于分离机
+                        // 消耗, 矿渣被当过剩产物不断导出: 共享池恒空, 只泼溅邻近方块(越远越少)。
+                        // 改为: 中间产物只在池子>=90%满容时才外送, 平时留在组内共享池
+                        // 阈值看"这种产出液体自己"占了多少容量（每种液体独立储存）
+                        float liqAmt = liquids.get(liquid);
+                        boolean shouldDump = !isIntermediate
+                                || (shouldDumpIntermediateLiquid(liquid)
+                                        && liqAmt >= comboTotalLiquidCap * 0.9f);
+                        boolean forceDump = isIntermediate
+                                && liqAmt >= comboTotalLiquidCap * 0.99f;
+                        if (shouldDump || forceDump)
+                            dumpLiquid(liquid, 2f, dir);
+                    }
                 }
             }
         }
