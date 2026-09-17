@@ -1,0 +1,7 @@
+name: "drv"
+displayName: "drv test"
+author: "test"
+description: "verification driver"
+version: "1.0"
+minGameVersion: "159"
+main: "drv.Driver"
