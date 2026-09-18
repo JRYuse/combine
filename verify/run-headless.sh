@@ -41,5 +41,20 @@ mkdir -p "$HERE/build"
 echo "[verify] 编译测试类..."
 javac -nowarn -cp "$CP" -d "$HERE/build" "$HERE"/tests/*.java || exit 1
 
+# 【防呆】客户端跑挂过会把组合工厂标成 mod-combine-failed（写在数据目录的 settings 里），
+# 之后 headless 里模组根本不加载、测试会"假过"。先体检一遍，不通过就清掉那份 settings 重来。
+sanity(){
+  java -cp "$CP:$HERE/build" combine.dbg.SanityCheck "$data" 2>&1 | grep -E "^\[SANITY\]"
+}
+if ! sanity | grep -q "combine 加载=true"; then
+  echo "[verify] combine 没加载（多半是上次客户端跑挂留下的 failed 标记），清掉 settings 重试"
+  [ -f "$data/settings.bin" ] && mv "$data/settings.bin" "$data/settings.bin.bak-$$"
+  [ -f "$data/settings_backup.bin" ] && mv "$data/settings_backup.bin" "$data/settings_backup.bin.bak-$$"
+  if ! sanity | grep -q "combine 加载=true"; then
+    echo "[verify] 清了 settings 还是没加载，检查 $data/mods/combine.jar" >&2
+    exit 3
+  fi
+fi
+
 echo "[verify] 跑 $test（$data）"
 exec java -cp "$CP:$HERE/build" "$@" "$test" "$data"

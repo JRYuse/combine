@@ -647,7 +647,43 @@ public class CombinedItemTurret extends ItemTurret {
       // FIX[liquid]: 领导者每帧按组总容量截断共享池
       if (isLeader())
         trimExcessLiquids(leader());
+      pullAmmoFromPool();
       super.updateTile();
+    }
+
+    /** 每 tick 最多从池子里搬这么多弹药进炮塔（别一口气抽干，也别拖帧）。 */
+    public static final int pullAmmoPerTick = 8;
+
+    /**
+     * 【仓库供弹】组合节点/连接器把**仓库和炮塔**接在一起时，池子里的弹药要真的进炮塔。
+     *
+     * 炮塔的弹药存在自己的 ammo 队列里，items 模块只当"共享池"用；而原版只有**贴着**的
+     * 方块才会把货送进来。跨着节点/连接器连过来的仓库不会送货 ——
+     * 于是面板上显示着池子里的数量、炮塔却打不出来（用户报的"物品不会真正进入炮台"）。
+     * 这里每 tick 从池子里搬一点，逻辑和邻居送货完全一样（remove + handleItem），不凭空造货。
+     */
+    public void pullAmmoFromPool() {
+      if (items == null || ammoTypes == null || ammoTypes.size == 0)
+        return;
+      if (totalAmmo >= maxAmmo)
+        return;
+      try {
+        int moved = 0;
+        for (Item item : ammoTypes.keys()) {
+          if (moved >= pullAmmoPerTick)
+            break;
+          if (items.get(item) <= 0)
+            continue;
+          int guard = 0;
+          while (moved < pullAmmoPerTick && items.get(item) > 0 && acceptItem(this, item) && guard++ < pullAmmoPerTick) {
+            items.remove(item, 1);
+            handleItem(this, item);
+            moved++;
+          }
+        }
+      } catch (Throwable ignored) {
+        // 供弹出问题不该把炮塔/游戏带崩，下一帧再试
+      }
     }
 
     

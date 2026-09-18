@@ -29,6 +29,10 @@ import mindustry.graphics.Pal;
 import mindustry.type.Item;
 import mindustry.type.Liquid;
 import mindustry.ui.Bar;
+import mindustry.type.UnitType;
+import mindustry.gen.Iconc;
+import mindustry.ui.Fonts;
+import mindustry.entities.Units;
 import mindustry.world.Block;
 import mindustry.world.blocks.units.Reconstructor;
 import mindustry.type.ItemStack;
@@ -390,6 +394,7 @@ public class CombinedReconstructor extends Reconstructor implements IUnitCombo.I
             }).width(260f).left();
                 }
 
+
         public void buildComboBars(Table table) {
             if (!Mathf.zero(block.health, 0.001f)) {
                 final float h = health, mh = maxHealth;
@@ -399,15 +404,8 @@ public class CombinedReconstructor extends Reconstructor implements IUnitCombo.I
                         () -> Mathf.clamp(h / mh)));
                 table.row();
             }
-            if (payload != null) {
-                final float time = ((Reconstructor) block).constructTime;
-                final float f = time <= 0f ? 0f : Mathf.clamp(progress / time, 0f, 1f);
-                table.add(new Bar(
-                        () -> Core.bundle.format("bar.progress", Strings.autoFixed(f * 100f, 0)),
-                        () -> Pal.ammo,
-                        () -> f));
-                table.row();
-            }
+            // 原版注册的 bar 都在这儿画：进度条 + 「单位数量/上限」（bar.unitcap）
+            displayBars(table);
             float totalPower = 0f;
             for (IUnitCombo member : group()) {
                 Building mb = (Building) member;

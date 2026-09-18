@@ -692,11 +692,27 @@ public class ComboNet {
         splitLiquidsAcrossComponents(comps);
     }
 
+    /**
+     * 这个建筑手里的库存模块是不是"核心的池子"：核心本身，或者已经并进核心的组合仓库。
+     * 这类模块**故意**被多台建筑共用，绝不能当成"断开残留的共享池"去拆。
+     */
+    private static boolean isCorePool(Building b){
+        if(b instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild) return true;
+        if(b instanceof CombinedStorageBlock.CombinedStorageBuild s) return s.linkedCoreOf() != null;
+        return false;
+    }
+
     private static void splitItemsAcrossComponents(Seq<Seq<Building>> comps){
         IdentityHashMap<ItemModule, IntSet> owners = new IdentityHashMap<>();
+        // 核心的池子（核心自己、或"并进核心"的组合仓库）**不能拆**：
+        // 它们本来就是故意共用同一份模块的。按分量拆会把它复制成好几份
+        // （核心那份还原样留着），下次再并回核心就把副本加进去 —— 物品凭空翻倍
+        // （用户报的"钢化玻璃 4500 变 7000+"，最后被容量截断压成"正好等于容量"）。
+        IdentityHashMap<ItemModule, Boolean> coreOwned = new IdentityHashMap<>();
         for(int i = 0; i < comps.size; i++){
             for(Building m : comps.get(i)){
                 if(m.items == null) continue;
+                if(isCorePool(m)) coreOwned.put(m.items, Boolean.TRUE);
                 IntSet set = owners.get(m.items);
                 if(set == null){
                     set = new IntSet();
@@ -709,6 +725,7 @@ public class ComboNet {
         for(var entry : owners.entrySet()){
             IntSet ownerComps = entry.getValue();
             if(ownerComps.size <= 1) continue;
+            if(coreOwned.containsKey(entry.getKey())) continue;
 
             ItemModule old = entry.getKey();
             int n = ownerComps.size;
@@ -747,9 +764,11 @@ public class ComboNet {
 
     private static void splitLiquidsAcrossComponents(Seq<Seq<Building>> comps){
         IdentityHashMap<LiquidModule, IntSet> owners = new IdentityHashMap<>();
+        IdentityHashMap<LiquidModule, Boolean> coreOwned = new IdentityHashMap<>();
         for(int i = 0; i < comps.size; i++){
             for(Building m : comps.get(i)){
                 if(m.liquids == null) continue;
+                if(isCorePool(m)) coreOwned.put(m.liquids, Boolean.TRUE);
                 IntSet set = owners.get(m.liquids);
                 if(set == null){
                     set = new IntSet();
@@ -762,6 +781,7 @@ public class ComboNet {
         for(var entry : owners.entrySet()){
             IntSet ownerComps = entry.getValue();
             if(ownerComps.size <= 1) continue;
+            if(coreOwned.containsKey(entry.getKey())) continue;
 
             LiquidModule old = entry.getKey();
             int n = ownerComps.size;

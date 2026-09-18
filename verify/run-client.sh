@@ -34,6 +34,12 @@ esac
 
 mkdir -p "$HERE/build" "$DRV_OUT" "$data/mods"
 
+# 客户端被强杀/崩在模组初始化中途时，Mindustry 会把模组记成 mod-xxx-failed（写进数据目录的
+# settings），下次进游戏这个模组就被跳过 —— 会把之后所有测试都带偏。跑之前先把那份 settings 挪走。
+for f in settings.bin settings_backup.bin; do
+  [ -f "$data/$f" ] && mv "$data/$f" "$data/$f.bak-prev"
+done
+
 # 1) 驱动 mod（自动开页面 / 开面板 / 截图）
 echo "[verify] 编译驱动 mod..."
 javac -nowarn -cp "$SRC_JAR" -d "$HERE/build/drv" "$HERE/client/Driver.java" || exit 1

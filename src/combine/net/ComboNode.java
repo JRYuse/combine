@@ -71,13 +71,19 @@ public class ComboNode extends Block {
             if(contains){
                 entity.links.removeValue(value);
                 if(entity.power != null) entity.power.links.removeValue(value);
-                if(other != null && other.power != null){
-                    other.power.links.removeValue(entity.pos());
-                    other.updatePowerGraph();
-                }
+                if(other != null && other.power != null) other.power.links.removeValue(entity.pos());
+                // 【电力必须两端各建一张新电网】原来只给节点这边 reflow、对面用 updatePowerGraph()，
+                // 那只把"旧的那张（合并过的）电网"继续分给对面 —— 旧图的 all 里还列着这边的机器，
+                // 于是"线断了，电照样过去"（用户报的）。原版 PowerNode 就是这么两段式 reflow 的。
                 if(entity.power != null){
-                    new mindustry.world.blocks.power.PowerGraph().reflow(entity);
-                    entity.updatePowerGraph();
+                    mindustry.world.blocks.power.PowerGraph self = new mindustry.world.blocks.power.PowerGraph();
+                    self.reflow(entity);
+                    self.update();
+                    if(other != null && other.power != null && other.power.graph != self){
+                        mindustry.world.blocks.power.PowerGraph og = new mindustry.world.blocks.power.PowerGraph();
+                        og.reflow(other);
+                        og.update();
+                    }
                 }
                 // 【关键】断开也要把协作组合标记为脏：分组是"跟着节点连线走"的，
                 // 不重算的话两边**看起来断开了、其实还是一个组合体**（物品/液体照样共享，池子不拆）。
@@ -444,10 +450,13 @@ public class ComboNode extends Block {
                 power.links.removeValue(other.pos());
                 other.power.links.removeValue(pos());
                 if(power.graph != null) power.graph.remove(this);
-                new mindustry.world.blocks.power.PowerGraph().reflow(this);
-                new mindustry.world.blocks.power.PowerGraph().reflow(other);
-                updatePowerGraph();
-                other.updatePowerGraph();
+                // 同上：两端各建新电网，别让对面留在旧图里
+                mindustry.world.blocks.power.PowerGraph self = new mindustry.world.blocks.power.PowerGraph();
+                self.reflow(this);
+                self.update();
+                mindustry.world.blocks.power.PowerGraph og = new mindustry.world.blocks.power.PowerGraph();
+                og.reflow(other);
+                og.update();
             }
             CoopCombo.markDirty();
             ComboNet.markDirty();
@@ -470,7 +479,10 @@ public class ComboNode extends Block {
                     if(power != null && other.power != null){
                         power.links.removeValue(other.pos());
                         other.power.links.removeValue(pos());
-                        other.updatePowerGraph();
+                        // 对面要重新成图（否则它还留在包含本节点的旧电网里）
+                        mindustry.world.blocks.power.PowerGraph og = new mindustry.world.blocks.power.PowerGraph();
+                        og.reflow(other);
+                        og.update();
                     }
                 }
             }
