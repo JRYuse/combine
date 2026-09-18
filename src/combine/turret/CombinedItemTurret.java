@@ -57,6 +57,15 @@ public class CombinedItemTurret extends ItemTurret {
   @Override
   public void init() {
     super.init();
+    // 【再登记一次】克隆体先 new 再 copyFields，配置表万一被原版的覆盖也不会丢；
+    // configurable 保持 true（原版 ItemTurret 本来就是 true，弹药选择就靠它）
+    configurable = true;
+    config(Item.class, (CombinedItemTurretBuild tile, Item it) -> tile.selected = it);
+    config(Liquid.class, (CombinedItemTurretBuild tile, Liquid l) -> tile.selectedCoolant = l);
+    configClear((CombinedItemTurretBuild tile) -> {
+      tile.selected = null;
+      tile.selectedCoolant = null;
+    });
     // 原版 ItemTurret 的 ConsumeItemFilter 高亮 ammo.peek()。组合炮塔共享 ammo 队列后，
     // 队列顶部是全组第一发弹药，不一定是当前炮塔可用/选中的弹药，必须改成高亮 getAmmoContent()。
     replaceAmmoConsumer();

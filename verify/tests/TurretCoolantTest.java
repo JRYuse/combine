@@ -94,10 +94,15 @@ public class TurretCoolantTest implements ApplicationListener{
             store.liquids.add(Liquids.cryofluid, 400f);
             Building node = place(nodeBlock, 67, 60, Team.sharded);
             run(30);
+            StringBuilder keys = new StringBuilder();
+            for(Class<?> k : tower.block.configurations.keys()) keys.append(k.getSimpleName()).append(' ');
+            System.out.println("[TC][" + label + "] 方块 configurable=" + tower.block.configurable + " 已注册的配置=" + keys);
 
             System.out.println("[TC][" + label + "] 池里 水=" + Strings.fixed(store.liquids.get(Liquids.water), 1)
                 + " 冷冻液=" + Strings.fixed(store.liquids.get(Liquids.cryofluid), 1)
                 + " | 当前冷却液=" + (current(tower) == null ? "无" : current(tower).name));
+            check(label + "：方块 configurable=true（不然点选择会被 Call.tileConfig 直接忽略）", tower.block.configurable);
+            check(label + "：方块注册了 Liquid 配置（克隆后还在）", tower.block.configurations.containsKey(Liquid.class));
             check(label + "：空选时自动用效果最好的冷却液（冷冻液）", current(tower) == Liquids.cryofluid);
 
             configure(tower, Liquids.water);

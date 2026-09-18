@@ -90,6 +90,12 @@ public class CombinedTurret extends Turret {
   @Override
   public void init() {
     super.init();
+    // 【必须在 init 里设】克隆体是先 new 再 copyFields(原版字段)，原版 PowerTurret/LaserTurret
+    // 的 configurable 是 false，会把构造器里设的值覆盖掉 —— 于是 Call.tileConfig 直接忽略点击，
+    // "选了冷却液没反应、也没有黄框"（用户报的）。init() 在 copyFields 之后跑，这里设才留得住。
+    configurable = true;
+    config(Liquid.class, (CombinedTurretBuild tile, Liquid l) -> tile.selectedCoolant = l);
+    configClear((CombinedTurretBuild tile) -> tile.selectedCoolant = null);
     // FIX[双init防护]: 内容加载器可能再次 init(), 防止把 9999 假容量记成基础容量
     if (!baseCapCaptured) {
       baseLiquidCapacity = liquidCapacity;
