@@ -181,8 +181,6 @@ public class Main extends Mod {
     // 设置里的"建筑组合开关"界面（客户端才有 UI，服务端自动跳过）
 //    combine.ui.ComboBlockList.register();
 //    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
-    combine.ui.ComboBlockList.register();
-    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
     // 客户端在这之后才把蓝图库从磁盘读进来（assets.load(schematics)），再兜一次键；
     // 顺带把内置发射蓝图里的核心实例再对齐一遍（幂等）。
     Events.on(ClientLoadEvent.class, e -> {
