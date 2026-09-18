@@ -31,14 +31,9 @@ if [ -n "$LEFTOVER" ]; then
   exit 1
 fi
 
-VER="$(grep -E '^version:' "$ROOT/mod.hjson" | head -1 | sed 's/.*: *//' | tr -d '\r"')"
-echo "[deliver] 3/3 放到 $OUT_DIR（版本 $VER）"
+echo "[deliver] 3/3 放到 $OUT_DIR"
 mkdir -p "$OUT_DIR"
 cp "$JAR" "$OUT_DIR/combine.jar"
-if [ -n "$VER" ]; then
-  cp "$JAR" "$OUT_DIR/组合工厂$VER.jar"
-  ls -l "$OUT_DIR/combine.jar" "$OUT_DIR/组合工厂$VER.jar"
-else
-  ls -l "$OUT_DIR/combine.jar"
-fi
-echo "[deliver] 好了：$OUT_DIR/combine.jar（安卓+iOS 都能装）"
+# 只放 combine.jar —— 带版本号的文件名由使用者自己改，脚本不生成
+ls -l "$OUT_DIR/combine.jar"
+echo "[deliver] 好了：$OUT_DIR/combine.jar（安卓+iOS 都能装；要改名/带版本号自己来）"

@@ -39,7 +39,8 @@
   1. 用**兼容安卓的编译命令**：`./gradlew --offline deploy`
      （`deploy` = desktop + android 合并，产物里有 `classes.dex`；只跑 `./gradlew jar` 出来的是纯桌面包，安卓端装不上）
   2. 交付前**删掉所有调试日志/探针**（`[dbg]`、`dbgTicks`、`System.out.print`、驱动用的 print 之类），脚本会 grep 检查
-  3. 编译产物放 `~/sd`：`~/sd/combine.jar`，并另存一份带版本号的 `~/sd/组合工厂<mod.hjson 的 version>.jar`
+  3. 编译产物放 `~/sd`：只放 `~/sd/combine.jar`
+     （**不要**另外生成带版本号的名字，使用者自己改名字）
 - 提交信息用中文，说清"根因 + 改法"。
 - `mod.hjson` 的更新日志只写功能，不写"修复崩溃/改仓库"这类；写之前精简。
 - `mod.hjson` 里**不能用半角引号**（HJSON 会被写坏）。
