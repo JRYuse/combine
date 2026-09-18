@@ -91,3 +91,26 @@ curl -L -o /tmp/mind160.jar   https://github.com/Anuken/Mindustry/releases/downl
 verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 jar 放到 ~/sd/combine.jar
 ```
 带版本号的文件名由使用者自己改，脚本不生成。
+
+## 测试清单（哪个测试要哪套数据）
+
+| 测试 | 需要的模组 | 验什么 |
+|---|---|---|
+| `combine.dbg.SanityCheck` | 任意 | combine 真的加载了吗（防"假过"） |
+| `combine.dbg.DetachTest` | js 或 java 扩展方块 | 设置里开关组合立刻拆池/还原/恢复 |
+| `combine.dbg.FilterTest` | js/java 扩展方块 | 显示可组合/不可组合 只列能开关的；NoCombo 排除的不出现 |
+| `combine.dbg.ContentTableTest` | 任意 | 手动名单不改内容表（`-Dseed=<方块名>`） |
+| `combine.dbg.NodeLinkTest` | `coop-producer`（java 测试模组） | 节点连线：点已连目标=断开、不会误断另一边 |
+| `combine.dbg.PowerSplitTest` | `coop-producer` | 节点/连接器断开后电力真的断开（不只是 graph 不同） |
+| `combine.dbg.TurretAmmoTest` | 任意（有炮塔+容器） | 仓库↔炮塔：每种弹药都进、弹仓按台数放大、从池里扣 |
+| `combine.dbg.TurretCoolantTest` | `liquid-maker`（java 测试模组） | 冷却液选择：空选自动取效果最好的、手选生效、没货回退 |
+| `combine.dbg.SaveRoundTripTest` | 任意 | 核心+容器 存读档物品不翻倍 |
+| `combine.dbg.UnitBarTest` | 任意 | 组合单位工厂/升级厂有原版那些 bar（含单位数量/上限） |
+
+## 复现排版问题
+
+`run-client.sh` 支持 `DRV_UISCALE=<百分比>` 把 UI 缩放调大（等于把逻辑宽度变小）：
+
+```bash
+DRV_UISCALE=200 verify/run-client.sh mx /tmp/mp_coop/data list   # 小逻辑宽度下看排版
+```

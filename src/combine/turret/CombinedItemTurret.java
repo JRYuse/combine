@@ -1,4 +1,5 @@
 package combine.turret;
+
 import combine.net.ComboNet;
 import combine.util.ComboUi;
 import java.util.LinkedHashMap;
@@ -38,20 +39,6 @@ import mindustry.world.modules.LiquidModule;
 
 import static mindustry.Vars.*;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 public class CombinedItemTurret extends ItemTurret {
 
   public boolean allowCrossTypeCombo = true;
@@ -61,7 +48,7 @@ public class CombinedItemTurret extends ItemTurret {
     buildType = CombinedItemTurretBuild::new;
     hasItems = true;
     sync = true;
-    
+
   }
 
   /** 原版单体液体容量（组容量计算基准；liquidCapacity 本体抬高为 9999 假容量） */
@@ -73,10 +60,15 @@ public class CombinedItemTurret extends ItemTurret {
     // 原版 ItemTurret 的 ConsumeItemFilter 高亮 ammo.peek()。组合炮塔共享 ammo 队列后，
     // 队列顶部是全组第一发弹药，不一定是当前炮塔可用/选中的弹药，必须改成高亮 getAmmoContent()。
     replaceAmmoConsumer();
-    conductivePower = true; 
+    conductivePower = true;
     configurable = true;
     config(Item.class, (CombinedItemTurretBuild tile, Item i) -> tile.selected = i);
-    configClear((CombinedItemTurretBuild tile) -> tile.selected = null);
+    // 冷却液选择：和弹药选择一样走 config（联机同步）；null = 自动用池子里效果最好的
+    config(Liquid.class, (CombinedItemTurretBuild tile, Liquid l) -> tile.selectedCoolant = l);
+    configClear((CombinedItemTurretBuild tile) -> {
+      tile.selected = null;
+      tile.selectedCoolant = null;
+    });
 
     // FIX[liquid]: 与 CombinedLiquidTurret 同理——原版 transferLiquid 按"目标方块的
     // liquidCapacity"限流，共享冷却池总量超过单台容量后管道会算出负流量而彻底断流
@@ -211,7 +203,7 @@ public class CombinedItemTurret extends ItemTurret {
           },
           () -> e.liquids == null ? 0f : e.liquids.currentAmount() / Math.max(e.perLiquidCap(), 1f)));
     }
-    
+
     // 每种可用弹药只显示一条明细，避免“当前弹药总条 + 明细条”重复显示同一种弹药。
     for (Item i : ammoTypes.keys()) {
       final Item it = i;
@@ -258,15 +250,13 @@ public class CombinedItemTurret extends ItemTurret {
     public CombinedItemTurretBuild comboLeader;
     public Seq<CombinedItemTurretBuild> comboGroup = new Seq<>();
     public boolean comboDirty = true;
-    
+
     public Item selected;
-    
+
     public Item lastInput;
 
     /** 组总液体容量（rebuildCombo 时重算；<=0 = 尚未建组，perLiquidCap 回退单台基准） */
     public float comboTotalLiquidCap = 0f;
-
-    
 
     public CombinedItemTurretBuild leader() {
       if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null)) {
@@ -287,7 +277,6 @@ public class CombinedItemTurret extends ItemTurret {
       return l.comboGroup;
     }
 
-    
     public float perItemCap() {
       // 装弹/收弹路径每次都要问组总弹容，原先每次都遍历整组 → 按 tick 缓存
       CombinedItemTurretBuild l = leader();
@@ -374,7 +363,6 @@ public class CombinedItemTurret extends ItemTurret {
       return e instanceof ItemTurret.ItemEntry ie ? typeFor(ie.item) : null;
     }
 
-    
     public boolean acceptsAmmo(Item item) {
       return item != null && ammoTypes != null && ammoTypes.containsKey(item);
     }
@@ -441,8 +429,7 @@ public class CombinedItemTurret extends ItemTurret {
       // 否则新 leader 只会保留自己原小组的弹药，另一组供入的铜/石墨会消失。
       // 用 IdentityHashMap 保存旧小组 Leader，避免大组合体反复执行 Seq.contains 造成
       // O(n²) 扫描和 ArrayList/Seq 扩容分配，防止移动端 512MB 堆直接 OOM。
-      java.util.IdentityHashMap<CombinedItemTurretBuild, Boolean> oldLeaders =
-          new java.util.IdentityHashMap<>();
+      java.util.IdentityHashMap<CombinedItemTurretBuild, Boolean> oldLeaders = new java.util.IdentityHashMap<>();
       LinkedHashMap<Item, Long> mergedTotals = new LinkedHashMap<>();
       for (CombinedItemTurretBuild b : newGroup) {
         if (!b.isValid())
@@ -455,7 +442,7 @@ public class CombinedItemTurret extends ItemTurret {
         for (Turret.AmmoEntry e : oldLeader.ammo) {
           if (e == null || !(e instanceof ItemTurret.ItemEntry ie) || ie.item == null)
             continue;
-          mergedTotals.merge(ie.item, (long)Math.max(0, e.amount), Long::sum);
+          mergedTotals.merge(ie.item, (long) Math.max(0, e.amount), Long::sum);
         }
       }
 
@@ -471,9 +458,9 @@ public class CombinedItemTurret extends ItemTurret {
       newLeader.comboAmmoCapTick = Long.MIN_VALUE;
 
       newLeader.ammo.clear();
-      int mergedCap = (int)Math.max(0, newLeader.perItemCap());
+      int mergedCap = (int) Math.max(0, newLeader.perItemCap());
       for (java.util.Map.Entry<Item, Long> entry : mergedTotals.entrySet()) {
-        int amount = (int)Math.min(mergedCap, entry.getValue());
+        int amount = (int) Math.min(mergedCap, entry.getValue());
         if (amount <= 0)
           continue;
         ItemTurret owner = newLeader.findOwnerBlock(entry.getKey());
@@ -530,8 +517,6 @@ public class CombinedItemTurret extends ItemTurret {
       }
     }
 
-    
-
     @Override
     public void created() {
       super.created();
@@ -553,7 +538,7 @@ public class CombinedItemTurret extends ItemTurret {
       Seq<CombinedItemTurretBuild> members = new Seq<>(group());
       boolean wasLeader = isLeader();
       if (!wasLeader) {
-        
+
         ammo.clear();
         totalAmmo = 0;
       }
@@ -562,7 +547,7 @@ public class CombinedItemTurret extends ItemTurret {
         for (CombinedItemTurretBuild b : members)
           if (b != this && b.isValid())
             survivors.add(b);
-        
+
         float[] caps = new float[survivors.size];
         float totalCap = 0f;
         for (int i = 0; i < survivors.size; i++) {
@@ -617,9 +602,6 @@ public class CombinedItemTurret extends ItemTurret {
       super.onRemoved();
     }
 
-
-    
-
     // ===== 弹药空值防护 (单副本, 全限定类型) =====
     @Override
     public boolean hasAmmo() {
@@ -654,8 +636,70 @@ public class CombinedItemTurret extends ItemTurret {
       // FIX[liquid]: 领导者每帧按组总容量截断共享池
       if (isLeader())
         trimExcessLiquids(leader());
+      applyCoolantChoice();
       pullAmmoFromPool();
       super.updateTile();
+    }
+
+    /** 选定的冷却液（null = 自动用池子里效果最好的那种）。 */
+    public Liquid selectedCoolant;
+
+    /** 这个炮台能不能用这种液体当冷却液（按原版 consumeLiquid 的过滤条件）。 */
+    public boolean acceptsCoolant(Liquid liquid) {
+      if (liquid == null || coolant == null)
+        return false;
+      try {
+        return coolant.consumes(liquid);
+      } catch (Throwable t) {
+        return false;
+      }
+    }
+
+    /** 池子里现有的、本炮能用的冷却液（按液体 id 顺序）。 */
+    public Seq<Liquid> presentCoolants() {
+      Seq<Liquid> out = new Seq<>();
+      if (liquids == null)
+        return out;
+      for (Liquid l : content.liquids())
+        if (liquids.get(l) > 0.001f && acceptsCoolant(l))
+          out.add(l);
+      return out;
+    }
+
+    /**
+     * 该用哪种冷却液：
+     * · 选了就用选的（选的那种没货了自动回退到自动模式，不会卡住）；
+     * · 没选（空选）→ 自动取池子里**效果最好**的（heatCapacity 最高，原版冷却速度就是乘它）。
+     */
+    public Liquid effectiveCoolant() {
+      if (liquids == null)
+        return null;
+      if (selectedCoolant != null && acceptsCoolant(selectedCoolant) && liquids.get(selectedCoolant) > 0.001f)
+        return selectedCoolant;
+      Liquid best = null;
+      for (Liquid l : presentCoolants())
+        if (best == null || l.heatCapacity > best.heatCapacity)
+          best = l;
+      return best;
+    }
+
+    /**
+     * 把"当前冷却液"对齐到选定/自动挑出来的那种。
+     *
+     * 原版冷却（ReloadTurret.updateCooling / ConsumeLiquidFilter.getConsumed）先看
+     * {@code liquids.current()}，所以池子里混了几种液体时，炮台会用到"最后被加进来的那种"
+     * ——表现就是"混液体、冷却效果随机"（用户报的）。LiquidModule.add(l, 0) 只改 current，
+     * 不动存量，正好用来把当前液体钉成我们挑的那种。
+     */
+    public void applyCoolantChoice() {
+      if (coolant == null || liquids == null)
+        return;
+      try {
+        Liquid want = effectiveCoolant();
+        if (want != null && liquids.current() != want)
+          liquids.add(want, 0f);
+      } catch (Throwable ignored) {
+      }
     }
 
     /** 每 tick 最多从池子里搬这么多弹药进炮塔（别一口气抽干，也别拖帧）。 */
@@ -697,12 +741,6 @@ public class CombinedItemTurret extends ItemTurret {
       }
     }
 
-    
-
-    
-
-
-
     public ItemTurret findOwnerBlock(Item item) {
       for (CombinedItemTurretBuild m : group()) {
         if (m.isValid() && m.block instanceof ItemTurret mt && mt.ammoTypes.containsKey(item))
@@ -720,13 +758,13 @@ public class CombinedItemTurret extends ItemTurret {
       for (Turret.AmmoEntry e : ammo) {
         if (e == null || !(e instanceof ItemTurret.ItemEntry ie) || ie.item == null)
           continue;
-        totals.merge(ie.item, (long)Math.max(0, e.amount), Long::sum);
+        totals.merge(ie.item, (long) Math.max(0, e.amount), Long::sum);
       }
 
       ammo.clear();
-      int cap = (int)Math.max(0, perItemCap());
+      int cap = (int) Math.max(0, perItemCap());
       for (java.util.Map.Entry<Item, Long> entry : totals.entrySet()) {
-        int amount = (int)Math.min(cap, entry.getValue());
+        int amount = (int) Math.min(cap, entry.getValue());
         if (amount <= 0)
           continue;
         ItemTurret owner = findOwnerBlock(entry.getKey());
@@ -752,13 +790,12 @@ public class CombinedItemTurret extends ItemTurret {
 
     @Override
     public boolean acceptItem(Building source, Item item) {
-      
+
       ItemTurret owner = ownerFor(item);
       if (owner == null)
         return false;
       float mult = owner.ammoTypes.get(item).ammoMultiplier;
-      
-      
+
       float cur = amountOf(item);
       return cur + mult <= perItemCap() + 0.001f;
     }
@@ -778,7 +815,7 @@ public class CombinedItemTurret extends ItemTurret {
       CombinedItemTurretBuild lead = leader();
       lead.normalizeAmmoEntries();
       float room = lead.perItemCap() - lead.amountOf(item);
-      int add = (int)type.ammoMultiplier;
+      int add = (int) type.ammoMultiplier;
       if (room < add)
         return;
       if (lead.totalAmmo == 0)
@@ -832,7 +869,7 @@ public class CombinedItemTurret extends ItemTurret {
       if (owner == null)
         return 0;
       float mult = owner.ammoTypes.get(item).ammoMultiplier;
-      
+
       float cur = amountOf(item);
       return Math.min(amount, (int) ((perItemCap() - cur) / mult));
     }
@@ -843,8 +880,6 @@ public class CombinedItemTurret extends ItemTurret {
       for (int i = 0; i < accepted; i++)
         handleItem(null, item);
     }
-
-    
 
     @Override
     public BulletType useAmmo() {
@@ -901,8 +936,6 @@ public class CombinedItemTurret extends ItemTurret {
       return super.senseObject(sensor);
     }
 
-    
-
     @Override
     public void buildConfiguration(Table table) {
       Seq<Item> present = new Seq<>();
@@ -911,18 +944,35 @@ public class CombinedItemTurret extends ItemTurret {
         if (acceptsAmmo(it) && !present.contains(it))
           present.add(it);
       }
-      if (present.size < 2)
-        return;
-      ItemSelection.buildTable(CombinedItemTurret.this, table, present,
-          () -> selected, i -> configure(i));
+      if (present.size >= 2) {
+        ItemSelection.buildTable(CombinedItemTurret.this, table, present,
+            () -> selected, i -> configure(i));
+      }
+
+      // 冷却液选择：**和物品弹药选择用同一套 UI**（ItemSelection.buildTable）——
+      // 图标按钮 + 选中的那个自带黄框（Styles.clearNoneTogglei 的 checked 背景），
+      // 点已选中的那个 = 取消（回到"自动取效果最好的"）。
+      // 这里列的是"这个炮台能用的所有冷却液"（不只是池子里现有的），
+      // 这样就算想要的冷却液还没送过来也能先选好。
+      Seq<Liquid> coolants = new Seq<>();
+      for (Liquid l : content.liquids())
+        if (acceptsCoolant(l) && !l.isHidden())
+          coolants.add(l);
+      if (coolants.size >= 2) {
+        // 配置面板是游戏 UI 的一部分，出问题也不能把面板带崩（和 display 一样兜住）
+        ComboUi.safe("combineditemturret:coolantSelect", () -> {
+          if (present.size >= 2)
+            table.row();
+          ItemSelection.buildTable(CombinedItemTurret.this, table, coolants,
+              () -> selectedCoolant, l -> configure(l));
+        });
+      }
     }
 
     @Override
     public Object config() {
       return selected;
     }
-
-    
 
     @Override
     public byte version() {
@@ -948,51 +998,49 @@ public class CombinedItemTurret extends ItemTurret {
       super.read(read, revision);
 
       if (revision >= 10) {
-      if (revision >= 10) {
-        short id = read.s();
-        selected = id == -1 ? null : content.item(id);
-      }
-      if (revision >= 10) {
-        int entries = read.i();
-        ammo.clear();
-        totalAmmo = 0;
-        for (int i = 0; i < entries; i++) {
-          Item item = content.item(read.i());
-          int amount = read.i();
-          if (item == null || amount <= 0)
-            continue;
-          ammo.add(AmmoEntries.create((ItemTurret) block, item, amount));
-          totalAmmo += amount;
+        if (revision >= 10) {
+          short id = read.s();
+          selected = id == -1 ? null : content.item(id);
         }
-        if (selected != null && !acceptsAmmo(selected))
-          selected = null;
-        if (selected == null) {
-          for (Turret.AmmoEntry e : ammo) {
-            if (e == null || ((ItemTurret.ItemEntry) e).item == null || e.amount <= 0)
+        if (revision >= 10) {
+          int entries = read.i();
+          ammo.clear();
+          totalAmmo = 0;
+          for (int i = 0; i < entries; i++) {
+            Item item = content.item(read.i());
+            int amount = read.i();
+            if (item == null || amount <= 0)
               continue;
-            Item it = ((ItemTurret.ItemEntry) e).item;
-            if (acceptsAmmo(it)) {
-              selected = it;
-              break;
+            ammo.add(AmmoEntries.create((ItemTurret) block, item, amount));
+            totalAmmo += amount;
+          }
+          if (selected != null && !acceptsAmmo(selected))
+            selected = null;
+          if (selected == null) {
+            for (Turret.AmmoEntry e : ammo) {
+              if (e == null || ((ItemTurret.ItemEntry) e).item == null || e.amount <= 0)
+                continue;
+              Item it = ((ItemTurret.ItemEntry) e).item;
+              if (acceptsAmmo(it)) {
+                selected = it;
+                break;
+              }
             }
           }
         }
-      }
 
       }
 
       comboDirty = true;
-}
-
-    
+    }
 
     @Override
-        public void display(Table table) {
-          // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
-          ComboUi.safe("combineditemturret:display", () -> displayInner(table));
-        }
+    public void display(Table table) {
+      // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
+      ComboUi.safe("combineditemturret:display", () -> displayInner(table));
+    }
 
-        void displayInner(Table table) {
+    void displayInner(Table table) {
       table.table(cont -> {
         cont.top().left();
         cont.defaults().growX().left();
@@ -1025,7 +1073,7 @@ public class CombinedItemTurret extends ItemTurret {
         });
         cont.add(comboIO).growX().left();
       }).width(260f).left();
-            }
+    }
 
     public void buildComboIO(Table table) {
       table.left();

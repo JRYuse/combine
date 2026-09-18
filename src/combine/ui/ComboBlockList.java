@@ -1,6 +1,7 @@
 package combine.ui;
 
 import arc.Core;
+import arc.math.Mathf;
 import arc.scene.ui.ScrollPane;
 import arc.scene.ui.TextField;
 import arc.scene.ui.layout.Table;
@@ -203,10 +204,14 @@ public class ComboBlockList {
         filters.button(label, () -> {
           filterMode = mode;
           defer(whole);       // 整块重画（按钮也要跟着高亮），下一帧做，别在点击派发里清表
-        }).growX().minWidth(0f).height(32f).padRight(6f);
+        }).width(colW).height(32f).padRight(6f);
       }
-    }).growX().left().padTop(4f).row();
+    }).left().padTop(4f).row();
   }
+
+  /** 界面宽度（build 时按屏幕逻辑宽度算一次，过滤按钮等分开的方法也要用）。 */
+  private static float paneW = 460f;
+  private static float colW = 150f;
 
   /** 界面状态（放在静态里：整块重画/重新打开设置都不会丢当前选择和搜索词）。 */
   private static int filterMode = FILTER_EXT;
@@ -224,6 +229,13 @@ public class ComboBlockList {
       table.clearChildren();
       build(table, whole);
     };
+
+    // 【宽度显式算出来】PC 上这个面板的父容器不一定把它撑开，只靠 growX 会塌成
+    // "按钮字竖着折行、建筑名一个字符一行"（用户 PC 截图就是那样）。
+    // 逻辑宽度 = 实际像素 / UI 缩放；再留出内边距，夹在 300~620 之间。
+    float logicalW = Math.max(Core.graphics.getWidth() / Math.max(arc.scene.ui.layout.Scl.scl(), 0.01f), 320f);
+    paneW = Mathf.clamp(logicalW - 90f, 300f, 620f);
+    colW = Math.max((paneW - 18f) / 3f, 80f);
 
     final String[] query = {searchText};
     final int[] filter = {filterMode};
@@ -255,7 +267,7 @@ public class ComboBlockList {
             // 这里必须用 wrap 而不是 ellipsis：arc 的 Label 只有 wrap 才会把"最小宽度"降成 0
             // （ellipsis 只影响绘制），否则长中文名仍会把整行撑宽、把按钮挤出去。
             row.add(state + tag + " " + b.localizedName + " [gray]" + b.name + "[]")
-                .left().growX().wrap().minWidth(0f);
+                .left().growX().wrap().minWidth(140f);
             if (kind != 0) {
               // 替换接管 / 本来就不组合：这两类不吃设置里的开关
               row.add(kind == 1 ? "[gray]替换接管[]" : "[darkGray]不参与[]")
@@ -289,7 +301,7 @@ public class ComboBlockList {
       query[0] = field.getText();
       rebuild[0].run();
     });
-    table.add(field).growX().left().row();
+    table.add(field).width(paneW).left().row();
 
     // 过滤按钮分两排（手机屏窄，一排塞不下五个）。当前选中的那个前面加个标记。
     addFilterRow(table, whole, new int[]{FILTER_EXT, FILTER_ON, FILTER_OFF},
@@ -303,18 +315,18 @@ public class ComboBlockList {
         for (Block b : list(query[0], 0, filter[0]))
           CoopCombo.setBlocked(b.name, false);
         defer(rebuild);
-      }).growX().minWidth(0f).height(32f).padRight(6f);
+      }).width(colW).height(32f).padRight(6f);
       btns.button("全部不组合", () -> {
         for (Block b : list(query[0], 0, filter[0]))
           CoopCombo.setBlocked(b.name, true);
         defer(rebuild);
-      }).growX().minWidth(0f).height(32f).padRight(6f);
+      }).width(colW).height(32f).padRight(6f);
       btns.button("清空手动名单", () -> {
         for (String name : CoopCombo.blockedNames())
           CoopCombo.setBlocked(name, false);
         defer(rebuild);
-      }).growX().minWidth(0f).height(32f);
-    }).growX().left().padTop(6f).row();
+      }).width(colW).height(32f);
+    }).left().padTop(6f).row();
 
     table.label(() -> {
       int total = Vars.content.blocks().size;
@@ -322,7 +334,7 @@ public class ComboBlockList {
       int off = CoopCombo.blockedNames().size;
       return "[lightgray]共 " + total + " 个方块（其中 " + ext + " 个扩展建筑会组合），"
           + Strings.fixed(off, 0) + " 个被标为不组合[]";
-    }).left().wrap().padTop(4f).row();
+    }).left().wrap().width(paneW).padTop(4f).row();
 
     ScrollPane pane = new ScrollPane(list);
     pane.setFadeScrollBars(false);
@@ -332,7 +344,7 @@ public class ComboBlockList {
     pane.setOverscroll(false, false);
     // 宽度跟着设置面板走（只 growX，不写死）：写死宽度在窄屏上会超出面板，
     // 行里的按钮就被挤到面板外面——看得到、点不到。
-    table.add(pane).growX().height(380f).padTop(6f).left().row();
+    table.add(pane).width(paneW).height(380f).padTop(6f).left().row();
 
     rebuild[0].run();
   }

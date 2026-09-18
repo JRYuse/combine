@@ -63,6 +63,6 @@ fi
 # 4) 跑客户端（SDL_VIDEODRIVER=offscreen：没有 X 窗口，但 EGL 上下文可用）
 echo "[verify] 跑客户端 mode=$mode，截图输出到 $DRV_OUT"
 DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=offscreen \
-  java -Ddrv.mode="$mode" -Ddrv.out="$DRV_OUT" -Dmindustry.data.dir="$data" \
+  java -Ddrv.mode="$mode" -Ddrv.out="$DRV_OUT" ${DRV_UISCALE:+-Ddrv.uiscale=$DRV_UISCALE} -Dmindustry.data.dir="$data" \
   -jar "$HERE/build/game.jar"
 echo "[verify] 截图："; ls -l "$DRV_OUT" | tail -8

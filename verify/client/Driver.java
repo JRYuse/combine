@@ -39,7 +39,20 @@ public class Driver extends Mod{
             counter = nextIndex();
             Log.info("[drv] 截图目录 @（从序号 @ 开始）", Core.files.absolute(outDir).absolutePath(), counter);
             ml = Vars.mods.getMod("combine").main.getClass().getClassLoader();
-            if(mode.equals("coop")){
+            // -Ddrv.uiscale=200 → 模拟"小逻辑宽度"（PC 上 uiscale 调大/窗口小），用来复现排版问题
+            String us = System.getProperty("drv.uiscale");
+            if(us != null){
+                try{
+                    arc.scene.ui.layout.Scl.setProduct(Float.parseFloat(us) / 100f);
+                    Core.settings.put("uiscale", Integer.parseInt(us));
+                    Log.info("[drv] uiscale=@（逻辑宽度 ≈ @×@）", us, Core.graphics.getWidth(), Core.graphics.getHeight());
+                }catch(Throwable t){ Log.err("[drv] uiscale 设置失败", t); }
+            }
+            if(mode.equals("coolant")){
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupCoolantScene, 5f);
+                Timer.schedule(() -> { shot("coolant_selector"); Core.app.exit(); }, 11f);
+            }else if(mode.equals("coop")){
                 installFrameCounter();
                 Timer.schedule(Driver::hideDialogs, 3f);
                 Timer.schedule(Driver::setupWorld, 5f);
@@ -152,6 +165,15 @@ public class Driver extends Mod{
     static void showList(){
         try{
             ml = Vars.mods.getMod("combine").main.getClass().getClassLoader();
+            // -Ddrv.uiscale=200 → 模拟"小逻辑宽度"（PC 上 uiscale 调大/窗口小），用来复现排版问题
+            String us = System.getProperty("drv.uiscale");
+            if(us != null){
+                try{
+                    arc.scene.ui.layout.Scl.setProduct(Float.parseFloat(us) / 100f);
+                    Core.settings.put("uiscale", Integer.parseInt(us));
+                    Log.info("[drv] uiscale=@（逻辑宽度 ≈ @×@）", us, Core.graphics.getWidth(), Core.graphics.getHeight());
+                }catch(Throwable t){ Log.err("[drv] uiscale 设置失败", t); }
+            }
             if(Vars.ui.settings != null){ try{ Vars.ui.settings.hide(); }catch(Throwable ignored){} }
             Class<?> stCls = Class.forName("mindustry.ui.dialogs.SettingsMenuDialog$SettingsTable", true, Driver.class.getClassLoader());
             Object st = stCls.getConstructor().newInstance();
@@ -169,6 +191,45 @@ public class Driver extends Mod{
     }
 
     /** 加载一张图、放两台扩展建筑、灌点东西进池子，然后打开 CoopPanel。 */
+    /** 放一个炮台 + 一个装液体的伙伴 + 组合节点，然后把炮台的"配置面板"（冷却液选择）弹出来截图。 */
+    static void setupCoolantScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            Block turretB = null, makerB = null, nodeB = null;
+            for(Block b : Vars.content.blocks()){
+                if(turretB == null && b.getClass().getName().startsWith("combine.turret.CombinedItemTurret")
+                    && b instanceof mindustry.world.blocks.defense.turrets.ItemTurret it
+                    && it.ammoTypes != null && it.ammoTypes.containsKey(Items.copper)) turretB = b;
+                if(makerB == null && b.name.endsWith("liquid-maker")) makerB = b;
+                if(nodeB == null && b.getClass().getName().equals("combine.net.ComboNode")) nodeB = b;
+            }
+            if(turretB == null || makerB == null || nodeB == null){
+                Log.err("[drv] coolant 场景缺方块: @ @ @", turretB, makerB, nodeB);
+                return;
+            }
+            for(int y=40;y<120;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            Building maker = place(makerB, 60, 60);
+            Building turret = place(turretB, 74, 60);
+            maker.items.add(Items.copper, 200);
+            maker.liquids.add(Liquids.water, 300f);
+            maker.liquids.add(Liquids.cryofluid, 300f);
+            place(nodeB, 67, 60);
+            Core.camera.position.set(turret.x, turret.y);
+            // 把炮台的配置面板（冷却液选择）弹出来
+            arc.scene.ui.layout.Table t2 = new arc.scene.ui.layout.Table();
+            turret.getClass().getMethod("buildConfiguration", arc.scene.ui.layout.Table.class).invoke(turret, t2);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("冷却液选择（炮台配置面板）");
+            d.cont.add(t2).pad(10f);
+            d.show();
+            Log.info("[drv] 冷却液选择面板已弹出");
+        }catch(Throwable t){ Log.err("[drv] setupCoolantScene failed", t); }
+    }
+
     static void setupWorld(){
         try{
             // 先把设置界面收起来，不然它会一直盖在世界上面（截图就看不到 CoopPanel 了）
