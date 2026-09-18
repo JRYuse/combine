@@ -298,7 +298,10 @@ public class CombinedStorageBlock extends StorageBlock {
         // 那部分就被原版**真删掉** —— 用户报的"造新仓库导致物品消失"。
         // 容量本身照样反映"核心 + 连通仓库"，只是永远不因为一次拆除就吃掉已经存进去的东西。
         int currentTotal = core.items == null ? 0 : core.items.total();
-        core.storageCapacity = Math.max(capacity, currentTotal);
+        // 【不能压低原版自己算的容量】原版 CoreBuild.onProximityUpdate 会把"直接相邻的 StorageBlock"
+        // 也算进 storageCapacity —— 比如模组里 js 写的集装箱（更多实用设备的 cargo）就是靠这个给核心扩容的。
+        // 我们重算时如果把它的值覆盖掉，那些仓库的扩容能力就没了（用户报的）。
+        core.storageCapacity = Math.max(Math.max(capacity, currentTotal), core.storageCapacity);
         if (coreItems == null)
           coreItems = core.items;
       }
