@@ -61,7 +61,12 @@ public class CombinedItemTurret extends ItemTurret {
     // configurable 保持 true（原版 ItemTurret 本来就是 true，弹药选择就靠它）
     configurable = true;
     config(Item.class, (CombinedItemTurretBuild tile, Item it) -> tile.selected = it);
-    config(Liquid.class, (CombinedItemTurretBuild tile, Liquid l) -> tile.selectedCoolant = l);
+    // 冷却液选择：**整组一起改**（液池是全组共用的一份，只改一台会被其余"自动"抢回去）
+    config(Liquid.class, (CombinedItemTurretBuild tile, Liquid l) -> {
+      for (CombinedItemTurretBuild m : tile.group())
+        if (m != null)
+          m.selectedCoolant = l;
+    });
     configClear((CombinedItemTurretBuild tile) -> {
       tile.selected = null;
       tile.selectedCoolant = null;
@@ -73,7 +78,12 @@ public class CombinedItemTurret extends ItemTurret {
     configurable = true;
     config(Item.class, (CombinedItemTurretBuild tile, Item i) -> tile.selected = i);
     // 冷却液选择：和弹药选择一样走 config（联机同步）；null = 自动用池子里效果最好的
-    config(Liquid.class, (CombinedItemTurretBuild tile, Liquid l) -> tile.selectedCoolant = l);
+    // 冷却液选择：**整组一起改**（液池是全组共用的一份，只改一台会被其余"自动"抢回去）
+    config(Liquid.class, (CombinedItemTurretBuild tile, Liquid l) -> {
+      for (CombinedItemTurretBuild m : tile.group())
+        if (m != null)
+          m.selectedCoolant = l;
+    });
     configClear((CombinedItemTurretBuild tile) -> {
       tile.selected = null;
       tile.selectedCoolant = null;
@@ -683,8 +693,11 @@ public class CombinedItemTurret extends ItemTurret {
     public Liquid effectiveCoolant() {
       if (liquids == null)
         return null;
-      if (selectedCoolant != null && acceptsCoolant(selectedCoolant) && liquids.get(selectedCoolant) > 0.001f)
-        return selectedCoolant;
+      // 以队长为准（整组共用一个池子，选择也该整组一致）
+      CombinedItemTurretBuild lead0 = leader();
+      Liquid sel = lead0 != null ? lead0.selectedCoolant : selectedCoolant;
+      if (sel != null && acceptsCoolant(sel) && liquids.get(sel) > 0.001f)
+        return sel;
       Liquid best = null;
       for (Liquid l : presentCoolants())
         if (best == null || l.heatCapacity > best.heatCapacity)

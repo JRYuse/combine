@@ -82,8 +82,18 @@ public class CombinedTurret extends Turret {
     sync = true;
     // 冷却液选择（和组合物品炮塔同一套）：config 走联机同步；null = 自动用池里效果最好的
     configurable = true;
-    config(Liquid.class, (CombinedTurretBuild tile, Liquid l) -> tile.selectedCoolant = l);
-    configClear((CombinedTurretBuild tile) -> tile.selectedCoolant = null);
+    // 【整组一起改】液池是全组共用的一份；只改被点的那台的话，其余还是"自动"，
+    // 每帧互相把池子的 current 抢回去 —— 表现就是"选了没用、始终用冷冻液"（用户报的）。
+    config(Liquid.class, (CombinedTurretBuild tile, Liquid l) -> {
+      for (CombinedTurretBuild m : tile.group())
+        if (m != null)
+          m.selectedCoolant = l;
+    });
+    configClear((CombinedTurretBuild tile) -> {
+      for (CombinedTurretBuild m : tile.group())
+        if (m != null)
+          m.selectedCoolant = null;
+    });
     // conductivePower 在 init() 里设置（copyFields 会覆盖构造器赋值）
   }
 
@@ -94,8 +104,18 @@ public class CombinedTurret extends Turret {
     // 的 configurable 是 false，会把构造器里设的值覆盖掉 —— 于是 Call.tileConfig 直接忽略点击，
     // "选了冷却液没反应、也没有黄框"（用户报的）。init() 在 copyFields 之后跑，这里设才留得住。
     configurable = true;
-    config(Liquid.class, (CombinedTurretBuild tile, Liquid l) -> tile.selectedCoolant = l);
-    configClear((CombinedTurretBuild tile) -> tile.selectedCoolant = null);
+    // 【整组一起改】液池是全组共用的一份；只改被点的那台的话，其余还是"自动"，
+    // 每帧互相把池子的 current 抢回去 —— 表现就是"选了没用、始终用冷冻液"（用户报的）。
+    config(Liquid.class, (CombinedTurretBuild tile, Liquid l) -> {
+      for (CombinedTurretBuild m : tile.group())
+        if (m != null)
+          m.selectedCoolant = l;
+    });
+    configClear((CombinedTurretBuild tile) -> {
+      for (CombinedTurretBuild m : tile.group())
+        if (m != null)
+          m.selectedCoolant = null;
+    });
     // FIX[双init防护]: 内容加载器可能再次 init(), 防止把 9999 假容量记成基础容量
     if (!baseCapCaptured) {
       baseLiquidCapacity = liquidCapacity;
@@ -151,13 +171,13 @@ public class CombinedTurret extends Turret {
     // 替换原版 liquid 条（原版按 block.liquidCapacity=9999 算占比，永远是空的）
     addBar("liquid", (CombinedTurretBuild e) -> new Bar(
         () -> {
-          Liquid cur = e.firstLiquid();
+          Liquid cur = e.displayLiquidNow();
           return cur == null ? "[lightgray]液体[]"
               : cur.localizedName + " " + Strings.fixed(e.liquids.currentAmount(), 1)
                   + "/" + Strings.fixed(Math.max(e.comboTotalLiquidCap, 1f), 1);
         },
         () -> {
-          Liquid cur = e.firstLiquid();
+          Liquid cur = e.displayLiquidNow();
           return cur == null ? Pal.gray
               : (cur.barColor != null ? cur.barColor : cur.color);
         },
@@ -196,6 +216,12 @@ public class CombinedTurret extends Turret {
     }
 
     // ==================== 组合编组（共享液体池） ====================
+
+    /** 面板/绘制该显示的液体：选了就显示它，否则显示池里效果最好的，最后才退回"池里第一种"。 */
+    public Liquid displayLiquidNow() {
+      Liquid c = effectiveCoolant();
+      return c != null ? c : firstLiquid();
+    }
 
     /** 池内实际存在的第一种液体（空池返回 null，避免 current() 默认水的误导显示） */
     public Liquid firstLiquid() {
@@ -497,7 +523,7 @@ public class CombinedTurret extends Turret {
       float oldCap = block.liquidCapacity;
       Liquid oldDraw = dturret != null ? dturret.liquidDraw : null;
       if (dturret != null)
-        dturret.liquidDraw = firstLiquid();
+        dturret.liquidDraw = displayLiquidNow();
       block.liquidCapacity = Math.max(comboTotalLiquidCap, 1f);
       try {
         super.draw();
@@ -533,10 +559,17 @@ public class CombinedTurret extends Turret {
       return out;
     }
 
+    /** 选中的冷却液以**队长**为准（整组共用一个池子，选择也该整组一致）。 */
+    public Liquid groupCoolant() {
+      CombinedTurretBuild l = leader();
+      return (l != null ? l.selectedCoolant : null);
+    }
+
     /** 选了就用选的（没货自动回退）；没选就取池里 heatCapacity 最高的（=冷却倍率最高）。 */
     public Liquid effectiveCoolant() {
       if (liquids == null)
         return null;
+      Liquid selectedCoolant = groupCoolant();
       if (selectedCoolant != null && acceptsCoolant(selectedCoolant) && liquids.get(selectedCoolant) > 0.001f)
         return selectedCoolant;
       Liquid best = null;

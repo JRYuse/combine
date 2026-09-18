@@ -27,6 +27,7 @@ public class TurretCoolantTest implements ApplicationListener{
         if(bu != null){ try{ bu.created(); }catch(Throwable ignored){} try{ bu.updateProximity(); }catch(Throwable ignored){} }
         return bu; }
     static Liquid current(Building b){ return b.liquids == null ? null : b.liquids.current(); }
+    static String name(Liquid l){ return l == null ? "无" : l.name; }
     /** headless 下没有网络，直接走服务端收到配置包后调用的那个方法。 */
     static void configure(Building b, Object v){ b.configured(null, v); }
 
@@ -87,7 +88,11 @@ public class TurretCoolantTest implements ApplicationListener{
             for(int y=40;y<140;y++) for(int x=20;x<240;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
             run(5);
             Building store = place(cont, 60, 60, Team.sharded);
-            Building tower = place(turretB, 74, 60, Team.sharded);
+            // **一组多台**（用户是 15 台）：选择必须整组生效，否则各台互相抢池子的 current
+            int stride = Math.max(turretB.size, 1);   // 2x2 的炮塔要按 2 格间距摆才挨着
+            Building t1 = place(turretB, 74, 60, Team.sharded);
+            Building t2 = place(turretB, 74 + stride, 60, Team.sharded);
+            Building t3 = place(turretB, 74 + stride * 2, 60, Team.sharded);
             run(5);
             store.items.add(Items.copper, 300);
             store.liquids.add(Liquids.water, 400f);
@@ -95,31 +100,32 @@ public class TurretCoolantTest implements ApplicationListener{
             Building node = place(nodeBlock, 67, 60, Team.sharded);
             run(30);
             StringBuilder keys = new StringBuilder();
-            for(Class<?> k : tower.block.configurations.keys()) keys.append(k.getSimpleName()).append(' ');
-            System.out.println("[TC][" + label + "] 方块 configurable=" + tower.block.configurable + " 已注册的配置=" + keys);
+            for(Class<?> k : t1.block.configurations.keys()) keys.append(k.getSimpleName()).append(' ');
+            System.out.println("[TC][" + label + "] 3 台一组  configurable=" + t1.block.configurable + " 配置=" + keys);
 
-            System.out.println("[TC][" + label + "] 池里 水=" + Strings.fixed(store.liquids.get(Liquids.water), 1)
-                + " 冷冻液=" + Strings.fixed(store.liquids.get(Liquids.cryofluid), 1)
-                + " | 当前冷却液=" + (current(tower) == null ? "无" : current(tower).name));
-            check(label + "：方块 configurable=true（不然点选择会被 Call.tileConfig 直接忽略）", tower.block.configurable);
-            check(label + "：方块注册了 Liquid 配置（克隆后还在）", tower.block.configurations.containsKey(Liquid.class));
-            check(label + "：空选时自动用效果最好的冷却液（冷冻液）", current(tower) == Liquids.cryofluid);
+            check(label + "：方块 configurable=true（不然点选择会被 Call.tileConfig 直接忽略）", t1.block.configurable);
+            check(label + "：方块注册了 Liquid 配置（克隆后还在）", t1.block.configurations.containsKey(Liquid.class));
+            check(label + "：空选时自动用效果最好的冷却液（冷冻液）",
+                current(t1) == Liquids.cryofluid && current(t2) == Liquids.cryofluid && current(t3) == Liquids.cryofluid);
 
-            configure(tower, Liquids.water);
+            // 只在**第一台**上选水
+            configure(t1, Liquids.water);
             run(20);
-            System.out.println("[TC][" + label + "] 手动选水后: 选择=" + sel(tower) + " 当前=" + (current(tower) == null ? "无" : current(tower).name));
-            check(label + "：手动选中水后就用水", current(tower) == Liquids.water);
+            System.out.println("[TC][" + label + "] 只在第 1 台选水后: 三台分别=" + name(current(t1)) + "/" + name(current(t2)) + "/" + name(current(t3)));
+            check(label + "：在一台上选水，整组都用水（不再被其余台抢回去）",
+                current(t1) == Liquids.water && current(t2) == Liquids.water && current(t3) == Liquids.water);
 
             store.liquids.set(Liquids.water, 0f);
             run(20);
-            System.out.println("[TC][" + label + "] 水抽干后: 当前=" + (current(tower) == null ? "无" : current(tower).name));
-            check(label + "：选中的冷却液没货时自动回退", current(tower) == Liquids.cryofluid);
+            System.out.println("[TC][" + label + "] 水抽干后: 三台分别=" + name(current(t1)) + "/" + name(current(t2)) + "/" + name(current(t3)));
+            check(label + "：选中的冷却液没货时整组自动回退", current(t1) == Liquids.cryofluid && current(t3) == Liquids.cryofluid);
 
-            configure(tower, null);
+            // 只在第一台上点"取消"
+            configure(t1, null);
             store.liquids.set(Liquids.water, 400f);
             run(20);
-            System.out.println("[TC][" + label + "] 点回自动后: 当前=" + (current(tower) == null ? "无" : current(tower).name));
-            check(label + "：点回自动 → 又用效果最好的", current(tower) == Liquids.cryofluid);
+            System.out.println("[TC][" + label + "] 第 1 台点回自动后: 三台分别=" + name(current(t1)) + "/" + name(current(t2)) + "/" + name(current(t3)));
+            check(label + "：点回自动 → 整组又用效果最好的", current(t1) == Liquids.cryofluid && current(t2) == Liquids.cryofluid);
         }
 
         System.out.println("[TC] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
