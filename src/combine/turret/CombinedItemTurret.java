@@ -172,6 +172,13 @@ public class CombinedItemTurret extends ItemTurret {
         removeBar(barKey);
     }
 
+    // 原版那条「弹药」（stat.ammo）bar 的分母是**单台** maxAmmo，组合体十几台共享弹仓时
+    // 会显示成几百 %（截图里那个"装填 104%"就是这么来的）。换成按组总量做分母。
+    addBar("ammo-total", (CombinedItemTurretBuild e) -> new Bar(
+        "stat.ammo",
+        Pal.ammo,
+        () -> Math.min(e.totalAmmo / Math.max(e.perItemCap(), 1f), 1f)));
+
     // 原版可能注册 "liquid" 或 "liquid-water"，先删除，避免和自定义液体条重复。
     for (String barKey : barMap.keys().toSeq()) {
       if (barKey.startsWith("liquid"))
@@ -665,20 +672,24 @@ public class CombinedItemTurret extends ItemTurret {
     public void pullAmmoFromPool() {
       if (items == null || ammoTypes == null || ammoTypes.size == 0)
         return;
-      if (totalAmmo >= maxAmmo)
+      // 注意用 perItemCap()（= 组内各台 maxAmmo 之和）而不是 maxAmmo：
+      // maxAmmo 是原版**单台**的总弹仓上限，组合体十几台共享一个弹仓时
+      // 用它当上限就会出现"仓库里 100+ 铜、炮塔只进 39，而每种弹药上限写着 400+"（用户报的）。
+      if (totalAmmo >= perItemCap())
         return;
       try {
-        int moved = 0;
+        // 【每种弹药都要分到额度】以前是按 ammoTypes 的顺序"谁先能装就一路装到本轮上限"，
+        // 池子里铜一直有货，于是每 tick 的额度全被铜吃光，石墨/硅永远是 0 ——
+        // 表现就是"只能进一种弹药"（用户截图里铜 32/450、石墨 0/450、硅 0/450）。
+        // 现在把每 tick 的额度按弹药种类均分，几种弹药一起往里装。
+        int perType = Math.max(2, pullAmmoPerTick / Math.max(ammoTypes.size, 1));
         for (Item item : ammoTypes.keys()) {
-          if (moved >= pullAmmoPerTick)
-            break;
           if (items.get(item) <= 0)
             continue;
           int guard = 0;
-          while (moved < pullAmmoPerTick && items.get(item) > 0 && acceptItem(this, item) && guard++ < pullAmmoPerTick) {
+          while (guard++ < perType && items.get(item) > 0 && totalAmmo < perItemCap() && acceptItem(this, item)) {
             items.remove(item, 1);
             handleItem(this, item);
-            moved++;
           }
         }
       } catch (Throwable ignored) {

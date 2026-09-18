@@ -2,7 +2,7 @@ package combine.dbg;
 import arc.*; import arc.backend.headless.HeadlessApplication; import arc.util.Log;
 import mindustry.*; import mindustry.content.*; import mindustry.core.*; import mindustry.game.*; import mindustry.gen.*;
 import mindustry.maps.Map; import mindustry.mod.*; import mindustry.net.Net; import mindustry.ui.Fonts; import mindustry.world.*;
-import mindustry.world.blocks.defense.turrets.*;
+import mindustry.world.blocks.defense.turrets.*; import mindustry.type.Item;
 
 /**
  * 组合节点/连接器把**仓库和炮台**接在一起时：池子里的弹药要真的进炮塔。
@@ -82,24 +82,52 @@ public class TurretAmmoTest implements ApplicationListener{
 
         for(int y=40;y<140;y++) for(int x=20;x<240;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
         run(5);
+        // 用户场景：一个仓库 + **多台**炮塔（这里用 3 台，组总弹仓 = 3 × 单台上限）
         Building store = place(cont, 60, 60, Team.sharded);
-        Building tower = place(turret, 74, 60, Team.sharded);
+        Building t1 = place(turret, 74, 60, Team.sharded);
+        Building t2 = place(turret, 75, 60, Team.sharded);
+        Building t3 = place(turret, 76, 60, Team.sharded);
         run(5);
-        store.items.add(Items.copper, 200);
+        store.items.add(Items.copper, 300);
+        store.items.add(Items.graphite, 300);
+        store.items.add(Items.silicon, 300);
         Building node = place(nodeBlock, 67, 60, Team.sharded);
-        run(60);
+        run(400);
 
-        boolean samePool = store.items == tower.items;
+        boolean samePool = store.items == t1.items;
         int poolCopper = store.items.get(Items.copper);
-        int ammo = reflectInt(tower, "totalAmmo");
-        System.out.println("[TA] 接上后: 同池=" + samePool + " 池里铜=" + poolCopper + " 炮塔 totalAmmo=" + ammo);
-        check("仓库和炮塔接上后共用一个池（面板显示的就是这个池）", samePool && poolCopper > 0);
+        int ammo = reflectInt(t1, "totalAmmo");
+        int singleMax = t1.block instanceof ItemTurret it2 ? it2.maxAmmo : -1;
+        float groupCap = (Float) t1.getClass().getMethod("perItemCap").invoke(t1);
+        int aCopper = ammoOf(t1, Items.copper), aGraphite = ammoOf(t1, Items.graphite), aSilicon = ammoOf(t1, Items.silicon);
+        System.out.println("[TA] 接上后: 同池=" + samePool + " 池里铜=" + poolCopper
+            + " | 炮塔 铜=" + aCopper + " 石墨=" + aGraphite + " 硅=" + aSilicon
+            + " totalAmmo=" + ammo + " 单台上限=" + singleMax + " 组总上限=" + groupCap);
+        check("仓库和炮塔接上后共用一个池", samePool && poolCopper > 0);
         check("池子里的弹药会真的进炮塔（totalAmmo > 0）", ammo > 0);
-        check("进炮塔的弹药是从池子里扣掉的（不是凭空来的）", poolCopper < 200);
+        check("进炮塔的弹药是从池子里扣掉的", poolCopper < 300);
+        check("池子里每种弹药都能进炮塔（不是只进第一种）", aCopper > 0 && aGraphite > 0 && aSilicon > 0);
+        check("弹仓上限按组合体台数放大（能进得比单台上限 " + singleMax + " 多；实际 " + ammo + "）", ammo > singleMax);
+        check("每种弹药最多装到组总上限（" + (int) groupCap + "）", aCopper <= (int) groupCap && aGraphite <= (int) groupCap);
 
         System.out.println("[TA] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
         System.exit(fail==0?0:1);
       }catch(Throwable t){ t.printStackTrace(); System.exit(2); }
+    }
+
+    /** 读炮塔里某一种弹药的数量（CombinedItemTurretBuild.amountOf(Item)）。 */
+    static int ammoOf(Object o, Item item){
+        try{
+            Class<?> c = o.getClass();
+            while(c != null){
+                try{
+                    java.lang.reflect.Method m = c.getDeclaredMethod("amountOf", Item.class);
+                    m.setAccessible(true);
+                    return (Integer) m.invoke(o, item);
+                }catch(NoSuchMethodException ignored){ c = c.getSuperclass(); }
+            }
+        }catch(Throwable ignored){}
+        return -1;
     }
 
     static int reflectInt(Object o, String name){
