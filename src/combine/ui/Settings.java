@@ -25,8 +25,8 @@ public class Settings {
             table.pref(new SettingsMenuDialog.SettingsTable.Setting(openList) {
                 @Override
                 public void add(SettingsMenuDialog.SettingsTable table) {
-                    table.button("组合工厂控制", Icon.list, () -> {
-                        BaseDialog dialog = new BaseDialog("组合工厂控制");
+                    table.button("组合建筑管理", Icon.list, () -> {
+                        BaseDialog dialog = new BaseDialog("组合建筑管理");
                         dialog.addCloseButton();
                         SettingsMenuDialog.SettingsTable content = new SettingsMenuDialog.SettingsTable();
                         ComboBlockList.build(content);
