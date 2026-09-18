@@ -26,32 +26,42 @@ import combine.turret.CombinedItemTurret;
 import combine.turret.CombinedLiquidTurret;
 import combine.turret.CombinedTurret;
 import combine.ui.Settings;
+import combine.units.CombinedLandingPad;
 import combine.units.CombinedLaunchPad;
 import combine.units.CombinedReconstructor;
 import combine.units.CombinedUnitFactory;
 import combine.util.ComboReflect;
 import arc.Events;
 import arc.files.Fi;
+import arc.struct.ObjectMap;
 import arc.struct.Seq;
+import arc.struct.StringMap;
 import arc.util.Log;
 import arc.util.serialization.JsonReader;
 import arc.util.serialization.JsonValue;
+import java.util.IdentityHashMap;
 import mindustry.Vars;
 import mindustry.content.Items;
+import mindustry.content.TechTree;
 import mindustry.content.UnitTypes;
 import mindustry.content.TechTree.TechNode;
 import mindustry.ctype.Content;
 import mindustry.ctype.ContentType;
+import mindustry.ctype.UnlockableContent;
 import mindustry.game.EventType.BlockBuildBeginEvent;
 import mindustry.game.EventType.ClientLoadEvent;
+import mindustry.game.EventType.SaveLoadEvent;
 import mindustry.game.EventType.WorldLoadEvent;
 import mindustry.gen.Groups;
 import mindustry.game.EventType.TileChangeEvent;
+import mindustry.game.Schematic;
 import mindustry.mod.Mod;
 import mindustry.mod.Mods.LoadedMod;
+import mindustry.type.ItemStack;
 import mindustry.type.UnitType;
 import mindustry.type.Weapon;
 import mindustry.world.Block;
+import mindustry.world.Tile;
 import mindustry.world.blocks.ConstructBlock;
 import mindustry.world.blocks.campaign.LaunchPad;
 import mindustry.world.blocks.defense.ForceProjector;
@@ -171,6 +181,15 @@ public class Main extends Mod {
     // 设置里的"建筑组合开关"界面（客户端才有 UI，服务端自动跳过）
 //    combine.ui.ComboBlockList.register();
 //    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
+    combine.ui.ComboBlockList.register();
+    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
+    // 客户端在这之后才把蓝图库从磁盘读进来（assets.load(schematics)），再兜一次键；
+    // 顺带把内置发射蓝图里的核心实例再对齐一遍（幂等）。
+    Events.on(ClientLoadEvent.class, e -> {
+      Replacer.remapBuiltinLoadouts();
+      Replacer.remapLoadoutKeys();
+      Replacer.remapSectorInfos();
+    });
 
     // 组合仓库并仓（机制本体在 CombinedStorageBlock 里）：没连核心时像其它组合建筑一样
     // 共用物品模块（容量相加），连到核心时整块并进核心给核心扩容（任意深度链式）
@@ -274,7 +293,6 @@ public class Main extends Mod {
     Groups.unit.each(un -> un.type == unit, un -> un.setupWeapons(unit));
   }
 
-
   /**
    * 【建造武器 · 方法二】决定加载时机：客户端在 ClientLoadEvent、
    * 服务端在 ServerLoadEvent 各挂一次 —— 联机时服务端也在模拟单位，
@@ -327,6 +345,11 @@ public class Main extends Mod {
       BlockCloner.logFallbackSummary();
       // 协作组合：抓取"放大前"的基础容量（必须在任何世界加载之前）
       CoopCombo.captureBaseCaps();
+      // 蓝图库缓存兜底：有东西在装配前就 schematics.load() 过的话，键还停在旧核心实例上
+      // （发射界面查不到内置蓝图 → getLoadouts().get(核心).first() 崩）
+      Replacer.remapLoadoutKeys();
+      // 发射界面拿的是 from.info.bestCoreType（Planet.load() 阶段按名字反查出来的旧核心实例）
+      Replacer.remapSectorInfos();
     } catch (Throwable t) {
       Log.err("[combine] content setup failed", t);
     }
@@ -459,6 +482,9 @@ public class Main extends Mod {
           || isExact(b, ImpactReactor.class)
           || isExact(b, NuclearReactor.class) || isExact(b, HeaterGenerator.class);
       boolean isLaunchPad = isExact(b, LaunchPad.class);
+      // 接收台（campaign LandingPad）：组合类 CombinedLandingPad 一直写好了但**从没接进来**，
+      // 于是"接收台"从来没被组合过（用户报的"CombinedLandingPad 的组合怎么没了"）。
+      boolean isLandingPad = isExact(b, mindustry.world.blocks.campaign.LandingPad.class);
       boolean isRegen = isExact(b, RegenProjector.class);
       boolean isOverdrive = isExact(b, OverdriveProjector.class);
       boolean isMend = isExact(b, MendProjector.class);
@@ -475,6 +501,10 @@ public class Main extends Mod {
       }
 
       boolean isStorage = isExact(b, StorageBlock.class);
+      // 核心：原版 CoreBuild.onProximityUpdate 会按"自己算的容量"把超出部分**真删掉**，
+      // 而组合仓库链/节点扩出来的容量它不认 —— 一重算就吞玩家的货（用户报的）。
+      // 按用户要求"源码做不到就替换原版核心"，这里换成组合核心（只在截断处兜住）。
+      boolean isCore = isExact(b, CoreBlock.class);
       // 可选：接上之前一直闲置的 CombinedPump / CombinedWallCrafter
       boolean isLogic = isExact(b, LogicBlock.class);
       boolean isContLiquidTurret = isExact(b, ContinuousLiquidTurret.class);
@@ -491,8 +521,8 @@ public class Main extends Mod {
       boolean isReconstructor = isExact(b, Reconstructor.class);
 
       if (!isFactory && !isHeatCrafter && !isHeatProducer && !isSeparator && !isAttribute
-          && !isDrill && !isGenerator && !isLaunchPad
-          && !isRegen && !isOverdrive && !isMend && !isForce && !isStorage
+          && !isDrill && !isGenerator && !isLaunchPad && !isLandingPad
+          && !isRegen && !isOverdrive && !isMend && !isForce && !isStorage && !isCore
           && !isLogic && !isContLiquidTurret && !isLiquidTurret && !isItemTurret
           && !isPowerTurret && !isLaserTurret
           && !isPump && !isSolidPump && !isFracker && !isWallCrafter
@@ -501,7 +531,8 @@ public class Main extends Mod {
 
       // 防止重复处理已转换类型
       if (b instanceof CombinedCrafter || b instanceof CombinedDrill
-          || b instanceof CombinedGenerator || b instanceof CombinedLaunchPad
+          || b instanceof CombinedGenerator || b instanceof CombinedLaunchPad || b instanceof CombinedLandingPad
+          || b instanceof combine.storage.CombinedCoreBlock
           || b instanceof CombinedRegenProjector || b instanceof CombinedOverdriveProjector
           || b instanceof CombinedMendProjector || b instanceof CombinedForceProjector
           || b instanceof CombinedStorageBlock || b instanceof CombinedLogicProcessor
@@ -575,12 +606,16 @@ public class Main extends Mod {
         combo = cg;
       } else if (isLaunchPad) {
         combo = createCombo(b, CombinedLaunchPad.class);
+      } else if (isLandingPad) {
+        combo = createCombo(b, CombinedLandingPad.class);
       } else if (isRegen) {
         combo = createCombo(b, CombinedRegenProjector.class);
       } else if (isOverdrive) {
         combo = createCombo(b, CombinedOverdriveProjector.class);
       } else if (isMend) {
         combo = createCombo(b, CombinedMendProjector.class);
+      } else if (isCore) {
+        combo = createCombo(b, combine.storage.CombinedCoreBlock.class);
       } else if (isStorage) {
         combo = createCombo(b, CombinedStorageBlock.class);
       } else if (isLogic) {

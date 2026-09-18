@@ -133,14 +133,24 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
      * 混合输入时颜色/弹药指向会被顶掉。
      */
     public Liquid effectiveLiquid() {
-      if (selected != null && liquids.get(selected) > 0.001f)
+      if (liquids == null)
+        return null;
+      if (selected != null && ammoTypes.containsKey(selected) && liquids.get(selected) > 0.001f)
         return selected;
-      if (lastInput != null && liquids.get(lastInput) > 0.001f)
+      if (lastInput != null && ammoTypes.containsKey(lastInput) && liquids.get(lastInput) > 0.001f)
         return lastInput;
-      // 不能回退 current()：扣减会把 current 设在刚打光的液体上（0 量），
-      // 必须回退到池内第一种有量的液体，保证贴图颜色和弹药始终指向真实存在的液体
+      // 【只能在"能当弹药"的液体里挑】组合体的池子里常常混着非弹药液体（水、废液…）。
+      // 以前兜底用 firstLiquid()（池里 id 最小的那种），一旦挑到水，
+      // peekAmmo() 就变成 null —— 臭氧/氰气再满也判定成"没弹药"、不开火（用户报的）。
+      for (Liquid l : ammoTypes.keys())
+        if (liquids.get(l) > 0.001f)
+          return l;
+      // 一点弹药都没有：这时才退回 current()/池内第一种（只为显示颜色，不代表能开火）
+      Liquid cur = liquids.current();
+      if (cur != null && ammoTypes.containsKey(cur) && liquids.get(cur) > 0.001f)
+        return cur;
       Liquid first = firstLiquid();
-      return first != null ? first : liquids.current();
+      return first != null && ammoTypes.containsKey(first) ? first : null;
     }
 
 
@@ -501,7 +511,8 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
       super.updateTile();
       // 原版这里用 liquids.currentAmount()（全池总量）判断，组合池混有两种液体时会
       // 出现"总量够但当前液体已空"的卡壳；改为按 effectiveLiquid 的实际余量判断
-      float amt = liquids.get(effectiveLiquid());
+      Liquid ammoLiq = effectiveLiquid();
+      float amt = (liquids == null || ammoLiq == null) ? 0f : liquids.get(ammoLiq);
       if (amt >= liquidConsumed * 4f) {
         activated = true;
       } else if (amt < liquidConsumed) {
@@ -512,7 +523,7 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
       // 每帧把池子 current 对齐为实际发射液体，保证贴图颜色与弹药指向一致
       if (liquids != null && fLiquidCurrent != null) {
         Liquid eff = effectiveLiquid();
-        if (liquids.current() != eff) {
+        if (eff != null && liquids.current() != eff) {
           try {
             fLiquidCurrent.set(liquids, eff);
           } catch (Exception ignored) {
@@ -525,7 +536,11 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
 
     @Override
     public BulletType peekAmmo() {
-      return ammoTypes.get(effectiveLiquid());
+      // 【必须 null 安全】原版 TurretBuild.range() 会直接调 peekAmmo()，而 ObjectMap.get(null)
+      // 会抛 "key cannot be null"（池里没有可用弹药液体时就是这种情况）；
+      // 池里混了非弹药液体（水之类）时也不能把非弹药液体塞进 get()。
+      Liquid l = effectiveLiquid();
+      return l == null ? null : ammoTypes.get(l);
     }
 
     

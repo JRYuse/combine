@@ -52,6 +52,20 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::hideDialogs, 3f);
                 Timer.schedule(Driver::setupCoolantScene, 5f);
                 Timer.schedule(() -> { shot("coolant_selector"); Core.app.exit(); }, 11f);
+            }else if(mode.equals("launch")){
+                // 发射界面（LaunchLoadoutDialog）：核心被换成组合实例后，
+                // universe.getLoadout(组合核心) 必须还能查到内置发射蓝图，否则 .first() 直接崩。
+                // 软渲染很慢（1~5fps）：地图加载 + 建世界是几十秒级的真实耗时，
+                // 按"固定秒数截图"会截到还没弹出的画面，所以按状态等（launchShown）。
+                Timer.schedule(Driver::hideDialogs, 2f);
+                Timer.schedule(Driver::setupLaunchScene, 3f);
+                Timer.schedule(() -> {
+                    if(!launchShown) return;
+                    shot("launch_dialog");
+                    Log.info("[drv] launch 模式结束（发射界面已截图）");
+                    Core.app.exit();
+                }, 10f, 1f);
+                Timer.schedule(() -> { Log.info("[drv] launch 模式超时退出"); Core.app.exit(); }, 150f);
             }else if(mode.equals("coop")){
                 installFrameCounter();
                 Timer.schedule(Driver::hideDialogs, 3f);
@@ -228,6 +242,43 @@ public class Driver extends Mod{
             d.show();
             Log.info("[drv] 冷却液选择面板已弹出");
         }catch(Throwable t){ Log.err("[drv] setupCoolantScene failed", t); }
+    }
+
+    /** 载入一张有核心的图，然后真的把原版发射界面弹出来（看它会不会崩 / 内置蓝图在不在）。 */
+    static boolean launchShown;
+
+    static void setupLaunchScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            for(int y=40;y<120;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+
+            mindustry.world.blocks.storage.CoreBlock coreB = null;
+            for(Block b : Vars.content.blocks()) if(b.name.equals("core-shard") && b instanceof mindustry.world.blocks.storage.CoreBlock cb) coreB = cb;
+            if(coreB == null){ Log.err("[drv] 没找到 core-shard"); return; }
+            Log.info("[drv] core-shard 实例=@（组合类=@）", coreB.getClass().getName(),
+                coreB.getClass().getName().startsWith("combine."));
+            Building core = place(coreB, 60, 60);
+            Core.camera.position.set(core.x, core.y);
+
+            var sectors = Planets.serpulo.sectors;
+            if(sectors.isEmpty()){ Log.err("[drv] serpulo 没有 sector，没法开发射界面"); return; }
+            Sector dest = sectors.get(Math.min(3, sectors.size - 1));
+            Vars.state.rules.sector = dest;
+
+            Log.info("[drv] getLoadout(核心)=@ getLoadouts().get(核心)=@",
+                Vars.universe.getLoadout(coreB),
+                Vars.schematics.getLoadouts().get(coreB));
+
+            // 真·发射界面（和玩家点"发射"是同一条代码路径）
+            new mindustry.ui.dialogs.LaunchLoadoutDialog().show(coreB, dest, dest, () -> {});
+            launchShown = true;
+            Log.info("[drv] 发射界面已弹出（没崩）");
+        }catch(Throwable t){ Log.err("[drv] setupLaunchScene failed", t); }
     }
 
     static void setupWorld(){

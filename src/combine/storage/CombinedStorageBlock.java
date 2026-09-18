@@ -71,7 +71,13 @@ public class CombinedStorageBlock extends StorageBlock {
       dedupeOnce = true;
       dirty = true;
     });
-    Events.on(EventType.WorldLoadEvent.class, e -> rescan());
+    Events.on(EventType.WorldLoadEvent.class, e -> {
+      rescan();
+      // 【立刻算一次】原版核心在自己的 updateTile 里会按 storageCapacity 清掉超出部分；
+      // 要是等下一帧的 dirty 重算，核心已经按"自身容量"清过了 —— 物品就真没了。
+      dedupeOnce = true;
+      update();
+    });
     // 放置/拆除/替换方块都会触发；这里只置位，真正重算留到之后
     Events.on(EventType.TileChangeEvent.class, e -> dirty = true);
     Events.on(EventType.BlockBuildEndEvent.class, e -> dirty = true);
@@ -103,8 +109,17 @@ public class CombinedStorageBlock extends StorageBlock {
     // 读档完成后的第一次重算带着"去重"语义；只有真正算完才清掉这个标记
     boolean dedupe = dedupeOnce;
     dedupeOnce = false;
+    sawStorage = false;
     rebuildAll(dedupe);
+    // 【别让空转的一轮把去重语义吃掉】读档时可能先来一轮"仓库还没登记/还没接上核心"的重算，
+    // 那轮什么都没处理却把 dedupeOnce 用掉了；下一轮真正合并时按"相加"处理，
+    // 每台仓库手里的核心库存副本就被当成真货加进去 —— 物品补满（用户报的）。
+    if (dedupe && !sawStorage)
+      dedupeOnce = true;
   }
+
+  /** 这一轮重算里到底处理到仓库没有（用来判断读档去重语义有没有被空转消耗掉）。 */
+  private static boolean sawStorage = false;
 
   /** 刷新所有队伍的"仓库↔核心"连通关系、容量与并仓。 */
   public static void rebuildAll() {
@@ -177,6 +192,8 @@ public class CombinedStorageBlock extends StorageBlock {
       if (ComboReflect.inWorld(sb) && sb.team == data.team)
         storages.add(sb);
     }
+    if (storages.size > 0)
+      sawStorage = true;
 
     ObjectSet<CombinedStorageBuild> visited = new ObjectSet<>();
     Seq<Seq<CombinedStorageBuild>> comps = new Seq<>();
@@ -276,19 +293,23 @@ public class CombinedStorageBlock extends StorageBlock {
     ItemModule coreItems = null;
     for (CoreBuild core : cores) {
       if (core != null && core.isValid()) {
-        core.storageCapacity = capacity;
+        // 【容量不低于"现在装着多少"】原版核心在自己的 updateTile 里按 storageCapacity 清掉超出部分。
+        // 组合仓库一拆/一改，容量只要有一轮算小（读档中途、刚放置那几帧），
+        // 那部分就被原版**真删掉** —— 用户报的"造新仓库导致物品消失"。
+        // 容量本身照样反映"核心 + 连通仓库"，只是永远不因为一次拆除就吃掉已经存进去的东西。
+        int currentTotal = core.items == null ? 0 : core.items.total();
+        // 【不能压低原版自己算的容量】原版 CoreBuild.onProximityUpdate 会把"直接相邻的 StorageBlock"
+        // 也算进 storageCapacity —— 比如模组里 js 写的集装箱（更多实用设备的 cargo）就是靠这个给核心扩容的。
+        // 我们重算时如果把它的值覆盖掉，那些仓库的扩容能力就没了（用户报的）。
+        core.storageCapacity = Math.max(Math.max(capacity, currentTotal), core.storageCapacity);
         if (coreItems == null)
           coreItems = core.items;
       }
     }
-    if (coreItems != null) {
-      int beforeTotal = coreItems.total();
-      for (Item item : content.items()) {
-        coreItems.set(item, Math.min(coreItems.get(item), capacity));
-      }
-      if (debug && beforeTotal != coreItems.total())
-        Log.info("[combine] 容量截断: 核心总量 @ -> @（容量 @）", beforeTotal, coreItems.total(), capacity);
-    }
+    // 【不截断核心存量】旧实现把核心物品按 capacity 削一遍。可容量是这一轮现算的，
+    // 只要某轮少算（读档中途、刚放置那几帧、仓库瞬时没接上核心），存量就被真删掉
+    // （用户存档：造一个容器后每种物品从 22200 掉到 12000）。容量仍然限制"新物品进入"，
+    // 存量超了就让它超着（和原版拆掉容器后的核心一致）。
   }
 
   /** 这个分量里有没有成员紧挨着本队的核心（有就整块并进核心）。 */
@@ -350,8 +371,9 @@ public class CombinedStorageBlock extends StorageBlock {
 
     for (CombinedStorageBuild s : comp) {
       if (s.items != null && s.items != pool) {
-        boolean duplicate = dedupe && sameItems(s.items, pool);
-        if (!duplicate)
+        if (dedupe)
+          mergeCopyMax(pool, s.items);
+        else
           moveItems(s.items, pool);
       }
     }
@@ -362,7 +384,9 @@ public class CombinedStorageBlock extends StorageBlock {
       // 面板上的"x N"就是本组仓库台数；网络里接过来的工厂之类由 extraNetworkText 单独报名字
       s.comboGroupSize = comp.size;
     }
-    clamp(pool, groupCap);
+    // 【不截断】以前这里按"本组容量"截断，仓库组刚从核心脱离（比如拆/重建贴着核心的那台）
+    // 时，池子里原本属于核心的几千物品会被按"两个容器 600"直接删掉 —— 数据丢失。
+    // 容量照样会挡住新物品进入（comboStorageCap / acceptItem），没必要删存量。
   }
 
   /** 同一个模块被多个"独立组合仓库组"共用（刚被拆开）时，按各组容量比例拆分。 */
@@ -414,7 +438,7 @@ public class CombinedStorageBlock extends StorageBlock {
       for (int i = 0; i < n; i++) {
         for (CombinedStorageBuild s : users.get(i))
           s.items = shares[i];
-        clamp(shares[i], caps[i]);
+        // 不按各自容量截断：拆分只是"把原来那一份分给几个组"，总量必须守恒
       }
     }
   }
@@ -424,6 +448,17 @@ public class CombinedStorageBlock extends StorageBlock {
       return;
     for (Item item : content.items()) {
       module.set(item, Math.min(module.get(item), capacity));
+    }
+  }
+
+  /** 读档合并副本：逐物品取较大值（不叠加），用于"同一份池子的多份副本"。 */
+  private static void mergeCopyMax(ItemModule into, ItemModule copy) {
+    if (into == null || copy == null || into == copy)
+      return;
+    for (Item item : content.items()) {
+      int v = copy.get(item);
+      if (v > into.get(item))
+        into.set(item, v);
     }
   }
 
@@ -497,11 +532,15 @@ public class CombinedStorageBlock extends StorageBlock {
         Log.info("[combine] 并入核心: 仓库=@ 核心=@ 同模块=@ 去重=@",
             items == null ? -1 : items.total(), core.items == null ? -1 : core.items.total(), items == core.items, dedupe);
       if (items != core.items) {
-        // 仓库里本来有自己的一份库存 → 真正并入；
-        // 但读档那一轮，每个链接仓库都写了一份核心库存的副本，内容相同就是副本，丢弃而不是相加。
-        boolean duplicate = dedupe && sameItems(items, core.items);
-        if (!duplicate)
+        if (dedupe) {
+          // 读档那一轮：仓库手里是"核心池的副本"。不能相加（会翻倍），
+          // 也不能简单丢弃 —— 原版核心会在自己的 tick 里按"核心自身容量"清掉超出部分，
+          // 于是核心那份可能已经被削小（用户存档：核心 12000/种、仓库副本 22200/种），
+          // 丢掉副本就把玩家真正的库存丢了。这里逐物品取**较大值**：副本不叠加、被削过的也不吃亏。
+          mergeCopyMax(core.items, items);
+        } else {
           moveItems(items, core.items);
+        }
       }
       items = core.items;
       linkedCore = core;

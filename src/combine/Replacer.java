@@ -125,6 +125,14 @@ public class Replacer {
         }
       }
     }
+
+    // 6.5) 原版内置发射蓝图（Loadouts.basicShard 等）里的核心实例也要换。
+    //   它们的 tiles 是 ContentLoader.createBaseContent() 阶段按"当时的核心"读出来的（替换之前），
+    //   Schematics.load() 把内置蓝图登记进 schematics.loadouts 时用的键就是这个旧实例。
+    //   于是 universe.getLoadout(组合核心) 查不到（返回 null），发射界面里紧接着那行
+    //   schematics.getLoadouts().get((CoreBlock)Blocks.coreShard).first() 直接崩
+    //   ——用户报的"发射核心时崩溃 / Seq.first() on a null object reference"。
+    remapBuiltinLoadouts();
  
 
     // 7) 逻辑全局常量 @<name>：GlobalVars.init() 在 content 加载阶段固化的是旧实例，
@@ -183,6 +191,39 @@ public class Replacer {
     remap(Vars.state.rules.revealedBlocks);
   }
 
+  /**
+   * 各星球 sector 的 {@code SectorInfo.bestCoreType} 换成组合实例。
+   *
+   * {@code Planet.load()} 会在内容装配阶段（组合替换之前）对每个 sector 调
+   * {@code loadInfo()} 按名字反查方块，于是 {@code bestCoreType} 全部停在被替换掉的原版核心上。
+   * 发射时 {@code PlanetDialog.playSelected()} 正是拿它当作核心传给发射界面
+   * （{@code loadouts.show(from.info.bestCoreType, ...)}），而蓝图库的键是组合核心 →
+   * {@code universe.getLoadout(旧实例)} 查不到任何蓝图 → 返回 null → 发射界面里紧接着的
+   * {@code schematics.getLoadouts().get(Blocks.coreShard).first()} 崩
+   * （用户报的"发射核心时崩溃"，栈：PlanetDialog.playSelected → LaunchLoadoutDialog.show）。
+   * 即使不崩，查不到蓝图也会把玩家自己存的发射蓝图丢掉、退回内置 basicShard。
+   */
+  public static void remapSectorInfos() {
+    if (replaced.isEmpty() || Vars.content == null)
+      return;
+    try {
+      for (mindustry.type.Planet planet : Vars.content.planets()) {
+        if (planet.sectors == null)
+          continue;
+        for (mindustry.type.Sector sector : planet.sectors) {
+          mindustry.game.SectorInfo info = sector.info;
+          if (info == null || info.bestCoreType == null)
+            continue;
+          Block combo = replaced.get(info.bestCoreType);
+          if (combo != null)
+            info.bestCoreType = combo;
+        }
+      }
+    } catch (Throwable t) {
+      Log.warn("[Replacer] sector info remap failed: @", t.getMessage());
+    }
+  }
+
   /** 集合里凡是"被替换掉的原实例"都换成组合实例；其余（含组合实例本身）原样保留。 */
   private static <T extends mindustry.ctype.UnlockableContent> void remap(
       arc.struct.ObjectSet<T> set) {
@@ -204,6 +245,93 @@ public class Replacer {
         continue;
       set.remove((T) b);
       set.add((T) combo);
+    }
+  }
+
+  /**
+   * 原版内置发射蓝图（{@code Loadouts.basicShard/basicFoundation/basicNucleus/basicBastion}）
+   * 里的方块换成组合实例。
+   *
+   * 这些内置蓝图是 {@code ContentLoader.createBaseContent()} 里 {@code Loadouts.load()}
+   * 按当时的 {@code Blocks.coreShard} 等读出来的，tiles 里存的是**替换前**的核心实例；
+   * 之后 {@code Schematics.load()} 会调 {@code loadLoadouts()} 把它们登记进
+   * {@code schematics.loadouts}/{@code defaultLoadouts}，键就是那个旧实例。
+   * 组合工厂换掉了 {@code Blocks.coreShard}，于是 {@code universe.getLoadout(组合核心)}
+   * 查不到任何蓝图 → 返回 null，发射界面（{@code LaunchLoadoutDialog.show}）里紧接着执行的
+   * {@code schematics.getLoadouts().get((CoreBlock)Blocks.coreShard).first()} 就崩了
+   * ——用户报的"发射核心时崩溃 / Seq.first() on a null object reference"。
+   */
+  public static void remapBuiltinLoadouts() {
+    try {
+      Seq<mindustry.game.Schematic> builtins = new Seq<>();
+      builtins.add(mindustry.content.Loadouts.basicShard);
+      builtins.add(mindustry.content.Loadouts.basicFoundation);
+      builtins.add(mindustry.content.Loadouts.basicNucleus);
+      builtins.add(mindustry.content.Loadouts.basicBastion);
+      for (mindustry.game.Schematic s : builtins) {
+        if (s == null || s.tiles == null)
+          continue;
+        for (mindustry.game.Schematic.Stile st : s.tiles) {
+          Block combo = replaced.get(st.block);
+          if (combo != null)
+            st.block = combo;
+        }
+      }
+    } catch (Throwable t) {
+      Log.warn("[Replacer] builtin loadout remap failed: @", t.getMessage());
+    }
+  }
+
+  /**
+   * 蓝图库（{@code Schematics}）里**已经登记过**的键换成组合实例。
+   *
+   * 正常顺序（{@code ClientLauncher} 先装配内容、后 {@code assets.load(schematics)}）下，
+   * {@link #remapBuiltinLoadouts()} 已经让键从一开始就是组合实例，这里只是兜底：
+   * 万一有模组/工具在装配前就 {@code schematics.load()} 过，键会停在旧实例上，
+   * 之后查组合核心依然会 miss（发射界面崩溃、蓝图面板列不出内置蓝图）。
+   */
+  public static void remapLoadoutKeys() {
+    if (Vars.schematics == null || replaced.isEmpty())
+      return;
+    try {
+      java.lang.reflect.Field lf = mindustry.game.Schematics.class.getDeclaredField("loadouts");
+      lf.setAccessible(true);
+      java.lang.reflect.Field df =
+          mindustry.game.Schematics.class.getDeclaredField("defaultLoadouts");
+      df.setAccessible(true);
+      ObjectMap<mindustry.world.blocks.storage.CoreBlock, Seq<mindustry.game.Schematic>> loadouts =
+          (ObjectMap<mindustry.world.blocks.storage.CoreBlock, Seq<mindustry.game.Schematic>>) lf
+              .get(Vars.schematics);
+      ObjectMap<mindustry.world.blocks.storage.CoreBlock, mindustry.game.Schematic> defaults =
+          (ObjectMap<mindustry.world.blocks.storage.CoreBlock, mindustry.game.Schematic>) df
+              .get(Vars.schematics);
+      if (loadouts == null || defaults == null)
+        return;
+
+      Seq<mindustry.world.blocks.storage.CoreBlock> stale = new Seq<>();
+      for (var e : loadouts) {
+        Block combo = replaced.get(e.key);
+        if (combo instanceof mindustry.world.blocks.storage.CoreBlock ck && ck != e.key)
+          stale.add(e.key);
+      }
+      for (mindustry.world.blocks.storage.CoreBlock old : stale) {
+        mindustry.world.blocks.storage.CoreBlock swapped =
+            (mindustry.world.blocks.storage.CoreBlock) replaced.get(old);
+        Seq<mindustry.game.Schematic> list = loadouts.remove(old);
+        if (list == null)
+          continue;
+        Seq<mindustry.game.Schematic> exist = loadouts.get(swapped);
+        if (exist != null) {
+          exist.addAll(list);
+        } else {
+          loadouts.put(swapped, list);
+        }
+        mindustry.game.Schematic def = defaults.remove(old);
+        if (def != null && !defaults.containsKey(swapped))
+          defaults.put(swapped, def);
+      }
+    } catch (Throwable t) {
+      Log.warn("[Replacer] loadout key remap failed: @", t.getMessage());
     }
   }
 }

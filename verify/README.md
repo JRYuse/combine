@@ -105,6 +105,8 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 | `combine.dbg.TurretAmmoTest` | 任意（有炮塔+容器） | 仓库↔炮塔：每种弹药都进、弹仓按台数放大、从池里扣 |
 | `combine.dbg.TurretCoolantTest` | `liquid-maker`（java 测试模组） | 冷却液选择：空选自动取效果最好的、手选生效、没货回退 |
 | `combine.dbg.SaveRoundTripTest` | 任意 | 核心+容器 存读档物品不翻倍 |
+| `combine.dbg.ModStorageCoreTest` | 需要"别的模组写的仓库"（`verify/make-modstorage-fixture.sh` 造一个） | 模组仓库挨着核心照样扩容、且不被组合压掉 |
+| `combine.dbg.CoreCapacityTest` | 任意 | 造/拆容器不丢不涨、存读档一分不差、仓库链读档不涨 |
 | `combine.dbg.UnitBarTest` | 任意 | 组合单位工厂/升级厂有原版那些 bar（含单位数量/上限） |
 
 ## 复现排版问题
