@@ -19,7 +19,8 @@ import static mindustry.Vars.content;
  * 扩出来的那部分容量原版根本不认 —— 只要核心附近放/拆一个方块触发一次重算，
  * 玩家的存货就会按"核心自身容量"被削掉一大截（用户报的"造新组合仓库时物品消失"）。
  *
- * 这里在调用 super 前后把数量记下来、被削掉的补回去，并把容量抬到至少装得下现有存量；
+ * 这里在调用 super 前后把数量记下来、被削掉的补回去，并把容量抬到至少装得下现有存量
+ * （注意：容量是**每种物品各自**的上限，抬到"单项最大值"即可，不能拿所有物品总和当容量）；
  * 容量本身仍然由 {@link CombinedStorageBlock} 按"核心 + 连通仓库"重算。
  */
 public class CombinedCoreBlock extends CoreBlock {
@@ -53,9 +54,10 @@ public class CombinedCoreBlock extends CoreBlock {
                     restored = true;
                 }
             }
-            if (restored || items.total() > storageCapacity) {
+            int maxStack = CombinedStorageBlock.maxStack(items);
+            if (restored || maxStack > storageCapacity) {
                 // 容量抬到至少装得下现有存量，免得下一帧又被削
-                storageCapacity = Math.max(storageCapacity, items.total());
+                storageCapacity = Math.max(storageCapacity, maxStack);
             }
         }
     }

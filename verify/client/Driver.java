@@ -12,7 +12,7 @@ import mindustry.ui.dialogs.*; import mindustry.world.*; import mindustry.world.
 public class Driver extends Mod{
     static String outDir = System.getProperty("drv.out", System.getProperty("user.home") + "/sd/shots");
     static ClassLoader ml;
-    static Building b1, b2;
+    static Building b1, b2, c1;
 
     /** 目录里已有的最大序号 + 1（没有目录就从 1 开始）。 */
     static int nextIndex(){
@@ -90,6 +90,18 @@ public class Driver extends Mod{
                 // 否则会截到面板还没重画的那一帧（看起来像"没实时刷新"）。
                 Timer.schedule(Driver::maybeShotAfter, 10f, 0.5f);
                 Timer.schedule(() -> { Log.info("[drv] 超时，直接截"); shot("coop_panel_after"); finish(); }, 75f);
+            }else if(mode.equals("status")){
+                // 两块东西一起看：
+                //  1) 升华站（sublimate）灌了氰气后的**方块状态**菱形（红=noinput / 绿=active）
+                //     —— 开了 renderer.drawStatus 才会画出来，和玩家按 F6 看到的是同一条代码路径；
+                //  2) 容器（组合仓库并进核心）的信息面板，看"已并入核心 容量 N"这个数字对不对。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupStatusScene, 5f);
+                Timer.schedule(() -> shot("status_world"), 12f);
+                Timer.schedule(Driver::openStatusPanel, 14f);
+                Timer.schedule(() -> shot("status_panel"), 18f);
+                Timer.schedule(() -> { Log.info("[drv] status 模式结束"); Core.app.exit(); }, 22f);
             }else{
                 Timer.schedule(Driver::step1, 4f);
             }
@@ -247,6 +259,108 @@ public class Driver extends Mod{
     /** 载入一张有核心的图，然后真的把原版发射界面弹出来（看它会不会崩 / 内置蓝图在不在）。 */
     static boolean launchShown;
 
+    /**
+     * 场1：核心 + 两台容器（并进核心）+ 一台灌了氰气的升华站。
+     * 打开"方块状态"显示（renderer.drawStatus），并把容器信息面板弹出来截图对比数字。
+     */
+    static void setupStatusScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            // 方块状态菱形（红=noinput / 橙=nooutput / 绿=active）
+            Vars.renderer.drawStatus = true;
+            Core.settings.put("blockstatus", true);
+            for(int y=40;y<120;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+
+            Block coreB = null, contB = null, subB = null;
+            for(Block b : Vars.content.blocks()){
+                if(b.name.equals("core-shard")) coreB = b;
+                if(b.name.equals("container")) contB = b;
+                if(b.name.equals("sublimate")) subB = b;
+            }
+            if(coreB == null || contB == null || subB == null){
+                Log.err("[drv] status 场景缺方块: core=@ cont=@ sublimate=@", coreB, contB, subB);
+                return;
+            }
+            Building core = placeBL(coreB, 60, 60);
+            // 容器要**紧贴**核心才能并进核心池（中间隔一格就不算相邻）
+            c1 = placeBL(contB, 63, 60);
+            placeBL(contB, 65, 60);
+            int cap = core instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild cb ? cb.storageCapacity : -1;
+            // 每种物品各自装满容量：容量是"每种物品各自"的上限，
+            // 以前的地板写成 items.total()（所有物品总和）→ 面板会显示成 6 倍的容量。
+            Item[] types = {Items.copper, Items.lead, Items.graphite, Items.silicon, Items.metaglass, Items.titanium};
+            for(Item it : types) core.items.set(it, cap);
+            int total = core.items.total();
+
+            // 升华站：只灌氰气（用户场景），方块状态菱形必须是绿的
+            Building sub = placeBL(subB, 72, 60);
+            sub.liquids.add(Liquids.cyanogen, 500f);
+            // 镜头把三样东西都框进来：无限火力工厂 / 核心+容器 / 升华站
+            Core.camera.position.set(sub.x - 56f, sub.y);
+
+            // 无限火力（X 端的 rules.cheat）下组合单位工厂照样要产出单位：
+            // 把工厂激活延迟清零、打开 cheat、进度推到完工线，几秒后它应该已经吐出一个单位载荷。
+            Vars.state.rules.unitFactoryActivationDelay = 0f;
+            Team.sharded.rules().unitFactoryActivationDelay = 0f;
+            Block facB = null;
+            for(Block blk : Vars.content.blocks())
+                if(blk.getClass().getName().startsWith("combine.units.CombinedUnitFactory")){ facB = blk; break; }
+            if(facB != null && ((mindustry.world.blocks.units.UnitFactory) facB).plans.size > 0){
+                Building fac = placeBL(facB, 52, 60);
+                Team.sharded.rules().cheat = true;
+                var ufb = (mindustry.world.blocks.units.UnitFactory.UnitFactoryBuild) fac;
+                ufb.currentPlan = 0;
+                ufb.progress = ((mindustry.world.blocks.units.UnitFactory) facB).plans.get(0).time - 1f;
+                Log.info("[drv] 无限火力工厂: @ 计划=@ 时间=@ 池内物品=@ cheat=@",
+                    facB.name, ((mindustry.world.blocks.units.UnitFactory) facB).plans.get(0).unit.name,
+                    ((mindustry.world.blocks.units.UnitFactory) facB).plans.get(0).time, fac.items.total(), fac.cheating());
+            }
+
+            Log.info("[drv] status 场景: 核心静态容量=@ 已塞物品总和=@ 升华站类=@ 氰气=@",
+                cap, total, subB.getClass().getName(), sub.liquids.get(Liquids.cyanogen));
+            Events.on(EventType.UnitCreateEvent.class, e -> {
+                unitCreates++;
+                Log.info("[drv] 单位产出事件 #@: @", unitCreates, e.unit.type.name);
+            });
+        }catch(Throwable t){ Log.err("[drv] setupStatusScene failed", t); }
+    }
+
+    static int unitCreates = 0;
+
+    /** 等仓库重算跑完（合并/容量都稳定）再打印数字 + 把容器的信息面板弹出来截图。 */
+    static void openStatusPanel(){
+        try{
+            if(c1 == null){ Log.err("[drv] c1 为空，没法开面板"); return; }
+            mindustry.world.blocks.storage.CoreBlock.CoreBuild core = c1.team.core();
+            Log.info("[drv] status 结果: 核心容量=@ 库存总和=@ 容器并入核心=@ 容器模块==核心模块=@",
+                core == null ? -1 : core.storageCapacity,
+                core == null || core.items == null ? -1 : core.items.total(),
+                c1 instanceof mindustry.world.blocks.storage.StorageBlock.StorageBuild sb && sb.linkedCore != null,
+                core != null && c1.items == core.items);
+            Building fac = null;
+            for(Building b : Vars.state.teams.get(Team.sharded).buildings)
+                if(b.block.getClass().getName().startsWith("combine.units.CombinedUnitFactory")) { fac = b; break; }
+            if(fac != null){
+                var ufb = (mindustry.world.blocks.units.UnitFactory.UnitFactoryBuild) fac;
+                Log.info("[drv] 无限火力工厂结果: progress=@ 计划=@ payload=@ 单位=@",
+                    ufb.progress, ufb.unit() == null ? "-" : ufb.unit().name,
+                    ufb.payload, ufb.payload == null ? "-" : ufb.payload.unit.type.name);
+            }
+            Log.info("[drv] 无限火力工厂累计产出单位数=@", unitCreates);
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            c1.getClass().getMethod("display", arc.scene.ui.layout.Table.class).invoke(c1, panel);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("容器面板（组合仓库并进核心）");
+            d.cont.add(panel).pad(10f);
+            d.show();
+            Log.info("[drv] 容器面板已弹出（panel 子元素=@）", panel.getChildren().size);
+        }catch(Throwable t){ Log.err("[drv] openStatusPanel failed", t); }
+    }
+
     static void setupLaunchScene(){
         try{
             hideDialogs();
@@ -325,6 +439,15 @@ public class Driver extends Mod{
         mindustry.world.Build.beginPlace(null, b, Team.sharded, x, y, 0, null);
         mindustry.world.blocks.ConstructBlock.constructed(Vars.world.tile(x, y), b, null, (byte)0, Team.sharded, null);
         return Vars.world.build(x, y);
+    }
+
+    /** 和 headless 测试同一套坐标约定：(x,y) 是方块左下角，锚点 = 左下角 + (size-1)/2。 */
+    static Building placeBL(Block b, int x, int y){
+        int size = Math.max(b.size, 1);
+        int ax = x + (size - 1) / 2, ay = y + (size - 1) / 2;
+        mindustry.world.Build.beginPlace(null, b, Team.sharded, ax, ay, 0, null);
+        mindustry.world.blocks.ConstructBlock.constructed(Vars.world.tile(ax, ay), b, null, (byte)0, Team.sharded, null);
+        return Vars.world.build(ax, ay);
     }
 
     /** 往共享池里加物品/液体（CoopPanel 应该立刻显示出来）。 */

@@ -297,11 +297,15 @@ public class CombinedStorageBlock extends StorageBlock {
         // 组合仓库一拆/一改，容量只要有一轮算小（读档中途、刚放置那几帧），
         // 那部分就被原版**真删掉** —— 用户报的"造新仓库导致物品消失"。
         // 容量本身照样反映"核心 + 连通仓库"，只是永远不因为一次拆除就吃掉已经存进去的东西。
-        int currentTotal = core.items == null ? 0 : core.items.total();
+        // 【必须是"单项最大值"而不是 items.total()】storageCapacity 是**每种物品各自**的上限
+        // （原版也是按 item 逐个 min(items.get(item), storageCapacity)）；
+        // 拿所有物品的总和当地板，核心就会变成"6 种物品各装满 2 万 ⇒ 容量显示 13 万"
+        // （用户报的"我只放了 22000 容量的容器和核心，怎么显示 133200"）。
+        int currentMax = maxStack(core.items);
         // 【不能压低原版自己算的容量】原版 CoreBuild.onProximityUpdate 会把"直接相邻的 StorageBlock"
         // 也算进 storageCapacity —— 比如模组里 js 写的集装箱（更多实用设备的 cargo）就是靠这个给核心扩容的。
         // 我们重算时如果把它的值覆盖掉，那些仓库的扩容能力就没了（用户报的）。
-        core.storageCapacity = Math.max(Math.max(capacity, currentTotal), core.storageCapacity);
+        core.storageCapacity = Math.max(Math.max(capacity, currentMax), core.storageCapacity);
         if (coreItems == null)
           coreItems = core.items;
       }
@@ -449,6 +453,22 @@ public class CombinedStorageBlock extends StorageBlock {
     for (Item item : content.items()) {
       module.set(item, Math.min(module.get(item), capacity));
     }
+  }
+
+  /**
+   * 库存里**单项最大值**。
+   * 核心的 itemCapacity / storageCapacity 是"**每种物品各自**能存多少"，不是所有物品的总和
+   * （原版核心的显示条也是 total / (capacity × 物品种类数)）。
+   * 所以任何"容量至少得装得下现在这些存货"的判断，都必须用单项最大值，
+   * 用 items.total() 会让容量随"有几种物品装满"成倍膨胀。
+   */
+  public static int maxStack(ItemModule module) {
+    if (module == null)
+      return 0;
+    int max = 0;
+    for (Item item : content.items())
+      max = Math.max(max, module.get(item));
+    return max;
   }
 
   /** 读档合并副本：逐物品取较大值（不叠加），用于"同一份池子的多份副本"。 */

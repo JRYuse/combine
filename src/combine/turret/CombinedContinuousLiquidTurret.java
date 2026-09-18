@@ -481,17 +481,21 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
 
     
 
-    // ===== 弹药空值防护 (单副本, 全限定类型) =====
+    /**
+     * 【原版语义：持续液体炮塔的"有弹药"看液体池，不看物品弹药队列】
+     * 以前这里照抄了物品炮塔（CombinedItemTurret）那套 `ammo` 队列判断，
+     * 而液体炮塔从来不往 `ammo` 里放东西（acceptItem 恒为 false、useAmmo() 也不消耗弹药条目），
+     * 于是 hasAmmo() 恒为 false：
+     *   1) 状态显示 noinput（TurretBuild.status()：enabled && !hasAmmo() ⇒ noInput）；
+     *   2) 原版 TurretBuild.updateTile() 里"找目标 / 开火"整段都套在 `if(hasAmmo())` 里，
+     *      所以氰气/臭氧灌满也不找目标、不开火（用户报的现象）。
+     * 正确判定 = 池里有能当弹药的液体、且已经能持续供弹（activated，与原版一致）。
+     */
     @Override
     public boolean hasAmmo() {
-      if (ammo == null)
-        return false;
-      for (int i = 0; i < ammo.size; i++) {
-        mindustry.world.blocks.defense.turrets.Turret.AmmoEntry e = ammo.get(i);
-        if (e != null && e.type() != null && e.amount > 0)
-          return true;
-      }
-      return false;
+      Liquid l = effectiveLiquid();
+      return hasCorrectAmmo() && l != null && ammoTypes.containsKey(l)
+          && liquids != null && liquids.get(l) > 0f && activated;
     }
 
     @Override

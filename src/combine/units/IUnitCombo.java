@@ -354,6 +354,13 @@ public interface IUnitCombo {
 
     /** 完工料费实时复核：不依赖 potentialEfficiency 缓存, 直接按消耗器将要扣除的量盘点共享池 */
     default boolean canAffordNow() {
+        // 【无限火力 / 作弊模式（team.rules().cheat）下不能按"池里有没有料"判定】
+        // 原版这一档直接在 BuildingComp.updateConsumption 里短路（efficiency = 1，
+        // 消耗器的 efficiency 根本不参与计算），完工时的 consume() 也只是走个 trigger，
+        // 池子里没料照样产出（X 端的"无限火力"就是给每个队伍打开 rules.cheat）。
+        // 这里若还去盘点库存，组合工厂/重构厂/建造厂会永远卡在完工线不产出（用户报的）。
+        if (B(this).cheating())
+            return true;
         if (B(this).items == null)
             return false;
         for (Consume cons : B(this).block.nonOptionalConsumers) {

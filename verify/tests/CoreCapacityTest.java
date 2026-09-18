@@ -144,6 +144,33 @@ public class CoreCapacityTest implements ApplicationListener{
         System.out.println("[CC] E 链读档后: 总量=" + total() + " 容量=" + cap() + " 玻璃=" + glass());
         check("E 仓库链读档后总量不涨（" + beforeE + " → " + total() + "）", total() == beforeE);
 
+        // ---------- G 每种物品各装满容量：容量不能按"所有物品总和"膨胀 ----------
+        // 用户报的："我只放了 22000 左右容量的容器和核心，游戏怎么显示成 133200"。
+        // 核心的 itemCapacity/storageCapacity 是**每种物品各自**的上限（原版核心条也是
+        // total / (capacity × 物品种类数)）。以前"容量至少要装得下现在这些存货"的地板写成
+        // items.total()（所有物品的总和），于是"6 种物品各装满 2.2 万 ⇒ 容量显示 13.3 万"。
+        clearArea();
+        Building g0 = place(Blocks.coreShard, 60, 60, Team.sharded);
+        run(10);
+        int capG = cap(), types = 0;
+        for(Item it : Vars.content.items()){ g0.items.set(it, capG); types++; }
+        int totalG = g0.items.total();
+        System.out.println("[CC] G 每种装满: 容量=" + capG + " 物品种类=" + types
+            + " 物品总和=" + totalG);
+        // 放一台容器（会触发组合仓库重算）——容量只该多出容器的 300，不该跳到 items.total()
+        Building g1 = place(cont, 63, 60, Team.sharded);
+        run(60);
+        int capG2 = cap();
+        System.out.println("[CC] G 放容器重算后: 容量=" + capG2 + " (并进核心=" + (g1.items == g0.items) + ")"
+            + " 玻璃=" + g0.items.get(Items.metaglass) + " 铜=" + g0.items.get(Items.copper) + " 总和=" + g0.items.total());
+        check("G 每种物品各装满时容量不按总和膨胀（" + capG + " → " + capG2 + "，物品总和 " + totalG + "）",
+            capG2 <= capG + cont.itemCapacity + 1);
+        check("G 装满的每种物品一份都没被删", g0.items.total() == totalG);
+        try{ g1.tile.setBlock(Blocks.air); }catch(Throwable ignored){}
+        run(30);
+        check("G 拆掉仓库后容量不涨也不按总和走（" + cap() + "）", cap() <= capG + cont.itemCapacity + 1);
+        check("G 拆掉仓库后物品一份没少（" + g0.items.total() + "/" + totalG + "）", g0.items.total() == totalG);
+
         // ---------- F 直接读用户的存档，看看读档前后数量 ----------
         try{
             Fi usr = Core.files.absolute(System.getProperty("user.home") + "/sd/save/sector-serpulo-175.msav");
