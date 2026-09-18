@@ -77,7 +77,8 @@ public class MultiBuildWeapon extends Weapon {
     // FIX[取消建造]: 玩家操控的单位一旦队列被清空（原版 Q = clearBuilding），
     // 就该彻底停手；原先挂座会继续从"附近单位的队列 / 队伍计划表"里找活，
     // 表现就是"取消了建造、光束也没了，但格子还在造"。
-    if (unit.isPlayer() && unit.plans().size == 0) {
+    Queue<BuildPlan> selfPlans = unit.plans();
+    if (unit.isPlayer() && (selfPlans == null || selfPlans.size == 0)) {
       release(m);
       aimForward(unit, m);
       m.shoot = false;
@@ -179,6 +180,11 @@ public class MultiBuildWeapon extends Weapon {
    */
   BuildPlan findPlan(Unit unit, Unit weaponUnit, BuildWeaponMount tm) {
     Queue<BuildPlan> plans = unit.plans();
+    // 【必须判空】不能建造的单位（例如核心机之外的战斗单位）、以及某些模组单位根本没有
+    // BuilderComp，plans() 会返回 null —— 直接 plans.first()/size 就是
+    // "Attempt to invoke ... arc.struct.Seq.first() on a null object reference"（用户报的崩溃）。
+    if (plans == null)
+      return null;
 
     if (plans.size > 0) {
       BuildPlan first = plans.first();
@@ -247,6 +253,8 @@ public class MultiBuildWeapon extends Weapon {
       if(found[0] != null || other == null || other == weaponUnit || !other.canBuild())
         return;
       Queue<BuildPlan> q = other.plans();
+      if(q == null)
+        return;
       for(int pass = 0; pass < 2 && found[0] == null; pass++){
         boolean assist = pass == 0;
         for(int i = 1; i < q.size; i++){ // 队首归它自己，跳过
@@ -434,6 +442,8 @@ public class MultiBuildWeapon extends Weapon {
   /** 计划被队首占用 / 被其他挂座抢了就放弃重找。 */
   boolean isRob(Unit unit, BuildWeaponMount m) {
     Queue<BuildPlan> plans = unit.plans();
+    if (plans == null)
+      return true;
     // 没有认领，或者认领的正好是队首（队首归主人自己的建造逻辑）→ 放弃重找
     if (m.plan == null || (plans.size > 0 && plans.first() == m.plan))
       return true;
@@ -472,6 +482,8 @@ public class MultiBuildWeapon extends Weapon {
 
     // 单位自己队列里、由本挂座负责的其它格子（核心机这种整串队列就在自己身上）
     Queue<BuildPlan> plans = unit.plans();
+    if (plans == null)
+      return;
     for (int i = 1; i < plans.size; i++) {
       if ((i - 1) % total != idx)
         continue;
