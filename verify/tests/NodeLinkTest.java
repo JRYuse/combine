@@ -75,6 +75,11 @@ public class NodeLinkTest implements ApplicationListener{
         System.out.println("[NL] 点 A(a1) 之后: handled=" + handled + " links=" + links.size + " 同池=" + (a1.items == b1.items));
         check("点已连接的目标会断开那一根线", links.size == 1);
         check("断开被当作已处理（不会去选中对方方块）", !handled);
+        // 用户报的第二个 bug：点 A 却把 B 的线断了 —— 断言剩下的那根必须是 B
+        boolean keptB = links.contains(b1.pos());
+        boolean droppedA = !links.contains(a1.pos());
+        System.out.println("[NL]   剩下的是 B 吗=" + keptB + "  A 的线没了吗=" + droppedA);
+        check("断掉的是被点的那一边（点 A 就断 A，不能动 B）", keptB && droppedA);
 
         // —— 再把最后一根也断开：两边应该真的分成两个组合体（池子拆开）——
         node.onConfigureBuildTapped(b1);
@@ -106,6 +111,26 @@ public class NodeLinkTest implements ApplicationListener{
         run(10);
         System.out.println("[NL] 点节点自己之后: links=" + links.size + " 同池=" + (a1.items == b1.items));
         check("点节点自己会清空全部连线并拆开组合体", links.size == 0 && a1.items != b1.items);
+
+        // —— 三个组合体都连上（3 根线），点其中一个只能断它自己那根 ——
+        Building c1 = place(prod, 80, 60, Team.sharded);
+        Building c2 = place(prod, 80 + sz, 60, Team.sharded);
+        run(20);
+        node.onConfigureBuildTapped(a1);
+        run(6);
+        node.onConfigureBuildTapped(b1);
+        run(6);
+        node.onConfigureBuildTapped(c1);
+        run(10);
+        System.out.println("[NL] 三个组合体: links=" + links.size + " A/B/C 全连="
+            + (links.contains(a1.pos()) && links.contains(b1.pos()) && links.contains(c1.pos())));
+        check("三个组合体各连一根（3 根线）", links.size == 3 && links.contains(c1.pos()));
+        node.onConfigureBuildTapped(a1);
+        run(10);
+        System.out.println("[NL] 三个里点 A: links=" + links.size
+            + "  B还在=" + links.contains(b1.pos()) + " C还在=" + links.contains(c1.pos()) + " A没了=" + !links.contains(a1.pos()));
+        check("三个里点 A 只断 A，B/C 的线都还在",
+            links.size == 2 && links.contains(b1.pos()) && links.contains(c1.pos()) && !links.contains(a1.pos()));
 
         System.out.println("[NL] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
         System.exit(fail==0?0:1);

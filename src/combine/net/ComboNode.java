@@ -338,7 +338,7 @@ public class ComboNode extends Block {
             // 这里以前用的是 linkValid(this, other, true)，它带着"一个组合体只连一根"的去重：
             // 对已连接的目标恒为 false，于是点击直接 return true（当成没处理），
             // 表现就是"连上之后断不开"（用户报的 bug）。
-            int linkedPos = linkedGroupPos(other);
+            int linkedPos = linkedBodyPos(other);
             if(linkedPos >= 0){
                 configure(linkedPos);
                 return false;
@@ -351,18 +351,41 @@ public class ComboNode extends Block {
         }
 
         /**
-         * 这个建筑所在的「组合体」已经被连过的话，返回已连那根的 pos；没连过返回 -1。
-         * 用组合体代表（{@link #groupRep}）比，所以点组合体里的哪一台都认。
+         * 点的是**已经连过的那个组合体**吗？是的话返回那根线的 pos（用来断开），否则 -1。
+         *
+         * 【不能用 groupRep / 分组来判】两个组合体一旦被这个节点接上，它们在协作组合那边
+         * 就成了**同一个组** —— 用分组判会变成"点 A 把 B 的线断掉"（用户报的第二个 bug）。
+         * 所以这里只看"同一片连在一起的同类型方块"（本地 BFS，不跨节点连线）：
+         * A 组里的方块和 B 组相隔好几格，永远不会被认成同一片。
          */
-        public int linkedGroupPos(Building other){
+        public int linkedBodyPos(Building other){
             if(other == null) return -1;
-            Building rep = groupRep(other);
             for(int i = 0; i < links.size; i++){
                 Building ex = world.build(links.get(i));
                 if(ex == null || !ex.isValid()) continue;
-                if(ex == other || (rep != null && rep == groupRep(ex))) return links.get(i);
+                if(ex == other) return links.get(i);
+                if(ex.block == other.block && ex.team == other.team && sameCluster(ex, other)) return links.get(i);
             }
             return -1;
+        }
+
+        /** 两台方块是不是"连着的一片"（同类型、贴在一起），只走方块邻接，不跟节点连线。 */
+        private boolean sameCluster(Building a, Building b){
+            arc.struct.ObjectSet<Building> seen = new arc.struct.ObjectSet<>();
+            arc.struct.Queue<Building> queue = new arc.struct.Queue<>();
+            queue.addLast(a);
+            seen.add(a);
+            int guard = 0;
+            while(!queue.isEmpty() && guard++ < 512){
+                Building cur = queue.removeFirst();
+                if(cur == b) return true;
+                if(cur.proximity == null) continue;
+                for(Building nb : cur.proximity){
+                    if(nb == null || !nb.isValid() || nb.block != a.block || nb.team != a.team) continue;
+                    if(seen.add(nb)) queue.addLast(nb);
+                }
+            }
+            return false;
         }
 
         @Override
