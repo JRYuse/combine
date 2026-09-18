@@ -40,6 +40,7 @@ public class Driver extends Mod{
             Log.info("[drv] 截图目录 @（从序号 @ 开始）", Core.files.absolute(outDir).absolutePath(), counter);
             ml = Vars.mods.getMod("combine").main.getClass().getClassLoader();
             if(mode.equals("coop")){
+                installFrameCounter();
                 Timer.schedule(Driver::hideDialogs, 3f);
                 Timer.schedule(Driver::setupWorld, 5f);
                 Timer.schedule(() -> { shot("coop_panel_open"); }, 8f);
@@ -58,8 +59,10 @@ public class Driver extends Mod{
                         Log.info("[drv] t=@ paused=@ describe=@", arc.util.Time.time, Vars.state.isPaused(), desc);
                     }catch(Throwable t){ Log.err("[drv] describe failed", t); }
                 }, 11f);
-                Timer.schedule(() -> { shot("coop_panel_after"); }, 20f);
-                Timer.schedule(() -> { Log.info("[drv] done frames=see dbg"); Core.app.exit(); }, 22f);
+                // 软渲染下一帧很慢（1~5fps）：加完料**必须真的过了 30 帧**再截，
+                // 否则会截到面板还没重画的那一帧（看起来像"没实时刷新"）。
+                Timer.schedule(Driver::maybeShotAfter, 10f, 0.5f);
+                Timer.schedule(() -> { Log.info("[drv] 超时，直接截"); shot("coop_panel_after"); finish(); }, 75f);
             }else{
                 Timer.schedule(Driver::step1, 4f);
             }
@@ -67,6 +70,27 @@ public class Driver extends Mod{
     }
 
     static final String mode = System.getProperty("drv.mode", "list");
+
+    /** 帧计数器：挂在 HUD 上的空表，只用来数"画面真的跑了多少帧"。 */
+    static int frames = 0, framesAtAdd = -1;
+    static void installFrameCounter(){
+        var t = new arc.scene.ui.layout.Table();
+        t.update(() -> frames++);
+        t.touchable = arc.scene.event.Touchable.disabled;
+        Vars.ui.hudGroup.addChild(t);
+    }
+    static void maybeShotAfter(){
+        if(framesAtAdd < 0) return;
+        if(frames - framesAtAdd >= 30){
+            Log.info("[drv] 加料后又跑了 @ 帧 → 截图", frames - framesAtAdd);
+            shot("coop_panel_after");
+            finish();
+        }
+    }
+    static void finish(){
+        Log.info("[drv] done（frames=@）", frames);
+        Core.app.exit();
+    }
 
     /** 关掉所有弹窗（模组信息框、设置界面……），免得盖住要截的东西。 */
     static void hideDialogs(){
@@ -198,6 +222,7 @@ public class Driver extends Mod{
             addPool(null, 0, 30f);   // 液体
             Log.info("[drv] added: copper=@ silicon=@ liquids=@",
                 b1.items.get(Items.copper), b1.items.get(Items.silicon), totalLiquid(b1));
+            framesAtAdd = frames;
         }catch(Throwable t){ Log.err("[drv] addStuff failed", t); }
     }
 
