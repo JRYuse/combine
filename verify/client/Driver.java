@@ -294,7 +294,9 @@ public class Driver extends Mod{
             // 每种物品各自装满容量：容量是"每种物品各自"的上限，
             // 以前的地板写成 items.total()（所有物品总和）→ 面板会显示成 6 倍的容量。
             Item[] types = {Items.copper, Items.lead, Items.graphite, Items.silicon, Items.metaglass, Items.titanium};
-            for(Item it : types) core.items.set(it, cap);
+            // 故意塞到**超过**容量（用户存档就是这种历史超容存量）：上限必须还是"核心 + 容器"，
+            // 不能跟着库存抬成 23074 这种数字，同时这些超容存量也不该被删。
+            for(Item it : types) core.items.set(it, cap + 500);
             int total = core.items.total();
 
             // 升华站：只灌氰气（用户场景），方块状态菱形必须是绿的

@@ -62,6 +62,14 @@ public class CombinedStorageBlock extends StorageBlock {
   private static boolean dirty = false;
   /** 读档那一轮：仓库手里是"核心库存的副本"，内容相同要丢弃而不是相加（否则读档翻倍）。 */
   private static boolean dedupeOnce = false;
+  /** 读档时（原版回灌 sector info 之前）各核心的库存快照：核心位置 → 每种物品数量。 */
+  private static final arc.struct.IntMap<int[]> loadItems = new arc.struct.IntMap<>();
+  /**
+   * 读档后还要兜几次恢复。
+   * 原版那次截断在 SaveLoadEvent（Logic 的处理器）里，跟我们的处理器注册顺序有关，
+   * 而且"事件处理器"之外还可能被别的路径再截一次 —— 读档后头几帧都补一下最稳。
+   */
+  private static int loadGrace = 0;
 
   /** 在 Main.init() 里注册一次。 */
   public static void register() {
@@ -76,8 +84,14 @@ public class CombinedStorageBlock extends StorageBlock {
       // 【立刻算一次】原版核心在自己的 updateTile 里会按 storageCapacity 清掉超出部分；
       // 要是等下一帧的 dirty 重算，核心已经按"自身容量"清过了 —— 物品就真没了。
       dedupeOnce = true;
+      snapshotCoreItems();
       update();
     });
+    // 【读档时的第二次截断】原版在 SaveLoadEvent 里做 sector info 回灌
+    // （Logic → SectorInfo.write()：clear + add(sector.info.items) + 逐物品 clamp 到 storageCapacity）。
+    // 这条路在 onProximityUpdate 之外，CombinedCoreBlock 的补救拦不住，
+    // 上面在 WorldLoadEvent 先记下地图里的库存，这里把被削掉的补回来（只补不删）。
+    Events.on(EventType.SaveLoadEvent.class, e -> restoreCoreItems());
     // 放置/拆除/替换方块都会触发；这里只置位，真正重算留到之后
     Events.on(EventType.TileChangeEvent.class, e -> dirty = true);
     Events.on(EventType.BlockBuildEndEvent.class, e -> dirty = true);
@@ -103,7 +117,17 @@ public class CombinedStorageBlock extends StorageBlock {
   }
 
   private static void update() {
-    if (!dirty || state == null || world == null || world.isGenerating())
+    if (state == null || world == null || world.isGenerating())
+      return;
+    // 读档后的头几帧：把被原版回灌 sector info 削掉的库存补回来（只补不删）。
+    // 那次截断在 SaveLoadEvent 里，跟我们的处理器注册顺序有关，光靠处理器不一定排在它后面，
+    // 所以读档后的头几帧再兜几次。
+    if (loadGrace > 0) {
+      restoreCoreItems();
+      if (--loadGrace == 0)
+        loadItems.clear();
+    }
+    if (!dirty)
       return;
     dirty = false;
     // 读档完成后的第一次重算带着"去重"语义；只有真正算完才清掉这个标记
@@ -177,6 +201,55 @@ public class CombinedStorageBlock extends StorageBlock {
         if (tile != null && tile.build instanceof CombinedStorageBuild sb) {
           tracked.add(sb);
         }
+      }
+    }
+    dirty = true;
+  }
+
+  /**
+   * 记下当前所有核心的库存（每种物品一份）。在读档流程的"原版回灌 sector info"之前调用。
+   * 只记合法的核心，位置用 pos()（读档前后同一个核心位置不变）。
+   */
+  private static void snapshotCoreItems() {
+    loadItems.clear();
+    loadGrace = 3;
+    if (world == null || state == null)
+      return;
+    for (Team team : Team.all) {
+      TeamData data = team.data();
+      if (data == null)
+        continue;
+      for (CoreBuild core : data.cores) {
+        if (core == null || core.items == null || !core.isValid())
+          continue;
+        int[] arr = new int[content.items().size];
+        for (Item item : content.items())
+          arr[item.id] = core.items.get(item);
+        loadItems.put(core.pos(), arr);
+      }
+    }
+  }
+
+  /**
+   * 读档末尾（SaveLoadEvent）把 sector info 回灌时**削掉**的库存补回来。
+   * 只往上补、不删任何东西 —— 容量数字仍然是"核心 + 连通仓库"，不跟着库存走。
+   */
+  private static void restoreCoreItems() {
+    if (loadItems.isEmpty())
+      return;
+    for (Team team : Team.all) {
+      TeamData data = team.data();
+      if (data == null)
+        continue;
+      for (CoreBuild core : data.cores) {
+        if (core == null || core.items == null || !core.isValid())
+          continue;
+        int[] arr = loadItems.get(core.pos());
+        if (arr == null)
+          continue;
+        for (Item item : content.items())
+          if (arr[item.id] > core.items.get(item))
+            core.items.set(item, arr[item.id]);
       }
     }
     dirty = true;
@@ -293,19 +366,18 @@ public class CombinedStorageBlock extends StorageBlock {
     ItemModule coreItems = null;
     for (CoreBuild core : cores) {
       if (core != null && core.isValid()) {
-        // 【容量不低于"现在装着多少"】原版核心在自己的 updateTile 里按 storageCapacity 清掉超出部分。
-        // 组合仓库一拆/一改，容量只要有一轮算小（读档中途、刚放置那几帧），
-        // 那部分就被原版**真删掉** —— 用户报的"造新仓库导致物品消失"。
-        // 容量本身照样反映"核心 + 连通仓库"，只是永远不因为一次拆除就吃掉已经存进去的东西。
-        // 【必须是"单项最大值"而不是 items.total()】storageCapacity 是**每种物品各自**的上限
-        // （原版也是按 item 逐个 min(items.get(item), storageCapacity)）；
-        // 拿所有物品的总和当地板，核心就会变成"6 种物品各装满 2 万 ⇒ 容量显示 13 万"
-        // （用户报的"我只放了 22000 容量的容器和核心，怎么显示 133200"）。
-        int currentMax = maxStack(core.items);
+        // 【容量只由"核心 + 连通仓库"决定，绝不拿库存当地板】
+        // storageCapacity 是**每种物品各自**的上限，只是"能存多少"，和"现在存了多少"无关。
+        // 以前这里写了 max(容量, items.total()) / max(容量, 单项最大值) 当兜底，结果：
+        //   - items.total()（所有物品总和）⇒ 6 种物品各装满 2.2 万，容量显示 13.3 万；
+        //   - 单项最大值 ⇒ 只要某种物品曾经超过容量，容量就被那个数字钉死（9 千的核心 +
+        //     44 个 300 的容器本该是 22200，面板却一直显示 23074，拆容器也不掉）。
+        // 现在两者都不做：超容的存量照样留着（见下面的"不截断"说明与 CombinedCoreBlock 的补救），
+        // 但上限数字永远等于"核心自身 + 所有连通仓库"。
         // 【不能压低原版自己算的容量】原版 CoreBuild.onProximityUpdate 会把"直接相邻的 StorageBlock"
         // 也算进 storageCapacity —— 比如模组里 js 写的集装箱（更多实用设备的 cargo）就是靠这个给核心扩容的。
         // 我们重算时如果把它的值覆盖掉，那些仓库的扩容能力就没了（用户报的）。
-        core.storageCapacity = Math.max(Math.max(capacity, currentMax), core.storageCapacity);
+        core.storageCapacity = Math.max(capacity, core.storageCapacity);
         if (coreItems == null)
           coreItems = core.items;
       }
@@ -453,22 +525,6 @@ public class CombinedStorageBlock extends StorageBlock {
     for (Item item : content.items()) {
       module.set(item, Math.min(module.get(item), capacity));
     }
-  }
-
-  /**
-   * 库存里**单项最大值**。
-   * 核心的 itemCapacity / storageCapacity 是"**每种物品各自**能存多少"，不是所有物品的总和
-   * （原版核心的显示条也是 total / (capacity × 物品种类数)）。
-   * 所以任何"容量至少得装得下现在这些存货"的判断，都必须用单项最大值，
-   * 用 items.total() 会让容量随"有几种物品装满"成倍膨胀。
-   */
-  public static int maxStack(ItemModule module) {
-    if (module == null)
-      return 0;
-    int max = 0;
-    for (Item item : content.items())
-      max = Math.max(max, module.get(item));
-    return max;
   }
 
   /** 读档合并副本：逐物品取较大值（不叠加），用于"同一份池子的多份副本"。 */
