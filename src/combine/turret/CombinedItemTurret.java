@@ -76,7 +76,12 @@ public class CombinedItemTurret extends ItemTurret {
     conductivePower = true; 
     configurable = true;
     config(Item.class, (CombinedItemTurretBuild tile, Item i) -> tile.selected = i);
-    configClear((CombinedItemTurretBuild tile) -> tile.selected = null);
+    // 冷却液选择：和弹药选择一样走 config（联机同步）；null = 自动用池子里效果最好的
+    config(Liquid.class, (CombinedItemTurretBuild tile, Liquid l) -> tile.selectedCoolant = l);
+    configClear((CombinedItemTurretBuild tile) -> {
+      tile.selected = null;
+      tile.selectedCoolant = null;
+    });
 
     // FIX[liquid]: 与 CombinedLiquidTurret 同理——原版 transferLiquid 按"目标方块的
     // liquidCapacity"限流，共享冷却池总量超过单台容量后管道会算出负流量而彻底断流
@@ -654,8 +659,70 @@ public class CombinedItemTurret extends ItemTurret {
       // FIX[liquid]: 领导者每帧按组总容量截断共享池
       if (isLeader())
         trimExcessLiquids(leader());
+      applyCoolantChoice();
       pullAmmoFromPool();
       super.updateTile();
+    }
+
+    /** 选定的冷却液（null = 自动用池子里效果最好的那种）。 */
+    public Liquid selectedCoolant;
+
+    /** 这个炮台能不能用这种液体当冷却液（按原版 consumeLiquid 的过滤条件）。 */
+    public boolean acceptsCoolant(Liquid liquid) {
+      if (liquid == null || coolant == null)
+        return false;
+      try {
+        return coolant.consumes(liquid);
+      } catch (Throwable t) {
+        return false;
+      }
+    }
+
+    /** 池子里现有的、本炮能用的冷却液（按液体 id 顺序）。 */
+    public Seq<Liquid> presentCoolants() {
+      Seq<Liquid> out = new Seq<>();
+      if (liquids == null)
+        return out;
+      for (Liquid l : content.liquids())
+        if (liquids.get(l) > 0.001f && acceptsCoolant(l))
+          out.add(l);
+      return out;
+    }
+
+    /**
+     * 该用哪种冷却液：
+     * · 选了就用选的（选的那种没货了自动回退到自动模式，不会卡住）；
+     * · 没选（空选）→ 自动取池子里**效果最好**的（heatCapacity 最高，原版冷却速度就是乘它）。
+     */
+    public Liquid effectiveCoolant() {
+      if (liquids == null)
+        return null;
+      if (selectedCoolant != null && acceptsCoolant(selectedCoolant) && liquids.get(selectedCoolant) > 0.001f)
+        return selectedCoolant;
+      Liquid best = null;
+      for (Liquid l : presentCoolants())
+        if (best == null || l.heatCapacity > best.heatCapacity)
+          best = l;
+      return best;
+    }
+
+    /**
+     * 把"当前冷却液"对齐到选定/自动挑出来的那种。
+     *
+     * 原版冷却（ReloadTurret.updateCooling / ConsumeLiquidFilter.getConsumed）先看
+     * {@code liquids.current()}，所以池子里混了几种液体时，炮台会用到"最后被加进来的那种"
+     * ——表现就是"混液体、冷却效果随机"（用户报的）。LiquidModule.add(l, 0) 只改 current，
+     * 不动存量，正好用来把当前液体钉成我们挑的那种。
+     */
+    public void applyCoolantChoice() {
+      if (coolant == null || liquids == null)
+        return;
+      try {
+        Liquid want = effectiveCoolant();
+        if (want != null && liquids.current() != want)
+          liquids.add(want, 0f);
+      } catch (Throwable ignored) {
+      }
     }
 
     /** 每 tick 最多从池子里搬这么多弹药进炮塔（别一口气抽干，也别拖帧）。 */
@@ -911,10 +978,36 @@ public class CombinedItemTurret extends ItemTurret {
         if (acceptsAmmo(it) && !present.contains(it))
           present.add(it);
       }
-      if (present.size < 2)
-        return;
-      ItemSelection.buildTable(CombinedItemTurret.this, table, present,
-          () -> selected, i -> configure(i));
+      if (present.size >= 2) {
+        ItemSelection.buildTable(CombinedItemTurret.this, table, present,
+            () -> selected, i -> configure(i));
+      }
+
+      // 冷却液选择：池子里有 ≥2 种能用的冷却液时才给选择（空选 = 自动用效果最好的那种）
+      Seq<Liquid> coolants = presentCoolants();
+      if (coolants.size >= 2) {
+        if (present.size >= 2)
+          table.row();
+        Liquid cur = effectiveCoolant();
+        Liquid sel = selectedCoolant != null && acceptsCoolant(selectedCoolant) ? selectedCoolant : null;
+        table.table(t -> {
+          t.left();
+          t.add("[lightgray]冷却液:").padRight(6f);
+          for (Liquid l : coolants) {
+            boolean highlighted = (sel == null && l == cur) || l == sel;
+            t.button(b -> {
+              b.image(l.uiIcon).size(8 * 4);
+              if (highlighted)
+                b.add("[accent]▲[]");
+            }, () -> {
+              // 点已经选中的那种 = 取消选择（回到自动）
+              configure(l == selectedCoolant ? null : l);
+            }).size(56f, 40f).padRight(4f).tooltip(l.localizedName + " · 冷却 x" + Strings.fixed(l.heatCapacity, 2));
+          }
+          t.button("[lightgray]自动[]", () -> configure(null)).height(40f).padLeft(6f)
+              .tooltip("自动用池子里效果最好的冷却液");
+        }).left();
+      }
     }
 
     @Override

@@ -39,6 +39,15 @@ public class Driver extends Mod{
             counter = nextIndex();
             Log.info("[drv] 截图目录 @（从序号 @ 开始）", Core.files.absolute(outDir).absolutePath(), counter);
             ml = Vars.mods.getMod("combine").main.getClass().getClassLoader();
+            // -Ddrv.uiscale=200 → 模拟"小逻辑宽度"（PC 上 uiscale 调大/窗口小），用来复现排版问题
+            String us = System.getProperty("drv.uiscale");
+            if(us != null){
+                try{
+                    arc.scene.ui.layout.Scl.setProduct(Float.parseFloat(us) / 100f);
+                    Core.settings.put("uiscale", Integer.parseInt(us));
+                    Log.info("[drv] uiscale=@（逻辑宽度 ≈ @×@）", us, Core.graphics.getWidth(), Core.graphics.getHeight());
+                }catch(Throwable t){ Log.err("[drv] uiscale 设置失败", t); }
+            }
             if(mode.equals("coop")){
                 installFrameCounter();
                 Timer.schedule(Driver::hideDialogs, 3f);
@@ -152,6 +161,15 @@ public class Driver extends Mod{
     static void showList(){
         try{
             ml = Vars.mods.getMod("combine").main.getClass().getClassLoader();
+            // -Ddrv.uiscale=200 → 模拟"小逻辑宽度"（PC 上 uiscale 调大/窗口小），用来复现排版问题
+            String us = System.getProperty("drv.uiscale");
+            if(us != null){
+                try{
+                    arc.scene.ui.layout.Scl.setProduct(Float.parseFloat(us) / 100f);
+                    Core.settings.put("uiscale", Integer.parseInt(us));
+                    Log.info("[drv] uiscale=@（逻辑宽度 ≈ @×@）", us, Core.graphics.getWidth(), Core.graphics.getHeight());
+                }catch(Throwable t){ Log.err("[drv] uiscale 设置失败", t); }
+            }
             if(Vars.ui.settings != null){ try{ Vars.ui.settings.hide(); }catch(Throwable ignored){} }
             Class<?> stCls = Class.forName("mindustry.ui.dialogs.SettingsMenuDialog$SettingsTable", true, Driver.class.getClassLoader());
             Object st = stCls.getConstructor().newInstance();
