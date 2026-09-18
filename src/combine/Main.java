@@ -141,6 +141,7 @@ public class Main extends Mod {
       // 联机入服时 rules 是刚按名字反查出来的（researched/bannedBlocks 可能装着被替换掉的原版实例），
       // 必须在任何 UI/建造校验读到它之前纠正，否则客户端建造菜单里组合建筑会全部消失。
       Replacer.remapStaleContent();
+      Replacer.remapSectorInfos();
       ComboNet.rebuildLoading();
     });
 
@@ -179,6 +180,13 @@ public class Main extends Mod {
     // 设置里的"建筑组合开关"界面（客户端才有 UI，服务端自动跳过）
     combine.ui.ComboBlockList.register();
     Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
+    // 客户端在这之后才把蓝图库从磁盘读进来（assets.load(schematics)），再兜一次键；
+    // 顺带把内置发射蓝图里的核心实例再对齐一遍（幂等）。
+    Events.on(ClientLoadEvent.class, e -> {
+      Replacer.remapBuiltinLoadouts();
+      Replacer.remapLoadoutKeys();
+      Replacer.remapSectorInfos();
+    });
 
     // 组合仓库并仓（机制本体在 CombinedStorageBlock 里）：没连核心时像其它组合建筑一样
     // 共用物品模块（容量相加），连到核心时整块并进核心给核心扩容（任意深度链式）
@@ -295,6 +303,11 @@ public class Main extends Mod {
       BlockCloner.logFallbackSummary();
       // 协作组合：抓取"放大前"的基础容量（必须在任何世界加载之前）
       CoopCombo.captureBaseCaps();
+      // 蓝图库缓存兜底：有东西在装配前就 schematics.load() 过的话，键还停在旧核心实例上
+      // （发射界面查不到内置蓝图 → getLoadouts().get(核心).first() 崩）
+      Replacer.remapLoadoutKeys();
+      // 发射界面拿的是 from.info.bestCoreType（Planet.load() 阶段按名字反查出来的旧核心实例）
+      Replacer.remapSectorInfos();
     } catch (Throwable t) {
       Log.err("[combine] content setup failed", t);
     }
