@@ -983,30 +983,25 @@ public class CombinedItemTurret extends ItemTurret {
             () -> selected, i -> configure(i));
       }
 
-      // 冷却液选择：池子里有 ≥2 种能用的冷却液时才给选择（空选 = 自动用效果最好的那种）
-      Seq<Liquid> coolants = presentCoolants();
+      // 冷却液选择：**和物品弹药选择用同一套 UI**（ItemSelection.buildTable）——
+      // 图标按钮 + 选中的那个自带黄框（Styles.clearNoneTogglei 的 checked 背景），
+      // 点已选中的那个 = 取消（回到"自动取效果最好的"）。
+      // 这里列的是"这个炮台能用的所有冷却液"（不只是池子里现有的），
+      // 这样就算想要的冷却液还没送过来也能先选好。
+      Seq<Liquid> coolants = new Seq<>();
+      for (Liquid l : content.liquids())
+        if (acceptsCoolant(l) && !l.isHidden())
+          coolants.add(l);
       if (coolants.size >= 2) {
-        if (present.size >= 2)
+        // 配置面板是游戏 UI 的一部分，出问题也不能把面板带崩（和 display 一样兜住）
+        ComboUi.safe("combineditemturret:coolantSelect", () -> {
+          if (present.size >= 2)
+            table.row();
+          table.add("[lightgray]冷却液（不选 = 自动用效果最好的）[]").left().padTop(4f);
           table.row();
-        Liquid cur = effectiveCoolant();
-        Liquid sel = selectedCoolant != null && acceptsCoolant(selectedCoolant) ? selectedCoolant : null;
-        table.table(t -> {
-          t.left();
-          t.add("[lightgray]冷却液:").padRight(6f);
-          for (Liquid l : coolants) {
-            boolean highlighted = (sel == null && l == cur) || l == sel;
-            t.button(b -> {
-              b.image(l.uiIcon).size(8 * 4);
-              if (highlighted)
-                b.add("[accent]▲[]");
-            }, () -> {
-              // 点已经选中的那种 = 取消选择（回到自动）
-              configure(l == selectedCoolant ? null : l);
-            }).size(56f, 40f).padRight(4f).tooltip(l.localizedName + " · 冷却 x" + Strings.fixed(l.heatCapacity, 2));
-          }
-          t.button("[lightgray]自动[]", () -> configure(null)).height(40f).padLeft(6f)
-              .tooltip("自动用池子里效果最好的冷却液");
-        }).left();
+          ItemSelection.buildTable(CombinedItemTurret.this, table, coolants,
+              () -> selectedCoolant, l -> configure(l));
+        });
       }
     }
 

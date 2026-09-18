@@ -1,5 +1,5 @@
 package combine.dbg;
-import arc.*; import arc.backend.headless.HeadlessApplication; import arc.util.Log;
+import arc.*; import arc.backend.headless.HeadlessApplication; import arc.scene.ui.layout.Table; import arc.util.Log;
 import mindustry.*; import mindustry.content.*; import mindustry.core.*; import mindustry.game.*; import mindustry.gen.*;
 import mindustry.maps.Map; import mindustry.mod.*; import mindustry.net.Net; import mindustry.type.*; import mindustry.ui.Fonts;
 import mindustry.world.*; import mindustry.world.blocks.defense.turrets.*;
@@ -114,6 +114,19 @@ public class TurretCoolantTest implements ApplicationListener{
         System.out.println("[TC] 点回自动后: 选择=" + sel(tower) + " 生效=" + call(tower, "effectiveCoolant") + " 当前=" + (current(tower) == null ? "无" : current(tower).name)
             + " 池里 水=" + store.liquids.get(Liquids.water) + " 冷冻液=" + store.liquids.get(Liquids.cryofluid));
         check("点回自动 → 又用效果最好的（冷冻液）", current(tower) == Liquids.cryofluid);
+
+        // —— 选择器会不会出现：这个炮台"能用的冷却液"≥2 种（不是只看池子里现有的）——
+        try{
+            var coolants = (arc.struct.Seq<?>) tower.getClass().getMethod("presentCoolants").invoke(tower);
+            @SuppressWarnings("unchecked")
+            java.util.List<String> all = new java.util.ArrayList<>();
+            for(mindustry.type.Liquid l : Vars.content.liquids()){
+                if((Boolean) tower.getClass().getMethod("acceptsCoolant", mindustry.type.Liquid.class).invoke(tower, l) && !l.isHidden())
+                    all.add(l.name + "(" + l.heatCapacity + ")");
+            }
+            System.out.println("[TC] 池里现有可用冷却液=" + coolants.size + "；全游戏可用冷却液=" + all);
+            check("这个炮台能用的冷却液 ≥2 种（选择器会显示，和物品选择同一套 UI）", all.size() >= 2);
+        }catch(Throwable t){ System.out.println("[TC] 冷却液清单检查失败: " + t); check("冷却液清单可用", false); }
 
         System.out.println("[TC] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
         System.exit(fail==0?0:1);
