@@ -10,7 +10,7 @@ import arc.struct.Seq;
 import arc.util.Time;
 import arc.util.Tmp;
 import arc.util.Log;
-import mindustry.Vars;
+import combine.ui.Settings;
 import mindustry.ai.types.BuilderAI;
 import mindustry.ai.types.CommandAI;
 import mindustry.entities.bullet.BulletType;

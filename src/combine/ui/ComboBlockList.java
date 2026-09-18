@@ -212,7 +212,7 @@ public class ComboBlockList {
   private static int filterMode = FILTER_EXT;
   private static String searchText = "";
 
-  private static void build(SettingsTable table) {
+  public static void build(SettingsTable table) {
     build(table, new Runnable[1]);
   }
 

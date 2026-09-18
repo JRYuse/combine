@@ -25,41 +25,33 @@ import combine.turret.CombinedContinuousLiquidTurret;
 import combine.turret.CombinedItemTurret;
 import combine.turret.CombinedLiquidTurret;
 import combine.turret.CombinedTurret;
+import combine.ui.Settings;
 import combine.units.CombinedLaunchPad;
 import combine.units.CombinedReconstructor;
 import combine.units.CombinedUnitFactory;
 import combine.util.ComboReflect;
 import arc.Events;
 import arc.files.Fi;
-import arc.struct.ObjectMap;
 import arc.struct.Seq;
-import arc.struct.StringMap;
 import arc.util.Log;
 import arc.util.serialization.JsonReader;
 import arc.util.serialization.JsonValue;
-import java.util.IdentityHashMap;
 import mindustry.Vars;
 import mindustry.content.Items;
-import mindustry.content.TechTree;
 import mindustry.content.UnitTypes;
 import mindustry.content.TechTree.TechNode;
 import mindustry.ctype.Content;
 import mindustry.ctype.ContentType;
-import mindustry.ctype.UnlockableContent;
 import mindustry.game.EventType.BlockBuildBeginEvent;
 import mindustry.game.EventType.ClientLoadEvent;
-import mindustry.game.EventType.SaveLoadEvent;
 import mindustry.game.EventType.WorldLoadEvent;
 import mindustry.gen.Groups;
 import mindustry.game.EventType.TileChangeEvent;
-import mindustry.game.Schematic;
 import mindustry.mod.Mod;
 import mindustry.mod.Mods.LoadedMod;
-import mindustry.type.ItemStack;
 import mindustry.type.UnitType;
 import mindustry.type.Weapon;
 import mindustry.world.Block;
-import mindustry.world.Tile;
 import mindustry.world.blocks.ConstructBlock;
 import mindustry.world.blocks.campaign.LaunchPad;
 import mindustry.world.blocks.defense.ForceProjector;
@@ -177,8 +169,8 @@ public class Main extends Mod {
     CoopCombo.register();
 
     // 设置里的"建筑组合开关"界面（客户端才有 UI，服务端自动跳过）
-    combine.ui.ComboBlockList.register();
-    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
+//    combine.ui.ComboBlockList.register();
+//    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
 
     // 组合仓库并仓（机制本体在 CombinedStorageBlock 里）：没连核心时像其它组合建筑一样
     // 共用物品模块（容量相加），连到核心时整块并进核心给核心扩容（任意深度链式）
