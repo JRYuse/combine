@@ -35,6 +35,19 @@ public class Settings {
                     }).growX().height(50f).padTop(10f).row();
                 }
             });
+            table.pref(new SettingsMenuDialog.SettingsTable.Setting(openList) {
+                @Override
+                public void add(SettingsMenuDialog.SettingsTable table) {
+                    table.button("多倍建造配置", Icon.units, () -> {
+                        BaseDialog dialog = new BaseDialog("多倍建造配置");
+                        dialog.addCloseButton();
+                        SettingsMenuDialog.SettingsTable content = new SettingsMenuDialog.SettingsTable();
+                        MultiBuildList.build(content);
+                        dialog.cont.pane(content).grow().scrollX(false);
+                        dialog.show();
+                    }).growX().height(50f).padTop(10f).row();
+                }
+            });
         });
     }
 

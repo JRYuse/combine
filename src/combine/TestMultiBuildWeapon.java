@@ -40,6 +40,7 @@ public class TestMultiBuildWeapon extends Weapon {
   public float speedMulti = 1f;
   /** 该挂座同时建造/拆除的建筑数量上限（Settings.maxBuild() <= 0 时使用本字段）。 */
   public int maxBuild = 5;
+  public boolean buildBoost = false;
   /** 找活失败后的重试间隔（秒）。空闲挂座不必每帧都去附近单位里翻施工队列。 */
   public float searchRetryInterval = 0.15f;
 
@@ -99,9 +100,17 @@ public class TestMultiBuildWeapon extends Weapon {
     // 施工队列的主人：跟随谁就优先辅助谁；没人可跟时用自己
     Unit targetUnit = resolveTargetUnit(unit);
 
-    // 1) 清理：造完/失效/被抢/超射程的格子放开
+    // 1) 清理：造完/失效/被抢/超射程/超出当前并行上限的格子放开
     float max = state.rules.infiniteResources ? Float.MAX_VALUE : range;
+    int limit = getMaxBuild();
     for (int i = m.plans.size - 1; i >= 0; i--) {
+      // 超出并行上限的直接释放：用户把 maxBuild 调小时，多余的格子要立刻让出来，
+      // 否则它们既不会被新的认领补位挤掉（plans 满了），又会一直画建造光束。
+      // 倒序释放，前面元素的索引不受影响。
+      if (i >= limit) {
+        releaseIndex(m, i);
+        continue;
+      }
       BuildPlan plan = m.plans.get(i);
       if (plan == null) {
         releaseIndex(m, i);
@@ -131,7 +140,7 @@ public class TestMultiBuildWeapon extends Weapon {
 
     // 3) 并行施工
     if (m.plans.size > 0) {
-      float boost = Settings.buildBoost() ? (float) getMaxBuild() / m.plans.size : 1f;
+      float boost = Settings.buildBoost() || buildBoost ? (float) getMaxBuild() / m.plans.size : 1f;
 
       for (int i = 0; i < m.plans.size; i++) {
         BuildPlan plan = m.plans.get(i);
@@ -501,11 +510,18 @@ public class TestMultiBuildWeapon extends Weapon {
 
   public void drawBuildingBeam(float px, float py, BuildWeaponMount mount, Unit unit) {
     float maxDst = state.rules.infiniteResources ? Float.MAX_VALUE : range;
+    int limit = getMaxBuild();
     for (int i = 0; i < mount.plans.size; i++) {
+      // 超出当前并行上限的不画：跟 updateWeapon 里的释放逻辑保持一致，
+      // 避免"设置已经降下来，光束还在画"的视觉错位（释放发生在下一帧）。
+      if (i >= limit) break;
       BuildPlan plan = mount.plans.get(i);
       if (plan == null) continue;
       Tile tile = world.tile(plan.x, plan.y);
       if (tile == null) continue;
+      // 只对"正在进行中"的格子画光束：完成的格子会在下一帧被清理，
+      // 这段空档期不能继续显示。
+      if (!(tile.build instanceof ConstructBlock.ConstructBuild)) continue;
       if (Mathf.dst(plan.drawx(), plan.drawy(), px, py) > maxDst) continue;
 
       int size = plan.breaking ? tile.block().size : plan.block.size;

@@ -184,11 +184,41 @@ public class Main extends Mod {
   }
 
   /**
-   * 【建造武器 · 方法一】决定"给哪个单位挂几把建造武器"，并按原参数真正挂上。
+   * 给指定单位挂 1 把建造武器（幂等；尊重用户偏好）。
    *
-   * 核心机 = 核心机尺寸；建造单位按下面列出的数量（也就是它能并行造几格）。
-   * 武器参数与原来内联在 Main 里的匿名类完全相同：mirror=false, x=0, y=2, speedMulti=1。
-   * 幂等：重复调用、客户端/服务端事件都触发，都不会重复挂。
+   * - 用户手动删过（偏好 = false）：不挂
+   * - 已经挂过：不重复
+   * - 否则挂一把，并行上限用 Main 硬编码的 count（会被武器上的 maxBuild / unitMaxBuild 覆盖）
+   */
+  public static void addTestBuildWeapons(UnitType unit, int count) {
+    if (unit == null || count <= 0) return;
+
+    // 用户手动删过：别再自动挂
+    Boolean pref = combine.ui.MultiBuildList.userEnabled(unit.name);
+    if (pref != null && !pref) return;
+
+    // 幂等：已经有挂座就不重复添加，否则重启/重进会越加越多
+    if (combine.ui.MultiBuildList.getWeapon(unit) != null) return;
+
+    TestMultiBuildWeapon w = new TestMultiBuildWeapon();
+    w.mirror = false;
+    w.x = 0f;
+    w.y = 2f;
+    w.speedMulti = 1f;
+    w.maxBuild = count;
+    if (visuals()) // 专用服务端没有图集，贴图字段跳过即可，不影响建造逻辑
+      w.load();
+    unit.weapons.add(w);
+
+    // 已经存在的单位补挂座（新造单位的挂座由 Unit 自己按 weapons.size 补齐）
+    Groups.unit.each(un -> un.type == unit, un -> un.setupWeapons(unit));
+  }
+
+  /**
+   * 【建造武器 · 方法一】决定"给哪个单位挂几把建造武器"。
+   *
+   * 默认表写死在上面的 addTestBuildWeapons 调用里；用户如果通过设置界面手动
+   * 给不在默认表里的单位添加过武器（偏好 = true），这里也一并补挂。
    */
   public static void addBuildWeapons() {
     for (var b : Vars.content.blocks()) {
@@ -203,6 +233,15 @@ public class Main extends Mod {
     addTestBuildWeapons(UnitTypes.nova, 1);
     addTestBuildWeapons(UnitTypes.pulsar, 2);
     addTestBuildWeapons(UnitTypes.quasar, 3);
+
+    // 用户手动添加过的单位（不在上面默认表里）：也补上。
+    // count 用 5 当默认值，实际并行数由武器上的 maxBuild / unitMaxBuild 覆盖。
+    for (UnitType u : Vars.content.units()) {
+      Boolean pref = combine.ui.MultiBuildList.userEnabled(u.name);
+      if (pref != null && pref) {
+        addTestBuildWeapons(u, 5);
+      }
+    }
   }
 
   /**
@@ -235,27 +274,6 @@ public class Main extends Mod {
     Groups.unit.each(un -> un.type == unit, un -> un.setupWeapons(unit));
   }
 
-  public static void addTestBuildWeapons(UnitType unit, int count) {
-    if (unit == null || count <= 0)
-      return;
-
-    for (Weapon weapon : unit.weapons) {
-      if (weapon instanceof TestMultiBuildWeapon tw)
-        tw.maxBuild = count;
-    }
-      TestMultiBuildWeapon w = new TestMultiBuildWeapon();
-      w.mirror = false;
-      w.x = 0f;
-      w.y = 2f;
-      w.speedMulti = 1f;
-      w.maxBuild = count;
-      if (visuals()) // 专用服务端没有图集，贴图字段跳过即可，不影响建造逻辑
-        w.load();
-      unit.weapons.add(w);
-
-    // 已经存在的单位补挂座（新造单位的挂座由 Unit 自己按 weapons.size 补齐）
-    Groups.unit.each(un -> un.type == unit, un -> un.setupWeapons(unit));
-  }
 
   /**
    * 【建造武器 · 方法二】决定加载时机：客户端在 ClientLoadEvent、
