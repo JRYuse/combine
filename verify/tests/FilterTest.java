@@ -52,6 +52,35 @@ public class FilterTest implements ApplicationListener{
             rep == null || (!on2.contains(rep, true) && !off2.contains(rep, true)));
 
         setBlocked.invoke(null, smelt.name, false);
+
+        // —— NoCombo 排除的类（含 js/java 子类）在界面上怎么显示 ——
+        Class<?> noCombo = Class.forName("combine.NoCombo", true, ml);
+        java.lang.reflect.Method blockedByClass = noCombo.getMethod("blockedByClass", Block.class);
+        Seq<Block> ncBlocks = new Seq<>();
+        for(Block b : Vars.content.blocks()) if((Boolean) blockedByClass.invoke(null, b)) ncBlocks.add(b);
+        Seq<Block> allList = (Seq<Block>) list3.invoke(null, "", 0, 2);       // 全部方块
+        boolean noneSwitchable = true, noneInFilters = true, allInAll = true;
+        for(Block b : ncBlocks){
+            if((Integer) kind.invoke(null, b) == 0) noneSwitchable = false;
+            if(ext.contains(b, true) || on.contains(b, true) || off.contains(b, true)) noneInFilters = false;
+            if(!allList.contains(b, true)) allInAll = false;
+        }
+        StringBuilder ex = new StringBuilder();
+        for(int i=0;i<Math.min(ncBlocks.size,4);i++) ex.append(ncBlocks.get(i).name).append(' ').append(ncBlocks.get(i).getClass().getName()).append(" / ");
+        // 这里面有多少是"模组里的子类"（非 mindustry.* 匿名类）——用来证明子类也一起被排除了
+        int modSub = 0; StringBuilder modEx = new StringBuilder();
+        for(Block b : ncBlocks){
+            String cn = b.getClass().getName();
+            if(cn.startsWith("mindustry.")) continue;
+            modSub++;
+            if(modEx.length() == 0) modEx.append(b.name).append(' ').append(cn);
+        }
+        System.out.println("[FT] NoCombo 排除的方块 " + ncBlocks.size + " 个（kind 全都不为 0 = " + noneSwitchable
+            + "），其中模组里的(非原版匿名类)子类 " + modSub + " 个，例如: " + modEx);
+        System.out.println("[FT] 例子: " + ex);
+        check("NoCombo 排除的方块/子类不会出现在三个可开关过滤里", noneInFilters);
+        check("NoCombo 排除的方块在「全部方块」里能看到", allInAll && ncBlocks.size > 0);
+
         System.out.println("[FT] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
         System.exit(fail==0?0:1);
       }catch(Throwable t){ t.printStackTrace(); System.exit(2); }
