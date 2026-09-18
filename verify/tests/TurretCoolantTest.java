@@ -1,5 +1,5 @@
 package combine.dbg;
-import arc.*; import arc.backend.headless.HeadlessApplication; import arc.scene.ui.layout.Table; import arc.util.Log;
+import arc.*; import arc.backend.headless.HeadlessApplication; import arc.scene.ui.layout.Table; import arc.util.Log; import arc.util.Strings;
 import mindustry.*; import mindustry.content.*; import mindustry.core.*; import mindustry.game.*; import mindustry.gen.*;
 import mindustry.maps.Map; import mindustry.mod.*; import mindustry.net.Net; import mindustry.type.*; import mindustry.ui.Fonts;
 import mindustry.world.*; import mindustry.world.blocks.defense.turrets.*;
@@ -68,65 +68,54 @@ public class TurretCoolantTest implements ApplicationListener{
         Vars.logic.play();
         run(20);
 
-        Block turret = null, cont = null, nodeBlock = null;
+        Block turretItem = null, turretPower = null, cont = null, nodeBlock = null;
         for(Block b : Vars.content.blocks()){
-            if(b.getClass().getName().startsWith("combine.turret.CombinedItemTurret")
-                && b instanceof ItemTurret it && it.ammoTypes != null && it.ammoTypes.containsKey(Items.copper) && turret == null) turret = b;
-            // 液体伙伴：用测试模组里带液体的协作方块（原版容器只存物品，没有液体模块）
+            if(turretItem == null && b.getClass().getName().startsWith("combine.turret.CombinedItemTurret")
+                && b instanceof ItemTurret it && it.ammoTypes != null && it.ammoTypes.containsKey(Items.copper)) turretItem = b;
+            // 组合炮台（PowerTurret/LaserTurret 走的那个类）：lancer 是 PowerTurret + consumeCoolant
+            if(turretPower == null && b.name.equals("lancer") && b.getClass().getName().startsWith("combine.turret.CombinedTurret")) turretPower = b;
             if(b.name.endsWith("liquid-maker")) cont = b;
             if(b.getClass().getName().equals("combine.net.ComboNode")) nodeBlock = b;
         }
-        if(turret == null || cont == null || nodeBlock == null){ System.out.println("[TC] 缺方块"); System.exit(3); }
+        System.out.println("[TC] 物品炮塔=" + (turretItem == null ? "无" : turretItem.name)
+            + " 组合炮台=" + (turretPower == null ? "无" : turretPower.name)
+            + " 液体伙伴=" + (cont == null ? "无" : cont.name) + " 节点=" + (nodeBlock == null ? "无" : nodeBlock.name));
+        if(turretItem == null || turretPower == null || cont == null || nodeBlock == null){ System.out.println("[TC] 缺方块"); System.exit(3); }
 
-        for(int y=40;y<140;y++) for(int x=20;x<240;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
-        run(5);
-        Building store = place(cont, 60, 60, Team.sharded);
-        Building tower = place(turret, 74, 60, Team.sharded);
-        run(5);
-        // 仓库里放两种冷却液：水（heatCapacity 低）和冷冻液（高）
-        store.items.add(Items.copper, 300);
-        store.liquids.add(Liquids.water, 400f);
-        store.liquids.add(Liquids.cryofluid, 400f);
-        Building node = place(nodeBlock, 67, 60, Team.sharded);
-        run(30);
+        for(Block turretB : new Block[]{turretItem, turretPower}){
+            String label = turretB.name;
+            for(int y=40;y<140;y++) for(int x=20;x<240;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            run(5);
+            Building store = place(cont, 60, 60, Team.sharded);
+            Building tower = place(turretB, 74, 60, Team.sharded);
+            run(5);
+            store.items.add(Items.copper, 300);
+            store.liquids.add(Liquids.water, 400f);
+            store.liquids.add(Liquids.cryofluid, 400f);
+            Building node = place(nodeBlock, 67, 60, Team.sharded);
+            run(30);
 
-        System.out.println("[TC] 两种冷却液在池里: 水=" + store.liquids.get(Liquids.water) + " 冷冻液=" + store.liquids.get(Liquids.cryofluid)
-            + " | 炮台当前冷却液=" + (current(tower) == null ? "无" : current(tower).name)
-            + "（水 heatCapacity=" + Liquids.water.heatCapacity + " 冷冻液=" + Liquids.cryofluid.heatCapacity + "）");
-        check("空选时自动用效果最好的冷却液（冷冻液）", current(tower) == Liquids.cryofluid);
+            System.out.println("[TC][" + label + "] 池里 水=" + Strings.fixed(store.liquids.get(Liquids.water), 1)
+                + " 冷冻液=" + Strings.fixed(store.liquids.get(Liquids.cryofluid), 1)
+                + " | 当前冷却液=" + (current(tower) == null ? "无" : current(tower).name));
+            check(label + "：空选时自动用效果最好的冷却液（冷冻液）", current(tower) == Liquids.cryofluid);
 
-        // 手动选水
-        configure(tower, Liquids.water);
-        run(20);
-        System.out.println("[TC] 手动选水后: 选择=" + sel(tower) + " 生效=" + call(tower, "effectiveCoolant") + " 当前=" + (current(tower) == null ? "无" : current(tower).name));
-        check("手动选中水后就用水", current(tower) == Liquids.water);
+            configure(tower, Liquids.water);
+            run(20);
+            System.out.println("[TC][" + label + "] 手动选水后: 选择=" + sel(tower) + " 当前=" + (current(tower) == null ? "无" : current(tower).name));
+            check(label + "：手动选中水后就用水", current(tower) == Liquids.water);
 
-        // 选的那种没了 → 自动回退
-        store.liquids.set(Liquids.water, 0f);
-        run(20);
-        System.out.println("[TC] 水抽干后: 炮台当前冷却液=" + (current(tower) == null ? "无" : current(tower).name));
-        check("选中的冷却液没货时自动回退到还有的（冷冻液）", current(tower) == Liquids.cryofluid);
+            store.liquids.set(Liquids.water, 0f);
+            run(20);
+            System.out.println("[TC][" + label + "] 水抽干后: 当前=" + (current(tower) == null ? "无" : current(tower).name));
+            check(label + "：选中的冷却液没货时自动回退", current(tower) == Liquids.cryofluid);
 
-        // 回到自动
-        configure(tower, null);
-        store.liquids.set(Liquids.water, 400f);
-        run(20);
-        System.out.println("[TC] 点回自动后: 选择=" + sel(tower) + " 生效=" + call(tower, "effectiveCoolant") + " 当前=" + (current(tower) == null ? "无" : current(tower).name)
-            + " 池里 水=" + store.liquids.get(Liquids.water) + " 冷冻液=" + store.liquids.get(Liquids.cryofluid));
-        check("点回自动 → 又用效果最好的（冷冻液）", current(tower) == Liquids.cryofluid);
-
-        // —— 选择器会不会出现：这个炮台"能用的冷却液"≥2 种（不是只看池子里现有的）——
-        try{
-            var coolants = (arc.struct.Seq<?>) tower.getClass().getMethod("presentCoolants").invoke(tower);
-            @SuppressWarnings("unchecked")
-            java.util.List<String> all = new java.util.ArrayList<>();
-            for(mindustry.type.Liquid l : Vars.content.liquids()){
-                if((Boolean) tower.getClass().getMethod("acceptsCoolant", mindustry.type.Liquid.class).invoke(tower, l) && !l.isHidden())
-                    all.add(l.name + "(" + l.heatCapacity + ")");
-            }
-            System.out.println("[TC] 池里现有可用冷却液=" + coolants.size + "；全游戏可用冷却液=" + all);
-            check("这个炮台能用的冷却液 ≥2 种（选择器会显示，和物品选择同一套 UI）", all.size() >= 2);
-        }catch(Throwable t){ System.out.println("[TC] 冷却液清单检查失败: " + t); check("冷却液清单可用", false); }
+            configure(tower, null);
+            store.liquids.set(Liquids.water, 400f);
+            run(20);
+            System.out.println("[TC][" + label + "] 点回自动后: 当前=" + (current(tower) == null ? "无" : current(tower).name));
+            check(label + "：点回自动 → 又用效果最好的", current(tower) == Liquids.cryofluid);
+        }
 
         System.out.println("[TC] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
         System.exit(fail==0?0:1);

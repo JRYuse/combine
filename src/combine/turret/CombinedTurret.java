@@ -15,6 +15,7 @@ import arc.struct.ObjectIntMap;
 import arc.struct.ObjectSet;
 import arc.struct.Queue;
 import arc.struct.Seq;
+import arc.util.Log;
 import arc.util.Nullable;
 import arc.util.Strings;
 import arc.util.Time;
@@ -29,6 +30,7 @@ import mindustry.ui.Bar;
 import mindustry.world.Block;
 import mindustry.world.blocks.defense.turrets.Turret;
 import mindustry.world.consumers.Consume;
+import mindustry.world.blocks.ItemSelection;
 import mindustry.world.consumers.ConsumeLiquidBase;
 import mindustry.world.meta.Stat;
 import mindustry.world.meta.StatUnit;
@@ -78,6 +80,10 @@ public class CombinedTurret extends Turret {
     buildType = CombinedTurretBuild::new;
     hasLiquids = true;
     sync = true;
+    // 冷却液选择（和组合物品炮塔同一套）：config 走联机同步；null = 自动用池里效果最好的
+    configurable = true;
+    config(Liquid.class, (CombinedTurretBuild tile, Liquid l) -> tile.selectedCoolant = l);
+    configClear((CombinedTurretBuild tile) -> tile.selectedCoolant = null);
     // conductivePower 在 init() 里设置（copyFields 会覆盖构造器赋值）
   }
 
@@ -496,22 +502,82 @@ public class CombinedTurret extends Turret {
       }
     }
 
+    /** 选定的冷却液（null = 自动用池里效果最好的那种）。和组合物品炮塔同一套。 */
+    public Liquid selectedCoolant;
+
+    /** 这个炮台能不能用这种液体当冷却液（按原版 consumeLiquid 的过滤条件）。 */
+    public boolean acceptsCoolant(Liquid liquid) {
+      if (liquid == null || coolant == null)
+        return false;
+      try {
+        return coolant.consumes(liquid);
+      } catch (Throwable t) {
+        return false;
+      }
+    }
+
+    /** 池子里现有的、本炮能用的冷却液。 */
+    public Seq<Liquid> presentCoolants() {
+      Seq<Liquid> out = new Seq<>();
+      if (liquids == null)
+        return out;
+      for (Liquid l : content.liquids())
+        if (liquids.get(l) > 0.001f && acceptsCoolant(l))
+          out.add(l);
+      return out;
+    }
+
+    /** 选了就用选的（没货自动回退）；没选就取池里 heatCapacity 最高的（=冷却倍率最高）。 */
+    public Liquid effectiveCoolant() {
+      if (liquids == null)
+        return null;
+      if (selectedCoolant != null && acceptsCoolant(selectedCoolant) && liquids.get(selectedCoolant) > 0.001f)
+        return selectedCoolant;
+      Liquid best = null;
+      for (Liquid l : presentCoolants())
+        if (best == null || l.heatCapacity > best.heatCapacity)
+          best = l;
+      return best;
+    }
+
+    /** 把池子的 current 钉成选定/自动挑出来的那种（原版冷却读的就是 current）。 */
+    public void applyCoolantChoice() {
+      if (liquids == null)
+        return;
+      try {
+        Liquid want = effectiveCoolant();
+        if (want != null && liquids.current() != want)
+          liquids.add(want, 0f);
+      } catch (Throwable ignored) {
+      }
+    }
+
+    /** 配置面板：冷却液选择（和组合物品炮塔完全一样的 UI：图标按钮 + 选中黄框）。 */
+    @Override
+    public void buildConfiguration(Table table) {
+      try {
+        Seq<Liquid> coolants = new Seq<>();
+        for (Liquid l : content.liquids())
+          if (acceptsCoolant(l) && !l.isHidden())
+            coolants.add(l);
+        if (coolants.size < 2)
+          return;
+        ItemSelection.buildTable(CombinedTurret.this, table, coolants,
+            () -> selectedCoolant, l -> configure(l));
+      } catch (Throwable t) {
+        Log.err("[combine] 组合炮台冷却液选择面板构建失败", t);
+      }
+    }
+
     @Override
     public void updateTile() {
       if (isLeader() && comboDirty)
         rebuildCombo();
       if (isLeader())
         trimExcessLiquids(leader());
-      // 每帧把池子 current 对齐为实际在用的液体（冷却液换水后名字/颜色不再陈旧）
-      if (liquids != null && fLiquidCurrent != null) {
-        Liquid fl = firstLiquid();
-        if (fl != null && liquids.current() != fl) {
-          try {
-            fLiquidCurrent.set(liquids, fl);
-          } catch (Exception ignored) {
-          }
-        }
-      }
+      // 每帧把池子 current 对齐到"选定/自动挑出来的那种"冷却液
+      // （以前是取池里第一种 = 谁先加进来用谁，池里混了几种就随机了）
+      applyCoolantChoice();
 
       if (laser()) {
         // ---- 复刻 LaserTurretBuild.updateTile ----
