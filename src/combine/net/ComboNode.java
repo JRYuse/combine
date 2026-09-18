@@ -71,14 +71,23 @@ public class ComboNode extends Block {
             if(contains){
                 entity.links.removeValue(value);
                 if(entity.power != null) entity.power.links.removeValue(value);
-                if(other != null && other.power != null){
-                    other.power.links.removeValue(entity.pos());
-                    other.updatePowerGraph();
-                }
+                if(other != null && other.power != null) other.power.links.removeValue(entity.pos());
+                // 【电力必须两端各建一张新电网】原来只给节点这边 reflow、对面用 updatePowerGraph()，
+                // 那只把"旧的那张（合并过的）电网"继续分给对面 —— 旧图的 all 里还列着这边的机器，
+                // 于是"线断了，电照样过去"（用户报的）。原版 PowerNode 就是这么两段式 reflow 的。
                 if(entity.power != null){
-                    new mindustry.world.blocks.power.PowerGraph().reflow(entity);
-                    entity.updatePowerGraph();
+                    mindustry.world.blocks.power.PowerGraph self = new mindustry.world.blocks.power.PowerGraph();
+                    self.reflow(entity);
+                    self.update();
+                    if(other != null && other.power != null && other.power.graph != self){
+                        mindustry.world.blocks.power.PowerGraph og = new mindustry.world.blocks.power.PowerGraph();
+                        og.reflow(other);
+                        og.update();
+                    }
                 }
+                // 【关键】断开也要把协作组合标记为脏：分组是"跟着节点连线走"的，
+                // 不重算的话两边**看起来断开了、其实还是一个组合体**（物品/液体照样共享，池子不拆）。
+                CoopCombo.markDirty();
                 ComboNet.markDirty();
             }else if(valid && entity.links.size < maxNodes){
                 entity.addLink(other);
@@ -330,16 +339,65 @@ public class ComboNode extends Block {
                 deselect();
                 return false;
             }
-            if(linkValid(this, other, true)){
+            // 已经连过这个组合体（包括连的是同一组合体的**另一台**）→ 点它就是**断开**那根线。
+            //
+            // 这里以前用的是 linkValid(this, other, true)，它带着"一个组合体只连一根"的去重：
+            // 对已连接的目标恒为 false，于是点击直接 return true（当成没处理），
+            // 表现就是"连上之后断不开"（用户报的 bug）。
+            int linkedPos = linkedBodyPos(other);
+            if(linkedPos >= 0){
+                configure(linkedPos);
+                return false;
+            }
+            if(linkValid(this, other, false) && links.size < maxNodes){
                 configure(other.pos());
                 return false;
             }
             return true;
         }
 
+        /**
+         * 点的是**已经连过的那个组合体**吗？是的话返回那根线的 pos（用来断开），否则 -1。
+         *
+         * 【不能用 groupRep / 分组来判】两个组合体一旦被这个节点接上，它们在协作组合那边
+         * 就成了**同一个组** —— 用分组判会变成"点 A 把 B 的线断掉"（用户报的第二个 bug）。
+         * 所以这里只看"同一片连在一起的同类型方块"（本地 BFS，不跨节点连线）：
+         * A 组里的方块和 B 组相隔好几格，永远不会被认成同一片。
+         */
+        public int linkedBodyPos(Building other){
+            if(other == null) return -1;
+            for(int i = 0; i < links.size; i++){
+                Building ex = world.build(links.get(i));
+                if(ex == null || !ex.isValid()) continue;
+                if(ex == other) return links.get(i);
+                if(ex.block == other.block && ex.team == other.team && sameCluster(ex, other)) return links.get(i);
+            }
+            return -1;
+        }
+
+        /** 两台方块是不是"连着的一片"（同类型、贴在一起），只走方块邻接，不跟节点连线。 */
+        private boolean sameCluster(Building a, Building b){
+            arc.struct.ObjectSet<Building> seen = new arc.struct.ObjectSet<>();
+            arc.struct.Queue<Building> queue = new arc.struct.Queue<>();
+            queue.addLast(a);
+            seen.add(a);
+            int guard = 0;
+            while(!queue.isEmpty() && guard++ < 512){
+                Building cur = queue.removeFirst();
+                if(cur == b) return true;
+                if(cur.proximity == null) continue;
+                for(Building nb : cur.proximity){
+                    if(nb == null || !nb.isValid() || nb.block != a.block || nb.team != a.team) continue;
+                    if(seen.add(nb)) queue.addLast(nb);
+                }
+            }
+            return false;
+        }
+
         @Override
         public void configured(Unit builder, Object value){
             super.configured(builder, value);
+            CoopCombo.markDirty();
             ComboNet.markDirty();
         }
 
@@ -392,11 +450,15 @@ public class ComboNode extends Block {
                 power.links.removeValue(other.pos());
                 other.power.links.removeValue(pos());
                 if(power.graph != null) power.graph.remove(this);
-                new mindustry.world.blocks.power.PowerGraph().reflow(this);
-                new mindustry.world.blocks.power.PowerGraph().reflow(other);
-                updatePowerGraph();
-                other.updatePowerGraph();
+                // 同上：两端各建新电网，别让对面留在旧图里
+                mindustry.world.blocks.power.PowerGraph self = new mindustry.world.blocks.power.PowerGraph();
+                self.reflow(this);
+                self.update();
+                mindustry.world.blocks.power.PowerGraph og = new mindustry.world.blocks.power.PowerGraph();
+                og.reflow(other);
+                og.update();
             }
+            CoopCombo.markDirty();
             ComboNet.markDirty();
         }
 
@@ -417,7 +479,10 @@ public class ComboNode extends Block {
                     if(power != null && other.power != null){
                         power.links.removeValue(other.pos());
                         other.power.links.removeValue(pos());
-                        other.updatePowerGraph();
+                        // 对面要重新成图（否则它还留在包含本节点的旧电网里）
+                        mindustry.world.blocks.power.PowerGraph og = new mindustry.world.blocks.power.PowerGraph();
+                        og.reflow(other);
+                        og.update();
                     }
                 }
             }
@@ -425,6 +490,7 @@ public class ComboNode extends Block {
                 new mindustry.world.blocks.power.PowerGraph().reflow(this);
                 updatePowerGraph();
             }
+            CoopCombo.markDirty();
             ComboNet.markDirty();
             super.onRemoved();
         }

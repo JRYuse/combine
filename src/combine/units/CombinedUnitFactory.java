@@ -29,6 +29,10 @@ import mindustry.graphics.Pal;
 import mindustry.type.Item;
 import mindustry.type.Liquid;
 import mindustry.ui.Bar;
+import mindustry.type.UnitType;
+import mindustry.gen.Iconc;
+import mindustry.ui.Fonts;
+import mindustry.entities.Units;
 import mindustry.world.Block;
 import mindustry.world.blocks.units.UnitFactory;
 import mindustry.type.ItemStack;
@@ -365,6 +369,7 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
             }).width(260f).left();
                 }
 
+
         public void buildComboBars(Table table) {
             if (!Mathf.zero(block.health, 0.001f)) {
                 final float h = health, mh = maxHealth;
@@ -374,14 +379,9 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
                         () -> Mathf.clamp(h / mh)));
                 table.row();
             }
-            if (currentPlan != -1) {
-                final float f = fraction();
-                table.add(new Bar(
-                        () -> Core.bundle.format("bar.progress", Strings.autoFixed(f * 100f, 0)),
-                        () -> Pal.ammo,
-                        () -> f));
-                table.row();
-            }
+            // 原版注册的 bar 都在这儿画：进度条 + 「单位数量/上限」（bar.unitcap）。
+            // 以前只画了我们自己那条进度，把原版这两条全丢了，所以看不到单位数量那条。
+            displayBars(table);
             float totalPower = 0f;
             for (IUnitCombo member : group()) {
                 Building mb = (Building) member;

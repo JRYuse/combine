@@ -831,6 +831,14 @@ public class CombinedCrafter extends GenericCrafter {
             Seq<Item> involvedItems = new Seq<>();
             Seq<Liquid> involvedLiquids = new Seq<>();
             collectInvolvedTypes(oldGroup, involvedItems, involvedLiquids);
+            // 【不丢物品】只按"配方用到的"分摊的话，池里其它东西（玩家塞进来的、别的成员产出的）
+            // 会直接凭空消失 —— 拆掉一台成员就把整组的额外物资吃掉了。这里把实际存在的也补进来。
+            if (oldItems != null)
+                for (Item item : content.items())
+                    if (oldItems.get(item) > 0 && !involvedItems.contains(item)) involvedItems.add(item);
+            if (oldLiquids != null)
+                for (Liquid liquid : content.liquids())
+                    if (oldLiquids.get(liquid) > 0.001f && !involvedLiquids.contains(liquid)) involvedLiquids.add(liquid);
 
             if (oldItems != null && oldTotalItemCap > 0 && kickedTotalItemCap > 0) {
                 int[] kickedAllocated = new int[kicked.size];
@@ -1110,6 +1118,13 @@ public class CombinedCrafter extends GenericCrafter {
                 Seq<Item> involvedItems = new Seq<>();
                 Seq<Liquid> involvedLiquids = new Seq<>();
                 collectInvolvedTypes(members, involvedItems, involvedLiquids);
+                // 同上：池里实际存在的物品/液体都要参与分摊，别让拆一台把额外物资吃掉
+                if (oldItems != null)
+                    for (Item item : content.items())
+                        if (oldItems.get(item) > 0 && !involvedItems.contains(item)) involvedItems.add(item);
+                if (oldLiquids != null)
+                    for (Liquid liquid : content.liquids())
+                        if (oldLiquids.get(liquid) > 0.001f && !involvedLiquids.contains(liquid)) involvedLiquids.add(liquid);
 
                 if (oldItems != null && totalItemCap > 0) {
                     int[] allocated = new int[survivors.size];

@@ -157,7 +157,9 @@ public class CombinedStorageBlock extends StorageBlock {
     tracked.clear();
     if (world != null) {
       for (Tile tile : world.tiles) {
-        if (tile != null && tile.build instanceof CombinedStorageBuild sb && sb.coreMergeStorage()) {
+        // 所有组合仓库都登记（coreMerge=false 的强化版也要能"相邻成组"，
+        // coreMerge 只决定"要不要并进核心"）
+        if (tile != null && tile.build instanceof CombinedStorageBuild sb) {
           tracked.add(sb);
         }
       }
@@ -171,7 +173,8 @@ public class CombinedStorageBlock extends StorageBlock {
     // ---- 1) 本队所有参与并仓的仓库，按"仓库↔仓库相邻"求连通分量 ----
     Seq<CombinedStorageBuild> storages = new Seq<>();
     for (CombinedStorageBuild sb : tracked) {
-      if (ComboReflect.inWorld(sb) && sb.team == data.team && sb.coreMergeStorage())
+      // 全部纳入分组：coreMerge 只影响"是否并进核心"，不影响"相邻成组共用一个池子"
+      if (ComboReflect.inWorld(sb) && sb.team == data.team)
         storages.add(sb);
     }
 
@@ -199,7 +202,7 @@ public class CombinedStorageBlock extends StorageBlock {
         comp.add(cur);
         for (Building nb : cur.proximity) {
           if (nb instanceof CombinedStorageBuild other && other.team == data.team
-              && other.coreMergeStorage() && visited.add(other)) {
+              && visited.add(other)) {
             queue.addLast(other);
           }
         }
@@ -237,6 +240,7 @@ public class CombinedStorageBlock extends StorageBlock {
     }
 
     ObjectSet<CombinedStorageBuild> linkedNow = new ObjectSet<>();
+    Seq<Seq<CombinedStorageBuild>> standaloneComps = new Seq<>();
     for (Seq<CombinedStorageBuild> comp : comps) {
       int compCap = 0;
       for (CombinedStorageBuild s : comp)
@@ -250,6 +254,7 @@ public class CombinedStorageBlock extends StorageBlock {
           linkedNow.add(s);
         }
       } else {
+        standaloneComps.add(comp);
         standalone(comp, compCap, dedupe);
       }
     }
@@ -260,8 +265,12 @@ public class CombinedStorageBlock extends StorageBlock {
         s.unlinkFromCore();
     }
 
-    // ---- 4) 刚被拆开的独立组之间可能还共用同一个模块：按容量比例分开，不丢物品 ----
-    splitSharedModules(comps);
+    // ---- 4) 刚被拆开的**独立组**之间可能还共用同一个模块：按容量比例分开，不丢物品 ----
+    // 【只对独立组做】并进核心的组本来就故意和核心共用同一个模块（s.items == core.items），
+    // 那不是"被多个分量共用的残留池"：拿去 split 会把核心库存按各分量容量复制成好几份
+    // （核心那份还原封不动），下次再并回核心就把副本加进去 —— 物品凭空翻倍
+    // （用户报的"钢化玻璃从 4500 变 7000+"，最后被"超容截断"压到容量值，所以看着正好等于容量）。
+    splitSharedModules(standaloneComps);
 
     // ---- 5) 核心容量 = 自身 + 所有连通的仓库；超容截断 ----
     ItemModule coreItems = null;
@@ -273,14 +282,23 @@ public class CombinedStorageBlock extends StorageBlock {
       }
     }
     if (coreItems != null) {
+      int beforeTotal = coreItems.total();
       for (Item item : content.items()) {
         coreItems.set(item, Math.min(coreItems.get(item), capacity));
       }
+      if (debug && beforeTotal != coreItems.total())
+        Log.info("[combine] 容量截断: 核心总量 @ -> @（容量 @）", beforeTotal, coreItems.total(), capacity);
     }
   }
 
   /** 这个分量里有没有成员紧挨着本队的核心（有就整块并进核心）。 */
   private static CoreBuild adjoiningCore(Seq<CombinedStorageBuild> comp, TeamData data) {
+    // 强化版仓库（coreMerge=false）本来就不跟核心并仓：整组都没有可并仓的成员时直接不并
+    boolean anyMergeable = false;
+    for (CombinedStorageBuild s : comp)
+      if (s.coreMergeStorage()) { anyMergeable = true; break; }
+    if (!anyMergeable)
+      return null;
     for (CombinedStorageBuild s : comp) {
       for (Building nb : s.proximity) {
         if (nb instanceof CoreBuild core && core.team == data.team && core.isValid())
@@ -453,6 +471,11 @@ public class CombinedStorageBlock extends StorageBlock {
       return coreMerge;
     }
 
+    /** 已经并进的 cores（没并进返回 null）——给 ComboNet 判断"这是不是核心的池子"用。 */
+    public CoreBuild linkedCoreOf() {
+      return linkedCore instanceof CoreBuild core && core.isValid() ? core : null;
+    }
+
     /** 当前实际可存容量：并进核心 → 核心容量；独立组 → 组容量；都没在组里 → 自身容量。 */
     public int comboCapacity() {
       if (linkedCore instanceof CoreBuild core && core.isValid())
@@ -470,6 +493,9 @@ public class CombinedStorageBlock extends StorageBlock {
 
     /** 并进核心：共用核心的物品模块（容量已计入核心）。 */
     void linkToCore(CoreBuild core, boolean dedupe) {
+      if (debug)
+        Log.info("[combine] 并入核心: 仓库=@ 核心=@ 同模块=@ 去重=@",
+            items == null ? -1 : items.total(), core.items == null ? -1 : core.items.total(), items == core.items, dedupe);
       if (items != core.items) {
         // 仓库里本来有自己的一份库存 → 真正并入；
         // 但读档那一轮，每个链接仓库都写了一份核心库存的副本，内容相同就是副本，丢弃而不是相加。
@@ -563,11 +589,10 @@ public class CombinedStorageBlock extends StorageBlock {
       while (!queue.isEmpty()) {
         CombinedStorageBuild cur = queue.removeFirst();
         out.add(cur);
-        if (!cur.coreMergeStorage())
-          continue; // 强化版仓库（coreMerge=false）不并仓
+        // coreMerge 只影响并核心，不影响"相邻成组"
         for (Building nb : cur.proximity) {
           if (nb instanceof CombinedStorageBuild other && other.team == team
-              && other.coreMergeStorage() && ComboReflect.inWorld(other) && seen.add(other)) {
+              && ComboReflect.inWorld(other) && seen.add(other)) {
             queue.addLast(other);
           }
         }

@@ -12,6 +12,7 @@ import combine.production.CombinedCrafter;
 import combine.storage.CombinedStorageBlock.CombinedStorageBuild;
 import combine.storage.CombinedStorageBlock;
 import combine.util.ComboReflect;
+import arc.Core;
 import arc.Events;
 import arc.struct.ObjectMap;
 import arc.struct.ObjectSet;
@@ -240,24 +241,114 @@ public class CoopCombo {
     eligibleCache.clear();
   }
 
+  // ==================== "不组合"名单的持久化（设置界面用） ====================
+
+  /** 手动标记"不组合"的方块名存在 Core.settings 的这个键里（用 | 分隔）。 */
+  public static final String BLACKLIST_KEY = "combine.blockBlacklist";
+  private static boolean blacklistLoaded = false;
+  /** 名单变过：下一轮重算时先全图重扫一次登记表（把重新启用的方块找回来）。 */
+  private static boolean needsRescan = false;
+
+  /** 从 Core.settings 读回名单（启动时调一次，之后靠 ensure 兜底）。 */
+  public static void loadBlacklist() {
+    blacklistLoaded = true;
+    blacklist.clear();
+    if (Core.settings == null)
+      return;
+    String raw = Core.settings.getString(BLACKLIST_KEY, "");
+    for (String s : raw.split("\\|")) {
+      if (!s.isEmpty())
+        blacklist.add(s);
+    }
+    clearEligibilityCache();
+  }
+
+  private static void ensureBlacklistLoaded() {
+    if (!blacklistLoaded)
+      loadBlacklist();
+  }
+
+  /** 把名单写回 Core.settings。 */
+  public static void saveBlacklist() {
+    StringBuilder sb = new StringBuilder();
+    for (String s : blacklist) {
+      if (sb.length() > 0)
+        sb.append('|');
+      sb.append(s);
+    }
+    if (Core.settings != null) {
+      Core.settings.put(BLACKLIST_KEY, sb.toString());
+      Core.settings.saveValues();
+    }
+    clearEligibilityCache();
+  }
+
+  /** 设置界面用：把某个方块标成"不组合/可组合"，返回是否真的变了。 */
+  public static boolean setBlocked(String name, boolean blocked) {
+    if (name == null)
+      return false;
+    ensureBlacklistLoaded();
+    boolean changed = blocked ? blacklist.add(name) : blacklist.remove(name);
+    if (changed) {
+      saveBlacklist();
+      if (blocked) {
+        // 关掉组合：**立刻**抛弃组合特性，不能等到下一轮重算 ——
+        // 重算前的这十几毫秒里玩家看到的还是"物品/液体/电力照样共享、容量还是叠加的"。
+        detachBlocked(name);
+      } else {
+        needsRescan = true; // 重新打开：下一轮重算先全图重扫，把它重新登记回 tracked
+      }
+      markDirty();          // 立刻重算分组（不用等下一次方块变化）
+    }
+    return changed;
+  }
+
+  /** 这个方块名是不是被手动标成"不组合"。 */
+  public static boolean isBlocked(String name) {
+    ensureBlacklistLoaded();
+    return name != null && blacklist.contains(name);
+  }
+
+  /** 手动"不组合"的名单（拷贝）。 */
+  public static arc.struct.Seq<String> blockedNames() {
+    ensureBlacklistLoaded();
+    arc.struct.Seq<String> out = new arc.struct.Seq<>();
+    for (String s : blacklist)
+      out.add(s);
+    out.sort();
+    return out;
+  }
+
   public static boolean eligible(Block b) {
     if (b == null) return false;
+    ensureBlacklistLoaded();
     Boolean cached = eligibleCache.get(b);
     if (cached != null) return cached;
-    boolean r = computeEligible(b);
+    boolean r = computeEligible(b, false);
     eligibleCache.put(b, r);
     return r;
   }
 
-  private static boolean computeEligible(Block b) {
+  /**
+   * 设置界面用：忽略"手动不组合"名单，只看这个方块**本来**能不能组合。
+   * （界面上要能把它重新勾回"可组合"，所以列清单时不能受手动名单影响）
+   */
+  public static boolean eligibleByClass(Block b) {
+    if (b == null) return false;
+    ensureBlacklistLoaded();
+    return computeEligible(b, true);
+  }
+
+  private static boolean computeEligible(Block b, boolean ignoreManualBlacklist) {
     if (!enabled) return false;
-    // 【不组合名单】传输类等明确不该组合的类（含 js/java 子类）直接排除
-    if (NoCombo.blocked(b)) return false;
+    // 【不组合名单】传输类等明确不该组合的类（含 js/java 子类）直接排除；
+    // 界面上列清单（ignoreManualBlacklist=true）时只看类名单，手动屏蔽的也要能列出来再勾回去
+    if (ignoreManualBlacklist ? NoCombo.blockedByClass(b) : NoCombo.blocked(b)) return false;
     if (b.getClass().getName().startsWith("combine.")) return false;
     // 原版方块一律不碰：combine 该替换的已经替换掉了，剩下没被替换的原版方块
     // （例如 oil-extractor/Fracker 这类"子类但不是匿名类"的）保持原样，别顺手把它们也连起来。
     if (b.getClass().getName().startsWith("mindustry.")) return false;
-    if (blacklist.contains(b.name)) return false;
+    if (!ignoreManualBlacklist && blacklist.contains(b.name)) return false;
     if (b instanceof CoreBlock) return false;
     if (!b.hasItems && !b.hasLiquids) return false;
     return familyOk(b);
@@ -323,7 +414,10 @@ public class CoopCombo {
    */
   public static void captureBaseCaps() {
     for (Block b : content.blocks()) {
-      if (!eligible(b)) continue;
+      // **所有方块都登记**，别只登记"当前合规"的：被手动标了"不组合"的方块在启动时是不合规的，
+      // 玩家在设置里把它打开的那一刻再抓，抓到的就是"已经被放大过"的值 ——
+      // 于是它关掉后容量还原不回去、导电性也还原不回去（就剩一个"还在共享"的假象）。
+      // 只认第一次抓到的值（putIfAbsent 语义）：内容装配阶段抓的一定是没放大的原值。
       if (!baseItemCap.containsKey(b)) baseItemCap.put(b, b.itemCapacity);
       if (!baseLiquidCap.containsKey(b)) baseLiquidCap.put(b, b.liquidCapacity);
       if (!baseConductive.containsKey(b)) baseConductive.put(b, b.conductivePower);
@@ -389,6 +483,123 @@ public class CoopCombo {
     dirty = true;
   }
 
+  /**
+   * 设置里把某个方块标成"不组合"：让它**现存的每一台**立刻脱离组合。
+   *
+   * 【为什么不能只置脏等下一轮 rebuild】
+   * rebuild 的前一步是 rescan()（重新启用时要靠它把方块登记回来），而 rescan 会
+   * {@code tracked.clear()} 再按 eligible 重扫 —— 被关掉的方块这时已经不合格，
+   * 于是它直接从登记表里消失，后面那段"清掉不合规成员 → 脱离"的循环根本看不到它：
+   * 库存模块还是共享的那一份、容量还是放大后的值，表现就是"关掉组合后什么都没变"。
+   * 所以这里当场把它拆出来。
+   */
+  private static void detachBlocked(String name) {
+    // 先把命中的建筑拷出来：detachBuild 自己也要遍历 tracked，
+    // 直接在 ObjectSet 上嵌套迭代会抛 "#iterator() cannot be used nested"。
+    Seq<Building> hit = null;
+    for (Building b : tracked) {
+      if (b == null || b.block == null || !name.equals(b.block.name))
+        continue;
+      if (hit == null)
+        hit = new Seq<>();
+      hit.add(b);
+    }
+    if (hit == null)
+      return;
+
+    for (Building b : hit) {
+      if (ComboReflect.inWorld(b)) {
+        restoreBlockProps(b.block);
+        detachBuild(b);
+      }
+      tracked.remove(b);
+    }
+    // 组结果里也不要再算它：面板/查询下一次 rebuild 才会刷新，这里先让查询失效
+    groupsReady = false;
+  }
+
+  /**
+   * 被"关掉组合"的方块：容量/导电性还原成**原版基础值**。
+   *
+   * applyCapacities / applyPowerSharing 都只处理"合规方块"，所以方块一旦被关掉，
+   * 之前被放大的 itemCapacity/liquidCapacity 和被人为打开的 conductivePower 就没人管了
+   * —— 表现就是"关掉组合后电力还在共享、容量还是叠加的"。
+   */
+  private static void restoreBlockProps(Block block) {
+    if (block == null) return;
+    try {
+      int cap = baseItemCap(block);
+      if (block.itemCapacity != cap) block.itemCapacity = cap;
+      float lcap = baseLiquidCap(block);
+      if (Math.abs(block.liquidCapacity - lcap) > 0.001f) block.liquidCapacity = lcap;
+      boolean cond = baseConductive.get(block, block.conductivePower);
+      if (block.conductivePower != cond) block.conductivePower = cond;
+    } catch (Throwable t) {
+      Log.err("[combine] 还原方块属性失败", t);
+    }
+  }
+
+  /**
+   * 这一台不再参与组合：把它的库存从共享池里"切"出来（按容量比例分一份，其余留给组），
+   * 换成独立模块，并让电网按还原后的导电性重新划分。
+   */
+  private static void detachBuild(Building b) {
+    try {
+      // 物品
+      ItemModule sharedItems = null;
+      for (Building m : tracked) {
+        if (m != b && m.isValid() && m.items != null && m.items == b.items) { sharedItems = b.items; break; }
+      }
+      if (sharedItems != null) {
+        int myCap = Math.max(baseItemCap(b.block), 1);
+        int allCap = 0;
+        for (Building m : tracked) if (m.isValid() && m.items == sharedItems) allCap += Math.max(baseItemCap(m.block), 1);
+        ItemModule own = new ItemModule();
+        for (Item item : content.items()) {
+          int total = sharedItems.get(item);
+          if (total <= 0) continue;
+          int share = (int) Math.round((double) total * myCap / Math.max(allCap, 1));
+          share = Math.max(0, Math.min(share, total));
+          if (share > 0) {
+            own.add(item, share);
+            sharedItems.remove(item, share);
+          }
+        }
+        b.items = own;
+      }
+      // 液体
+      LiquidModule sharedLiquids = null;
+      for (Building m : tracked) {
+        if (m != b && m.isValid() && m.liquids != null && m.liquids == b.liquids) { sharedLiquids = b.liquids; break; }
+      }
+      if (sharedLiquids != null) {
+        float myCap = Math.max(baseLiquidCap(b.block), 1f);
+        float allCap = 0f;
+        for (Building m : tracked) if (m.isValid() && m.liquids == sharedLiquids) allCap += Math.max(baseLiquidCap(m.block), 1f);
+        LiquidModule own = new LiquidModule();
+        for (Liquid liquid : content.liquids()) {
+          float total = sharedLiquids.get(liquid);
+          if (total <= 0.001f) continue;
+          float share = (float) Math.min(total, total * myCap / Math.max(allCap, 0.001f));
+          if (share > 0.001f) {
+            own.add(liquid, share);
+            sharedLiquids.remove(liquid, share);
+          }
+        }
+        b.liquids = own;
+      }
+      // 电网：导电性已经还原，重新划分一次
+      if (b.power != null) {
+        try {
+          new mindustry.world.blocks.power.PowerGraph().reflow(b);
+        } catch (Throwable ignored) {
+        }
+      }
+    } catch (Throwable t) {
+      Log.err("[combine] 脱离组合失败", t);
+    }
+  }
+
   /** 把变化格子（含其 4 邻居）附近的合规建筑补进登记表。 */
   private static void absorbChangedTiles() {
     for (Tile t : changedTiles) {
@@ -435,13 +646,36 @@ public class CoopCombo {
       return;
     }
     try {
+      if (needsRescan) {
+        needsRescan = false;
+        rescan();
+      }
       absorbChangedTiles();
 
-      // 清掉已经消失的成员
+      // 清掉已经消失的成员；**被设置里关掉组合的方块**要就地"脱离"：
+      // 换回独立模块（按容量比例从共享池里分一份）+ 还原容量/导电性，
+      // 否则关掉之后物品/液体/电力还是共享的、容量也还是放大后的值。
       ObjectSet<Building> dead = new ObjectSet<>();
+      Seq<Building> detach = null;
       for (Building b : tracked) {
         // 读档后旧世界的对象 isValid() 还是 true，只有 inWorld 能认出来
-        if (!ComboReflect.inWorld(b) || !eligible(b.block)) dead.add(b);
+        if (!ComboReflect.inWorld(b)) {
+          dead.add(b);
+        } else if (!eligible(b.block)) {
+          // 脱离动作要**延后**做：detachBuild 自己也要遍历 tracked，
+          // 就地调用会抛 "#iterator() cannot be used nested"（那会被外层 catch 吞掉，
+          // 变成每帧重算一次 → 掉帧）。
+          if (detach == null)
+            detach = new Seq<>();
+          detach.add(b);
+        }
+      }
+      if (detach != null) {
+        for (Building b : detach) {
+          restoreBlockProps(b.block);
+          detachBuild(b);
+          dead.add(b);
+        }
       }
       for (Building b : dead) tracked.remove(b);
 

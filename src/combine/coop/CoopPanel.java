@@ -49,7 +49,6 @@ public class CoopPanel {
   private static final Table table = new Table();
   private static Building build;
   private static boolean built = false;
-  private static float emptyTime = 0f;
 
   /** 客户端加载完成后调用：把面板挂到 HUD 上。 */
   public static void init() {
@@ -78,6 +77,10 @@ public class CoopPanel {
     if (!enabled || Vars.headless || !built) return;
     try {
       Building b = tile == null ? null : tile.build;
+      // 同一次点击可能触发两回 TapEvent（手机端点按、别的模组转发、原版再派发一次…），
+      // 而 showFor 对"同一台建筑"是切换语义 —— 于是面板会"闪一下就没了"。
+      // 这里做一次去抖：短时间内对同一台的重复点击直接忽略。
+      if (!acceptTap(b)) return;
       if (showable(b)) {
         showFor(b);
       } else {
@@ -86,6 +89,27 @@ public class CoopPanel {
     } catch (Throwable t) {
       Log.err("[combine] 协作组合面板点击处理失败（不影响游戏运行）", t);
     }
+  }
+
+  /** 同一次点击里的重复事件窗口（秒）。 */
+  public static final float TAP_DEBOUNCE = 0.35f;
+  private static Building lastTapBuild;
+  private static float lastTapTime = -999f;
+
+  /**
+   * 这次点击要不要真的处理：同一台建筑在 {@link #TAP_DEBOUNCE} 秒内的重复点击会被忽略
+   * （一次点击触发多回 TapEvent 时，面板就不会"闪一下"）。超过窗口的再次点击 = 真的要收起。
+   */
+  public static boolean acceptTap(Building b) {
+    float now = Time.time;
+    boolean same = b != null && b == lastTapBuild;
+    if (same && now - lastTapTime < TAP_DEBOUNCE) {
+      lastTapTime = now;
+      return false;
+    }
+    lastTapBuild = b;
+    lastTapTime = now;
+    return true;
   }
 
   /** 这个方块要不要给面板？—— 只给"协作组合接管的、改不了 display 的"方块。 */
@@ -98,12 +122,16 @@ public class CoopPanel {
 
   public static void showFor(Building t) {
     if (build == t) {
-      hide();
+      // 已经在显示同一台：保持不动（"只有点击其他位置才会关闭"），别把面板切掉
       return;
     }
     build = t;
+    lastSignature = null;   // 换目标：下一帧立刻重画一次
     rebuild(true);
   }
+
+  /** 上一次画出来的内容签名（null = 需要立刻重画一次）。 */
+  private static String lastSignature;
 
   public static void hide() {
     build = null;
@@ -125,7 +153,8 @@ public class CoopPanel {
     }
     Table table = CoopPanel.table;
     table.clearChildren();
-    table.clearActions();
+    // 只有"显示动画"那次才清动作：实时重画内容时清掉会把正在跑的缩放动画打断（面板卡在半截大小）
+    if (actions) table.clearActions();
     table.background(mindustry.gen.Tex.inventory);
     try {
       table.margin(4f);
@@ -206,20 +235,48 @@ public class CoopPanel {
       table.actions(Actions.scaleTo(1f, 1f, 0.06f));
     }
 
+    // 【不自动收起】面板打开后就一直留着，只在"点了其他位置 / 读档 / 目标失效"时关闭。
+    // （以前有个"池子空置 30 秒自动收起"，但计时器不清零，重开后会瞬间到期，
+    //   表现成"闪一下就没了"；按需求直接去掉这类定时收起。）
     table.update(() -> {
       if (state.isMenu() || build == null || !build.isValid()) {
+        lastSignature = null;
         hide();
         return;
       }
-      updatePosition();
-      // 池子空了/变了就重画（内容变化时刷新数字）
-      if (build.items != null && build.items.total() == 0 && build.liquids != null && build.liquids.currentAmount() <= 0.001f) {
-        emptyTime += Time.delta;
-        if (emptyTime > 30f) hide();
-      } else {
-        emptyTime = 0f;
+      // 【实时刷新】原来面板只在打开时画一次，物品/液体数量就冻在那一刻了。
+      // 现在每帧比一次"内容签名"，变了就重画：数量、图标、"（空）"都跟着池子实时变。
+      // 这里特意**不**用时间做节流 —— 客户端在某些状态下 Time 会冻住（不在跑逻辑时），
+      // 按 Time 节流的话面板就再也不刷新了（实测踩到过）。
+      String sig = signature();
+      if (lastSignature == null || !lastSignature.equals(sig)) {
+        lastSignature = sig;
+        rebuild(false);
+        return;
       }
+      updatePosition();
     });
+  }
+
+  /** 面板要显示的内容的"指纹"：成员数 + 有货的物品数量 + 有货的液体数量。 */
+  private static String signature() {
+    StringBuilder sb = new StringBuilder(64);
+    Seq<Building> members = members(build);
+    sb.append(members.size).append('|');
+    if (build.items != null) {
+      for (Item item : content.items()) {
+        int amount = build.items.get(item);
+        if (amount > 0) sb.append(item.id).append(':').append(amount).append(',');
+      }
+    }
+    sb.append('|');
+    if (build.liquids != null) {
+      for (Liquid liquid : content.liquids()) {
+        float amount = build.liquids.get(liquid);
+        if (amount > 0.001f) sb.append(liquid.id).append(':').append(Math.round(amount)).append(',');
+      }
+    }
+    return sb.toString();
   }
 
   /**

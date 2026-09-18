@@ -20,6 +20,11 @@ import mindustry.game.Team;
 import mindustry.gen.Building;
 import mindustry.graphics.Pal;
 import mindustry.type.Liquid;
+import mindustry.type.Item;
+import mindustry.type.LiquidStack;
+import mindustry.world.consumers.Consume;
+import mindustry.world.consumers.ConsumeLiquid;
+import mindustry.world.consumers.ConsumeLiquids;
 import mindustry.ui.Bar;
 import mindustry.world.Block;
 import mindustry.world.Tile;
@@ -376,6 +381,7 @@ public class CombinedPump extends Pump {
             }
             if (isLeader() && comboDirty)
                 rebuildCombo();
+            clampPoolToCaps();
 
             if (efficiency > 0 && liquidDrop != null) {
                 float room = Math.max(0f, comboTotalLiquidCap - liquids.get(liquidDrop));
@@ -397,9 +403,55 @@ public class CombinedPump extends Pump {
                 dumpLiquid(liquidDrop);
         }
 
+        /** 这种液体是不是本机要"吃"的料（原版 consumeLiquid / consumeLiquids）。 */
+        public boolean consumesLiquid(Liquid liquid) {
+            if (liquid == null || block.consumers == null)
+                return false;
+            for (Consume cons : block.consumers) {
+                if (cons instanceof ConsumeLiquid cl && cl.liquid == liquid)
+                    return true;
+                if (cons instanceof ConsumeLiquids cls) {
+                    for (LiquidStack st : cls.liquids)
+                        if (st.liquid == liquid)
+                            return true;
+                }
+            }
+            return false;
+        }
+
         @Override
         public boolean acceptLiquid(Building source, Liquid liquid) {
-            return false;
+            // 以前一律拒收（"产出型泵"）。但 reinforced-pump 是"吃氢气抽水"的：
+            // 拒收氢气 → 缺料 → 完全不工作，面板上也看不到需要氢气。
+            // 现在只收本机真正消费的液体，收到整组容量为止；纯产出泵（机械/旋转泵）仍然拒收。
+            if (liquid == null || !consumesLiquid(liquid))
+                return false;
+            return liquids != null && liquids.get(liquid) < Math.max(comboTotalLiquidCap, 1f) - 0.01f;
+        }
+
+        /** 进料口按整组上限夹住（原版 handleLiquid 是无脑 add；liquidCapacity 被抬成 9999 假容量）。 */
+        @Override
+        public void handleLiquid(Building source, Liquid liquid, float amount) {
+            float room = Math.max(comboTotalLiquidCap, 0f) - liquids.get(liquid);
+            if (room <= 0f)
+                return;
+            super.handleLiquid(source, liquid, Math.min(amount, room));
+        }
+
+        /** 读档/合并/拆分后留下的超容存量：每帧夹回上限。 */
+        public void clampPoolToCaps() {
+            if (liquids != null) {
+                float cap = Math.max(comboTotalLiquidCap, 0f);
+                for (Liquid liquid : content.liquids())
+                    if (liquids.get(liquid) > cap)
+                        liquids.set(liquid, cap);
+            }
+            if (items != null) {
+                int cap = Math.max(comboTotalItemCap, 0);
+                for (Item item : content.items())
+                    if (items.get(item) > cap)
+                        items.set(item, cap);
+            }
         }
 
         @Override
@@ -455,6 +507,32 @@ public class CombinedPump extends Pump {
                         if (member.isValid() && member.block.consPower != null)
                             totalPowerUsage += member.block.consPower.usage;
                     ComboUi.addPowerBar(barsTable, this, totalPowerUsage);
+                    // 需要输入的液体（如 reinforced-pump 的氢气）也要显示，否则玩家看不出缺什么
+                    LiquidModule needSource = liquids;
+                    if (needSource == null) {
+                        CombinedPumpBuild l3 = leader();
+                        if (l3 != null)
+                            needSource = l3.liquids;
+                    }
+                    if (needSource != null && block.consumers != null) {
+                        final LiquidModule fLiq = needSource;
+                        final float lcap3 = Math.max(comboTotalLiquidCap, 1f);
+                        for (Consume cons : block.consumers) {
+                            Liquid need = null;
+                            if (cons instanceof ConsumeLiquid cl)
+                                need = cl.liquid;
+                            else if (cons instanceof ConsumeLiquids cls && cls.liquids.length > 0)
+                                need = cls.liquids[0].liquid;
+                            if (need == null || need == liquidDrop)
+                                continue;
+                            final Liquid needF = need;
+                            barsTable.add(new Bar(
+                                    () -> needF.localizedName + ": " + Strings.fixed(fLiq.get(needF), 1) + "/" + Strings.fixed(lcap3, 1),
+                                    () -> needF.barColor != null ? needF.barColor : needF.color,
+                                    () -> fLiq.get(needF) / lcap3));
+                            barsTable.row();
+                        }
+                    }
                     LiquidModule liq = liquids;
                     if (liq == null) {
                         CombinedPumpBuild l = leader();

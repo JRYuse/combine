@@ -612,6 +612,14 @@ public class CombinedGenerator extends ConsumeGenerator {
 
       Seq<Item> involvedItems = new Seq<>();
       collectInvolvedTypes(oldGroup, involvedItems);
+      // 【不丢物品】把池里实际存在的物品也补进来（只按配方分摊会丢掉额外物资）
+      if (oldItems != null)
+        for (Item item : content.items())
+          if (oldItems.get(item) > 0 && !involvedItems.contains(item)) involvedItems.add(item);
+      Seq<Liquid> involvedLiquids = new Seq<>();
+      if (oldLiquids != null)
+        for (Liquid liquid : content.liquids())
+          if (oldLiquids.get(liquid) > 0.001f) involvedLiquids.add(liquid);
 
       if (oldItems != null && oldTotalItemCap > 0 && kickedTotalItemCap > 0) {
         int[] kickedAllocated = new int[kicked.size];
@@ -640,7 +648,7 @@ public class CombinedGenerator extends ConsumeGenerator {
 
       if (oldLiquids != null && oldTotalLiquidCap > 0.001f && kickedTotalLiquidCap > 0.001f) {
         float[] kickedAllocated = new float[kicked.size];
-        for (Liquid liquid : cachedLiquids) {
+        for (Liquid liquid : involvedLiquids) {
           float total = oldLiquids.get(liquid);
           if (total <= 0.001f)
             continue;
@@ -828,6 +836,14 @@ public class CombinedGenerator extends ConsumeGenerator {
 
         Seq<Item> involvedItems = new Seq<>();
         collectInvolvedTypes(members, involvedItems);
+        // 同上：池里实际存在的都参与分摊
+        if (oldItems != null)
+          for (Item item : content.items())
+            if (oldItems.get(item) > 0 && !involvedItems.contains(item)) involvedItems.add(item);
+        Seq<Liquid> involvedLiquids = new Seq<>();
+        if (oldLiquids != null)
+          for (Liquid liquid : content.liquids())
+            if (oldLiquids.get(liquid) > 0.001f) involvedLiquids.add(liquid);
 
         if (oldItems != null && totalItemCap > 0) {
           int[] allocated = new int[survivors.size];
@@ -853,7 +869,7 @@ public class CombinedGenerator extends ConsumeGenerator {
 
         if (oldLiquids != null && totalLiquidCap > 0.001f) {
           float[] allocated = new float[survivors.size];
-          for (Liquid liquid : cachedLiquids) {
+          for (Liquid liquid : involvedLiquids) {
             float total = oldLiquids.get(liquid);
             if (total <= 0.001f)
               continue;
