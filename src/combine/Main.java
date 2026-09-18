@@ -25,6 +25,7 @@ import combine.turret.CombinedContinuousLiquidTurret;
 import combine.turret.CombinedItemTurret;
 import combine.turret.CombinedLiquidTurret;
 import combine.turret.CombinedTurret;
+import combine.units.CombinedLandingPad;
 import combine.units.CombinedLaunchPad;
 import combine.units.CombinedReconstructor;
 import combine.units.CombinedUnitFactory;
@@ -426,6 +427,9 @@ public class Main extends Mod {
           || isExact(b, ImpactReactor.class)
           || isExact(b, NuclearReactor.class) || isExact(b, HeaterGenerator.class);
       boolean isLaunchPad = isExact(b, LaunchPad.class);
+      // 接收台（campaign LandingPad）：组合类 CombinedLandingPad 一直写好了但**从没接进来**，
+      // 于是"接收台"从来没被组合过（用户报的"CombinedLandingPad 的组合怎么没了"）。
+      boolean isLandingPad = isExact(b, mindustry.world.blocks.campaign.LandingPad.class);
       boolean isRegen = isExact(b, RegenProjector.class);
       boolean isOverdrive = isExact(b, OverdriveProjector.class);
       boolean isMend = isExact(b, MendProjector.class);
@@ -458,7 +462,7 @@ public class Main extends Mod {
       boolean isReconstructor = isExact(b, Reconstructor.class);
 
       if (!isFactory && !isHeatCrafter && !isHeatProducer && !isSeparator && !isAttribute
-          && !isDrill && !isGenerator && !isLaunchPad
+          && !isDrill && !isGenerator && !isLaunchPad && !isLandingPad
           && !isRegen && !isOverdrive && !isMend && !isForce && !isStorage
           && !isLogic && !isContLiquidTurret && !isLiquidTurret && !isItemTurret
           && !isPowerTurret && !isLaserTurret
@@ -468,7 +472,7 @@ public class Main extends Mod {
 
       // 防止重复处理已转换类型
       if (b instanceof CombinedCrafter || b instanceof CombinedDrill
-          || b instanceof CombinedGenerator || b instanceof CombinedLaunchPad
+          || b instanceof CombinedGenerator || b instanceof CombinedLaunchPad || b instanceof CombinedLandingPad
           || b instanceof CombinedRegenProjector || b instanceof CombinedOverdriveProjector
           || b instanceof CombinedMendProjector || b instanceof CombinedForceProjector
           || b instanceof CombinedStorageBlock || b instanceof CombinedLogicProcessor
@@ -542,6 +546,8 @@ public class Main extends Mod {
         combo = cg;
       } else if (isLaunchPad) {
         combo = createCombo(b, CombinedLaunchPad.class);
+      } else if (isLandingPad) {
+        combo = createCombo(b, CombinedLandingPad.class);
       } else if (isRegen) {
         combo = createCombo(b, CombinedRegenProjector.class);
       } else if (isOverdrive) {
