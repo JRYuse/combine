@@ -446,6 +446,10 @@ public class Main extends Mod {
       }
 
       boolean isStorage = isExact(b, StorageBlock.class);
+      // 核心：原版 CoreBuild.onProximityUpdate 会按"自己算的容量"把超出部分**真删掉**，
+      // 而组合仓库链/节点扩出来的容量它不认 —— 一重算就吞玩家的货（用户报的）。
+      // 按用户要求"源码做不到就替换原版核心"，这里换成组合核心（只在截断处兜住）。
+      boolean isCore = isExact(b, CoreBlock.class);
       // 可选：接上之前一直闲置的 CombinedPump / CombinedWallCrafter
       boolean isLogic = isExact(b, LogicBlock.class);
       boolean isContLiquidTurret = isExact(b, ContinuousLiquidTurret.class);
@@ -463,7 +467,7 @@ public class Main extends Mod {
 
       if (!isFactory && !isHeatCrafter && !isHeatProducer && !isSeparator && !isAttribute
           && !isDrill && !isGenerator && !isLaunchPad && !isLandingPad
-          && !isRegen && !isOverdrive && !isMend && !isForce && !isStorage
+          && !isRegen && !isOverdrive && !isMend && !isForce && !isStorage && !isCore
           && !isLogic && !isContLiquidTurret && !isLiquidTurret && !isItemTurret
           && !isPowerTurret && !isLaserTurret
           && !isPump && !isSolidPump && !isFracker && !isWallCrafter
@@ -473,6 +477,7 @@ public class Main extends Mod {
       // 防止重复处理已转换类型
       if (b instanceof CombinedCrafter || b instanceof CombinedDrill
           || b instanceof CombinedGenerator || b instanceof CombinedLaunchPad || b instanceof CombinedLandingPad
+          || b instanceof combine.storage.CombinedCoreBlock
           || b instanceof CombinedRegenProjector || b instanceof CombinedOverdriveProjector
           || b instanceof CombinedMendProjector || b instanceof CombinedForceProjector
           || b instanceof CombinedStorageBlock || b instanceof CombinedLogicProcessor
@@ -554,6 +559,8 @@ public class Main extends Mod {
         combo = createCombo(b, CombinedOverdriveProjector.class);
       } else if (isMend) {
         combo = createCombo(b, CombinedMendProjector.class);
+      } else if (isCore) {
+        combo = createCombo(b, combine.storage.CombinedCoreBlock.class);
       } else if (isStorage) {
         combo = createCombo(b, CombinedStorageBlock.class);
       } else if (isLogic) {
