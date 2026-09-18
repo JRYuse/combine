@@ -79,6 +79,9 @@ public class ComboNode extends Block {
                     new mindustry.world.blocks.power.PowerGraph().reflow(entity);
                     entity.updatePowerGraph();
                 }
+                // 【关键】断开也要把协作组合标记为脏：分组是"跟着节点连线走"的，
+                // 不重算的话两边**看起来断开了、其实还是一个组合体**（物品/液体照样共享，池子不拆）。
+                CoopCombo.markDirty();
                 ComboNet.markDirty();
             }else if(valid && entity.links.size < maxNodes){
                 entity.addLink(other);
@@ -330,16 +333,42 @@ public class ComboNode extends Block {
                 deselect();
                 return false;
             }
-            if(linkValid(this, other, true)){
+            // 已经连过这个组合体（包括连的是同一组合体的**另一台**）→ 点它就是**断开**那根线。
+            //
+            // 这里以前用的是 linkValid(this, other, true)，它带着"一个组合体只连一根"的去重：
+            // 对已连接的目标恒为 false，于是点击直接 return true（当成没处理），
+            // 表现就是"连上之后断不开"（用户报的 bug）。
+            int linkedPos = linkedGroupPos(other);
+            if(linkedPos >= 0){
+                configure(linkedPos);
+                return false;
+            }
+            if(linkValid(this, other, false) && links.size < maxNodes){
                 configure(other.pos());
                 return false;
             }
             return true;
         }
 
+        /**
+         * 这个建筑所在的「组合体」已经被连过的话，返回已连那根的 pos；没连过返回 -1。
+         * 用组合体代表（{@link #groupRep}）比，所以点组合体里的哪一台都认。
+         */
+        public int linkedGroupPos(Building other){
+            if(other == null) return -1;
+            Building rep = groupRep(other);
+            for(int i = 0; i < links.size; i++){
+                Building ex = world.build(links.get(i));
+                if(ex == null || !ex.isValid()) continue;
+                if(ex == other || (rep != null && rep == groupRep(ex))) return links.get(i);
+            }
+            return -1;
+        }
+
         @Override
         public void configured(Unit builder, Object value){
             super.configured(builder, value);
+            CoopCombo.markDirty();
             ComboNet.markDirty();
         }
 
@@ -397,6 +426,7 @@ public class ComboNode extends Block {
                 updatePowerGraph();
                 other.updatePowerGraph();
             }
+            CoopCombo.markDirty();
             ComboNet.markDirty();
         }
 
@@ -425,6 +455,7 @@ public class ComboNode extends Block {
                 new mindustry.world.blocks.power.PowerGraph().reflow(this);
                 updatePowerGraph();
             }
+            CoopCombo.markDirty();
             ComboNet.markDirty();
             super.onRemoved();
         }
