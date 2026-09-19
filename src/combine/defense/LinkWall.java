@@ -409,30 +409,82 @@ public class LinkWall extends Wall {
      */
     @Override
     public void heal(float amount) {
-      super.heal(amount);
-      redistributeHealth();
+      Seq<LinkWallBuild> members = liveMembers();
+      if (members.size <= 1) {
+        super.heal(amount);
+        return;
+      }
+      // 【整组=一整面墙】治疗量加在"血池总量"上，再按各成员最大血量摊回去。
+      //
+      // 以前的写法是 super.heal(amount)（只治这一格，并且会被这格的 maxHealth 截断）
+      // 之后再 redistributeHealth()：血池越接近满，那一次治疗里被截掉的部分就越多，
+      // 于是每修一次只涨"当前缺口"的一小部分（几何收敛），最后卡在比满血低一点点的
+      // 浮点定点上 —— 表现就是**怎么修都还是破损状态**（用户报的）。
+      float pool = poolHealth(members);
+      float totalMax = poolMax(members);
+      distributeHealth(members, Math.min(pool + amount, totalMax), totalMax);
+    }
+
+    /** 组里还活着的成员（死掉的格子不该继续摊血，否则活着的永远修不满）。 */
+    private Seq<LinkWallBuild> liveMembers() {
+      Seq<LinkWallBuild> out = new Seq<>();
+      for (LinkWallBuild b : group())
+        if (b != null && !b.dead() && b.isValid())
+          out.add(b);
+      if (out.isEmpty())
+        out.add(this);
+      return out;
+    }
+
+    private static float poolHealth(Seq<LinkWallBuild> members) {
+      float total = 0f;
+      for (LinkWallBuild b : members)
+        total += Math.max(b.health, 0f);
+      return total;
+    }
+
+    private static float poolMax(Seq<LinkWallBuild> members) {
+      float total = 0f;
+      for (LinkWallBuild b : members)
+        total += Math.max(b.maxHealth, 0f);
+      return total;
+    }
+
+    /**
+     * 把血池总量 total 按各成员最大血量的比重摊到每一格上。
+     *
+     * 最后一个成员拿"剩余量"（而不是各算各的浮点比例），并且整段用 double 算 ——
+     * float 比例乘法每格都差一丁点，加起来正好让血池离满血差最后一丝，
+     * `damaged()`（health &lt; maxHealth - 0.001）就一直为真：画面上永远有裂纹。
+     */
+    private static void distributeHealth(Seq<LinkWallBuild> members, float total, float totalMax) {
+      if (members.size <= 0)
+        return;
+      if (totalMax <= 0.001f) {
+        for (LinkWallBuild b : members) {
+          b.health = Math.max(total, 0f);
+          b.healthChanged();
+        }
+        return;
+      }
+      double assigned = 0.0;
+      for (int i = 0; i < members.size; i++) {
+        LinkWallBuild b = members.get(i);
+        double v = i == members.size - 1
+            ? (double) total - assigned
+            : (double) total * ((double) b.maxHealth / (double) totalMax);
+        assigned += v;
+        b.health = (float) Math.max(0.0, Math.min(v, b.maxHealth));
+        b.healthChanged();
+      }
     }
 
     /** 把整组的血量按各成员最大血量比重重新分配（总量不变，各格回到同一百分比）。 */
     public void redistributeHealth() {
-      Seq<LinkWallBuild> members = new Seq<>(group());
-      int n = members.size;
-      if (n <= 1)
+      Seq<LinkWallBuild> members = liveMembers();
+      if (members.size <= 1)
         return;
-      float totalMax = 0f, total = 0f;
-      for (int i = 0; i < n; i++) {
-        LinkWallBuild b = members.get(i);
-        totalMax += b.maxHealth;
-        total += Math.max(b.health, 0f);
-      }
-      if (totalMax <= 0.001f)
-        return;
-      for (int i = 0; i < n; i++) {
-        LinkWallBuild b = members.get(i);
-        b.health = total * (b.maxHealth / totalMax);
-        b.clampHealth();
-        b.healthChanged();
-      }
+      distributeHealth(members, poolHealth(members), poolMax(members));
     }
 
     @Override
@@ -459,25 +511,18 @@ public class LinkWall extends Wall {
       } else {
         damage /= dm;
       }
-      Seq<LinkWallBuild> members = new Seq<>(group());
+      Seq<LinkWallBuild> members = liveMembers();
       if (members.isEmpty())
         return;
-      float totalMax = 0f;
-      for (LinkWallBuild b : members)
-        totalMax += b.maxHealth;
+      float totalMax = poolMax(members);
       if (totalMax <= 0.001f) {
         super.damage(damage);
         return;
       }
-      for (LinkWallBuild b : members) {
-        b.health -= damage * (b.maxHealth / totalMax);
-      }
-      // 分摊完立刻摊平：各格始终保持同一个百分比，这样不会出现"某一格血量先见底就被单独打掉"，
-      // 更不会因为那一格见底而把满血的同伴一起带走（以前这里是 health <= 0 就整组 kill）。
-      redistributeHealth();
-      float pool = 0f;
-      for (LinkWallBuild b : members)
-        pool += Math.max(b.health, 0f);
+      // 伤害从"血池总量"里扣，再摊平：各格始终保持同一个百分比，
+      // 不会出现"某一格血量先见底就被单独打掉"，也不会因为那一格见底把满血同伴一起带走。
+      float pool = Math.max(poolHealth(members) - damage, 0f);
+      distributeHealth(members, pool, totalMax);
       // 只有整组的血池被打空，这面组合墙才算倒
       if (pool <= 0.001f) {
         for (LinkWallBuild b : members)

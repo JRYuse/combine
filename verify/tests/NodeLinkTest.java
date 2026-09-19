@@ -65,9 +65,19 @@ public class NodeLinkTest implements ApplicationListener{
         java.lang.reflect.Field lf = node.getClass().getDeclaredField("links");
         lf.setAccessible(true);
         arc.struct.IntSeq links = (arc.struct.IntSeq) lf.get(node);
-        System.out.println("[NL] 放好后 节点 links=" + links.size + " (自动连线)   A池=" + (a1.items == a2.items) + " B池=" + (b1.items == b2.items));
+        System.out.println("[NL] 放好后 节点 links=" + links.size + " (应为 0：不再自动连线)   A池=" + (a1.items == a2.items) + " B池=" + (b1.items == b2.items));
         System.out.println("[NL] 两个组合体现在是不是同一个池（节点把它们接起来了）: " + (a1.items == b1.items));
-        check("节点放下后自动连上了两个组合体（2 根线）", links.size == 2);
+        check("节点放下后**不**自动连线（links=0）", links.size == 0);
+        check("没连线时两边各自独立（不同池）", a1.items != b1.items);
+
+        // —— 用户要求：不自动连接，改成自己点目标 ——
+        node.onConfigureBuildTapped(a1);
+        run(6);
+        node.onConfigureBuildTapped(b1);
+        run(10);
+        System.out.println("[NL] 手动点 A、B 之后: links=" + links.size + " 同池=" + (a1.items == b1.items));
+        check("手动点两个组合体后连上（2 根线）", links.size == 2);
+        check("连上后两边同一个池", a1.items == b1.items);
 
         // —— 用户报的 bug：点已连接的目标，应该断开 ——
         boolean handled = node.onConfigureBuildTapped(a1);

@@ -67,7 +67,9 @@ verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑�
 
 原理：`Xvfb` 提供离屏 X，`SDL_VIDEODRIVER=offscreen` 让 SDL 走 EGL，Mesa 软渲染（llvmpipe）出画面；
 截图由 `verify/client/Driver.java`（一个驱动 mod）用 `ScreenUtils.saveScreenshot` 自己抓。
-驱动 mod 的参数：`-Ddrv.mode=list|coop`、`-Ddrv.out=<目录>`。
+驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn`、`-Ddrv.out=<目录>`
+（`gen` = 核反应堆 + 一台容量 10 万的发电机，看燃料条/发电效率；`status` = 方块状态菱形 + 容器面板；
+`conn` = 两台组合工厂 + 一串组合连接器，看连接器贴图/连线与信息面板）。
 
 **注意**：软渲染下一帧很慢（~5fps），截图之间要留够时间，别用 0.5 秒的小间隔下结论。
 
@@ -100,14 +102,19 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 | `combine.dbg.DetachTest` | js 或 java 扩展方块 | 设置里开关组合立刻拆池/还原/恢复 |
 | `combine.dbg.FilterTest` | js/java 扩展方块 | 显示可组合/不可组合 只列能开关的；NoCombo 排除的不出现 |
 | `combine.dbg.ContentTableTest` | 任意 | 手动名单不改内容表（`-Dseed=<方块名>`） |
-| `combine.dbg.NodeLinkTest` | `coop-producer`（java 测试模组） | 节点连线：点已连目标=断开、不会误断另一边 |
+| `combine.dbg.NodeLinkTest` | `coop-producer`（java 测试模组） | 节点**不自动连线**；点目标=连/断、点已连目标=断开、不会误断另一边；点节点自己=全断 |
 | `combine.dbg.PowerSplitTest` | `coop-producer` | 节点/连接器断开后电力真的断开（不只是 graph 不同） |
+| `combine.dbg.ConnectorSaveTest` | `coop-producer` | 连接器接上两组合体后同池/同电网；存读档后依然同池、物品一份不少 |
 | `combine.dbg.TurretAmmoTest` | 任意（有炮塔+容器） | 仓库↔炮塔：每种弹药都进、弹仓按台数放大、从池里扣 |
 | `combine.dbg.TurretCoolantTest` | `liquid-maker`（java 测试模组） | 冷却液选择：空选自动取效果最好的、手选生效、没货回退 |
 | `combine.dbg.SaveRoundTripTest` | 任意 | 核心+容器 存读档物品不翻倍 |
 | `combine.dbg.ModStorageCoreTest` | 需要"别的模组写的仓库"（`verify/make-modstorage-fixture.sh` 造一个） | 模组仓库挨着核心照样扩容、且不被组合压掉 |
 | `combine.dbg.CoreCapacityTest` | 任意 | 造/拆容器不丢不涨、存读档一分不差、仓库链读档不涨 |
 | `combine.dbg.UnitBarTest` | 任意 | 组合单位工厂/升级厂有原版那些 bar（含单位数量/上限） |
+| `combine.dbg.GeneratorNuclearTest` | 任意（有 thorium-reactor） | 核模式发电效率 = 燃料 / 核反应堆总容量（≤1），组合进大容量建筑不再要巨量燃料 |
+| `combine.dbg.LinkWallRepairTest` | 任意（有 copper-wall + mend-projector） | 组合墙血池：伤害整组分摊；修复投影能把整组修到满血（不再永远"破损"） |
+| `combine.dbg.NewBuildAfterLoadTest` | 任意 | 读档后新建/拆掉组合建筑，核心与各组合建筑的物品总量一份不差 |
+| `combine.dbg.DerelictRepairTest` | 任意 | team=derelict 的废墟：排一串计划（蓝图框）后应当**全部**立刻被修好 |
 
 ## 复现排版问题
 

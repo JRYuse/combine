@@ -63,6 +63,11 @@ public class PowerSplitTest implements ApplicationListener{
         System.out.println("[PW] 放节点前: A内部同网=" + sameGrid(a1, a2) + " A-B同网=" + sameGrid(a1, b1));
         Building node = place(nodeBlock, 65, 60, Team.sharded);
         run(20);
+        // 节点不再自动连线：手动点两边的组合体各连一根
+        node.onConfigureBuildTapped(a1);
+        run(6);
+        node.onConfigureBuildTapped(b1);
+        run(20);
         System.out.println("[PW] 节点接上后: A-B同网=" + sameGrid(a1, b1) + " A内部=" + sameGrid(a1, a2) + " B内部=" + sameGrid(b1, b2));
         check("节点接上后两边同一个电网", sameGrid(a1, b1));
 

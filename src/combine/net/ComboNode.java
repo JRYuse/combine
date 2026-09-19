@@ -293,47 +293,20 @@ public class ComboNode extends Block {
         @Override
         public void placed(){
             super.placed();
-            if(!net.client() && links.size == 0){
-                for(Building c : autoLinkCandidates()) configureAny(c.pos());
-            }
+            // 【不自动连线】放下去就自己连上一堆组合体，玩家根本不知道连了谁、想改还得先全断掉。
+            // 现在放置后 links 恒为空，要连哪个组合体得自己点过去（放置前的蓝框提示保留，
+            // 那是"能连什么"的预览，不是自动连接）。
             ComboNet.markDirty();
             CoopCombo.markDirty();
-        }
-
-        /**
-         * 自动连线的候选：**每个组合体只取一台**（最近的那台），最多 maxNodes 个组合体。
-         * 以前是"最近的三台机器"，导致旁边一个三台组合体会把三根线全吃掉。
-         */
-        public Seq<Building> autoLinkCandidates(){
-            Seq<Building> candidates = new Seq<>();
-            for(Building other : ComboNet.allComboBuildings()){
-                if(other != this && other.team == team && linkTarget(other)
-                    && linkValid(this, other, true) && !links.contains(other.pos())){
-                    candidates.add(other);
-                }
-            }
-            if(candidates.isEmpty()) return candidates;
-            candidates.sort((a, b) -> Float.compare(a.dst2(this), b.dst2(this)));
-            arc.struct.ObjectSet<Building> groups = new arc.struct.ObjectSet<>();
-            Seq<Building> out = new Seq<>();
-            for(Building c : candidates){
-                if(out.size >= maxNodes) break;
-                Building rep = groupRep(c);
-                if(rep != null && groups.add(rep)) out.add(c);
-            }
-            return out;
         }
 
         @Override
         public boolean onConfigureBuildTapped(Building other){
             if(other == this){
-                if(links.size == 0){
-                    Seq<Point2> points = new Seq<>();
-                    for(Building b : autoLinkCandidates()){
-                        points.add(new Point2(b.tileX() - tile.x, b.tileY() - tile.y));
-                    }
-                    configure(points.toArray(Point2.class));
-                }else{
+                // 点自己 = 全断（没有连线时什么都不做）。
+                // 以前没连线时是"一次连上范围内所有组合体"，那也是自动连接的一种，
+                // 玩家点一下节点自己就被连了一串，故去掉（用户要求：节点不自动连接）。
+                if(links.size > 0){
                     configure(new Point2[0]);
                 }
                 deselect();

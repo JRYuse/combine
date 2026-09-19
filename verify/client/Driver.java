@@ -90,6 +90,33 @@ public class Driver extends Mod{
                 // 否则会截到面板还没重画的那一帧（看起来像"没实时刷新"）。
                 Timer.schedule(Driver::maybeShotAfter, 10f, 0.5f);
                 Timer.schedule(() -> { Log.info("[drv] 超时，直接截"); shot("coop_panel_after"); finish(); }, 75f);
+            }else if(mode.equals("gen")){
+                // 核反应堆组合进"容量极大的发电机"后：
+                //   1) 发电效率只看核反应堆自己的容量（喂满即可 100%）；
+                //   2) 面板里的燃料条也要按同一个口径显示（不然看着像没燃料）。
+                // 软渲染下一帧很慢：截图靠"真的过了 N 帧"来卡，不用固定秒数。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupGenScene, 5f);
+                Timer.schedule(() -> { hideDialogs(); genSetFuel(Math.max(genNukeCap / 2, 1)); openGenPanel(); }, 12f);
+                Timer.schedule(Driver::genStep, 13f, 0.5f);
+                Timer.schedule(() -> { Log.info("[drv] gen 模式超时结束"); Core.app.exit(); }, 120f);
+            }else if(mode.equals("conn")){
+                // 组合连接器：两块组合工厂之间铺一连串连接器 → 世界截图（看贴图/连线）
+                // + 连接器信息面板截图（看"连接组合 xN"和池子内容）。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupConnScene, 5f);
+                Timer.schedule(Driver::stepConn, 8f, 0.5f);
+                Timer.schedule(() -> { Log.info("[drv] conn 模式超时结束"); Core.app.exit(); }, 90f);
+            }else if(mode.equals("wall")){
+                // 组合墙：3 面铜墙成一组 → 打成残血 → 修复投影修 → 截图看还破不破损（裂纹）
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupWallScene, 5f);
+                Timer.schedule(() -> shot("wall_damaged"), 16f);
+                Timer.schedule(Driver::wallRepairStep, 18f, 0.5f);
+                Timer.schedule(() -> { Log.info("[drv] wall 模式超时结束"); Core.app.exit(); }, 150f);
             }else if(mode.equals("status")){
                 // 两块东西一起看：
                 //  1) 升华站（sublimate）灌了氰气后的**方块状态**菱形（红=noinput / 绿=active）
@@ -334,6 +361,247 @@ public class Driver extends Mod{
 
     static int unitCreates = 0;
 
+    // ---------------- 组合墙修复 ----------------
+    static Building wall1, wall2, wall3;
+    static int wallFrames = -1, wallPhase = 0;
+
+    static void setupWallScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<140;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            Block wall = null, mendBlock = null;
+            for(Block b : Vars.content.blocks()){
+                if(wall == null && b.name.equals("copper-wall")) wall = b;
+                if(mendBlock == null && b.name.equals("mend-projector")) mendBlock = b;
+            }
+            final Block mend = mendBlock;
+            if(wall == null || mend == null){ Log.err("[drv] wall 场景缺方块: wall=@ mend=@", wall, mend); return; }
+            wall1 = placeBL(wall, 60, 60);
+            wall2 = placeBL(wall, 61, 60);
+            wall3 = placeBL(wall, 62, 60);
+            // 修复投影要电：直接给这个队伍开 cheat
+            Team.sharded.rules().cheat = true;
+            wall2.damage(600f);
+            Core.camera.position.set(wall2.x, wall2.y + 24f);
+            Log.info("[drv] wall 场景: 1=@ 2=@ 3=@ 组=@ 血=@/@/@ 破损=@", wall1, wall2, wall3,
+                field(wall1, "seqSize"), wall1.health, wall2.health, wall3.health, wall1.damaged());
+            Timer.schedule(() -> {
+                try{
+                    placeBL(mend, 61, 56);
+                    Log.info("[drv] 修复投影已放置");
+                }catch(Throwable t){ Log.err("[drv] 放修复投影失败", t); }
+            }, 10f);
+        }catch(Throwable t){ Log.err("[drv] setupWallScene failed", t); }
+    }
+
+    static void wallRepairStep(){
+        try{
+            if(wall1 == null) return;
+            if(wallFrames < 0){
+                wallFrames = frames;
+                return;
+            }
+            if(frames - wallFrames < 30) return;
+            if(wallPhase == 0){
+                shot("wall_damaged");
+                Log.info("[drv] wall 残血: 血=@/@/@ 破损=@", wall1.health, wall2.health, wall3.health, wall1.damaged());
+                wallPhase = 1;
+                wallFrames = -1;
+            }else if(wallPhase == 1 && !wall1.damaged() && !wall2.damaged() && !wall3.damaged()){
+                shot("wall_repaired");
+                Log.info("[drv] wall 已修满: 血=@/@/@ 破损=@", wall1.health, wall2.health, wall3.health, wall1.damaged());
+                wallPhase = 2;
+                Core.app.exit();
+            }
+        }catch(Throwable t){ Log.err("[drv] wallRepairStep failed", t); }
+    }
+
+    // ---------------- 组合连接器 ----------------
+    static Building connA, connB, connLink, connNode;
+    static int connPhase = 0, connFrames = -1;
+
+    static void setupConnScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<120;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+
+            Block press = null, connB_ = null, nodeB = null;
+            for(Block b : Vars.content.blocks()){
+                if(press == null && b.getClass().getName().equals("combine.production.CombinedCrafter") && b.size == 2) press = b;
+                if(connB_ == null && b.getClass().getName().equals("combine.net.ComboConnector")) connB_ = b;
+                if(nodeB == null && b.getClass().getName().equals("combine.net.ComboNode")) nodeB = b;
+            }
+            if(press == null || connB_ == null || nodeB == null){ Log.err("[drv] conn 场景缺方块"); return; }
+            // 左边一台组合工厂 + 一串连接器 + 右边一台组合工厂
+            connA = placeBL(press, 60, 60);
+            connLink = placeBL(connB_, 62, 60);
+            placeBL(connB_, 63, 60);
+            placeBL(connB_, 64, 60);
+            connB = placeBL(press, 65, 60);
+            // 旁边再放一个组合节点（看它会不会自动连线）
+            connNode = placeBL(nodeB, 61, 66);
+            connA.items.add(Items.copper, 40);
+            Core.camera.position.set((connA.x + connB.x) / 2f, connA.y + 8f);
+            Log.info("[drv] conn 场景: A=@ B=@ 同池=@ 连接器=@ 节点links=@",
+                connA, connB, connA.items == connB.items, connLink, field(connNode, "links"));
+        }catch(Throwable t){ Log.err("[drv] setupConnScene failed", t); }
+    }
+
+    static void stepConn(){
+        try{
+            if(connLink == null) return;
+            if(connFrames < 0){ connFrames = frames; return; }
+            if(frames - connFrames < 25) return;
+            if(connPhase == 0){
+                shot("conn_world");
+                Log.info("[drv] conn 世界截图: A池=@ B池=@ 同池=@", connA.items.total(), connB.items.total(), connA.items == connB.items);
+                connPhase = 1;
+                connFrames = -1;
+                openConnPanel();
+            }else{
+                shot("conn_panel");
+                Log.info("[drv] conn 模式结束");
+                Core.app.exit();
+            }
+        }catch(Throwable t){ Log.err("[drv] stepConn failed", t); }
+    }
+
+    static void openConnPanel(){
+        try{
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            connLink.getClass().getMethod("display", arc.scene.ui.layout.Table.class).invoke(connLink, panel);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("组合连接器信息");
+            d.cont.add(panel).pad(10f);
+            d.show();
+            Log.info("[drv] conn 面板已弹出: 子元素=@", panel.getChildren().size);
+        }catch(Throwable t){ Log.err("[drv] openConnPanel failed", t); }
+    }
+
+    // ---------------- 核反应堆发电效率 / 燃料条 ----------------
+    static Building genNuke, genOther;
+    static int genNukeCap = 30;
+
+    static Object field(Object o, String name){
+        try{
+            Class<?> c = o.getClass();
+            while(c != null){
+                try{ var f = c.getDeclaredField(name); f.setAccessible(true); return f.get(o); }
+                catch(NoSuchFieldException ignored){ c = c.getSuperclass(); }
+            }
+        }catch(Throwable ignored){}
+        return null; }
+
+    static float productionEfficiency(Building b){
+        Object v = field(b, "productionEfficiency");
+        return v instanceof Number n ? n.floatValue() : -1f; }
+
+    /**
+     * 核反应堆 + 一台"容量被撑到 10 万"的发电机（模拟用户说的"组合了一台容量极大的建筑"）。
+     * 核容量应该还是核反应堆自己那一份，燃料只要够那一份就该满效率。
+     */
+    static void setupGenScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            // 客户端 `display()` 里有 "不是本方就只画标题" 的检查，而暂停时 updateTile 不跑
+            // （效率永远是 0），所以这里：建在玩家自己的队上 + 别停在暂停态。
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<120;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+
+            Block nuke = null, other = null;
+            for(Block b : Vars.content.blocks()){
+                if(b.name.equals("thorium-reactor")) nuke = b;
+                if(other == null && b.getClass().getName().endsWith("CombinedGenerator")
+                    && "consume".equals(String.valueOf(field(b, "mode"))) && b.itemCapacity <= 20) other = b;
+            }
+            if(nuke == null || other == null){ Log.err("[drv] gen 场景缺方块: nuke=@ other=@", nuke, other); return; }
+            other.itemCapacity = 100000;   // 撑大池子容量
+            int nsz = Math.max(nuke.size, 1);
+            genNukeCap = Math.max(nuke.itemCapacity, 1);
+            genNuke = placeBL(nuke, 60, 60, Vars.player.team());
+            genOther = placeBL(other, 60 + nsz, 60, Vars.player.team());
+            Core.camera.position.set(genNuke.x, genNuke.y);
+            Log.info("[drv] gen 场景: 队=@ 玩家队=@ paused=@ playing=@ 同池=@ 池容量=@ 核容量=@ 单台核容量=@",
+                genNuke.team, Vars.player.team(), Vars.state.isPaused(), Vars.state.isPlaying(),
+                genNuke.items == genOther.items, field(genNuke, "comboTotalItemCap"),
+                field(genNuke, "comboNuclearItemCap"), nuke.itemCapacity);
+        }catch(Throwable t){ Log.err("[drv] setupGenScene failed", t); }
+    }
+
+    static void genSetFuel(int n){
+        try{
+            if(genNuke == null){ Log.err("[drv] genNuke 为空"); return; }
+            genNuke.items.set(Items.thorium, n);
+            // 让下一帧真的跑过 updateTile（面板/效率都靠它算）
+            Timer.schedule(() -> Log.info("[drv] gen 燃料=@ 效率=@", genNuke.items.get(Items.thorium),
+                productionEfficiency(genNuke)), 0.5f);
+        }catch(Throwable t){ Log.err("[drv] genSetFuel failed", t); }
+    }
+
+    static void openGenPanel(){
+        try{
+            if(genNuke == null){ Log.err("[drv] genNuke 为空"); return; }
+            Log.info("[drv] gen 开面板: 燃料=@ 效率=@ 池容量=@ 核容量=@",
+                genNuke.items.get(Items.thorium), productionEfficiency(genNuke),
+                field(genNuke, "comboTotalItemCap"), field(genNuke, "comboNuclearItemCap"));
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            genNuke.getClass().getMethod("display", arc.scene.ui.layout.Table.class).invoke(genNuke, panel);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("核反应堆面板（组合进大容量发电机）");
+            d.cont.add(panel).pad(10f);
+            d.show();
+            Log.info("[drv] gen 面板已弹出: 子元素=@ 场景顶层=@ 尺寸=@x@",
+                panel.getChildren().size, Core.scene == null ? -1 : Core.scene.root.getChildren().size,
+                (int)d.getWidth(), (int)d.getHeight());
+        }catch(Throwable t){ Log.err("[drv] openGenPanel failed", t); }
+    }
+
+    /**
+     * 卡帧数的截图推进：
+     *   开面板 → 真过了 30 帧 → 截"半池" → 塞 1000 个（超核容量）重开面板 → 再 30 帧 → 截"满池" → 退出。
+     */
+    static int genPhase = 0, genFrames = -1;
+
+    static void genStep(){
+        try{
+            if(genNuke == null) return;
+            if(genFrames < 0){
+                genFrames = frames;
+                return;
+            }
+            if(frames - genFrames < 30) return;
+            if(genPhase == 0){
+                shot("gen_panel_half");
+                Log.info("[drv] gen 半池: 燃料=@ 效率=@", genNuke.items.get(Items.thorium), productionEfficiency(genNuke));
+                genPhase = 1;
+                genFrames = -1;
+                hideDialogs();
+                genSetFuel(1000);
+                openGenPanel();
+            }else{
+                shot("gen_panel_over1000");
+                Log.info("[drv] gen 超容量: 燃料=@ 效率=@", genNuke.items.get(Items.thorium), productionEfficiency(genNuke));
+                Log.info("[drv] gen 模式结束（frames=@ paused=@）", frames, Vars.state.isPaused());
+                Core.app.exit();
+            }
+        }catch(Throwable t){ Log.err("[drv] genStep failed", t); }
+    }
+
     /** 等仓库重算跑完（合并/容量都稳定）再打印数字 + 把容器的信息面板弹出来截图。 */
     static void openStatusPanel(){
         try{
@@ -445,10 +713,14 @@ public class Driver extends Mod{
 
     /** 和 headless 测试同一套坐标约定：(x,y) 是方块左下角，锚点 = 左下角 + (size-1)/2。 */
     static Building placeBL(Block b, int x, int y){
+        return placeBL(b, x, y, Team.sharded);
+    }
+
+    static Building placeBL(Block b, int x, int y, Team team){
         int size = Math.max(b.size, 1);
         int ax = x + (size - 1) / 2, ay = y + (size - 1) / 2;
-        mindustry.world.Build.beginPlace(null, b, Team.sharded, ax, ay, 0, null);
-        mindustry.world.blocks.ConstructBlock.constructed(Vars.world.tile(ax, ay), b, null, (byte)0, Team.sharded, null);
+        mindustry.world.Build.beginPlace(null, b, team, ax, ay, 0, null);
+        mindustry.world.blocks.ConstructBlock.constructed(Vars.world.tile(ax, ay), b, null, (byte)0, team, null);
         return Vars.world.build(ax, ay);
     }
 

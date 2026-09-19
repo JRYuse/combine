@@ -232,6 +232,13 @@ public class CombinedGenerator extends ConsumeGenerator {
     public boolean comboDirty = true;
     public float comboTotalLiquidCap = 0f;
     public int comboTotalItemCap = 0;
+    /**
+     * 组内"核反应堆"这一类发电机的容量之和。
+     * 核模式的发电效率用它当分母（而不是整个组合体的物品池容量）：
+     * 组合里塞了一台容量极大的建筑时，池子容量会被撑得很大，
+     * 若还按池子容量算，想跑满效率就得喂进去巨量燃料。
+     */
+    public int comboNuclearItemCap = 0;
     public int pendingLeaderPos = -1;
 
     // ---- 组合共享热量池（仅 leader 持有真实值） ----
@@ -479,16 +486,20 @@ public class CombinedGenerator extends ConsumeGenerator {
 
       float totalLiqCap = 0f;
       int totalItemCap = 0;
+      int totalNuclearItemCap = 0;
       for (CombinedGeneratorBuild b : newGroup) {
         if (b.isValid()) {
           totalLiqCap += ((CombinedGenerator) b.block).baseLiquidCapacity;
           totalItemCap += b.block.itemCapacity;
+          if (((CombinedGenerator) b.block).mode == Mode.nuclear)
+            totalNuclearItemCap += b.block.itemCapacity;
         }
       }
       for (CombinedGeneratorBuild b : newGroup) {
         if (b.isValid()) {
           b.comboTotalLiquidCap = totalLiqCap;
           b.comboTotalItemCap = totalItemCap;
+          b.comboNuclearItemCap = totalNuclearItemCap;
         }
       }
 
@@ -544,6 +555,7 @@ public class CombinedGenerator extends ConsumeGenerator {
           oldMember.comboDirty = true;
           oldMember.comboTotalLiquidCap = 0f;
           oldMember.comboTotalItemCap = 0;
+          oldMember.comboNuclearItemCap = 0;
         }
       }
     }
@@ -764,6 +776,7 @@ public class CombinedGenerator extends ConsumeGenerator {
       super.created();
       comboTotalLiquidCap = ((CombinedGenerator) block).baseLiquidCapacity;
       comboTotalItemCap = block.itemCapacity;
+      comboNuclearItemCap = ((CombinedGenerator) block).mode == Mode.nuclear ? block.itemCapacity : 0;
       comboDirty = true;
     }
 
@@ -898,6 +911,7 @@ public class CombinedGenerator extends ConsumeGenerator {
           b.comboDirty = true;
           b.comboTotalLiquidCap = 0f;
           b.comboTotalItemCap = 0;
+          b.comboNuclearItemCap = 0;
         }
       } else {
         CombinedGeneratorBuild leader = leader();
@@ -910,6 +924,7 @@ public class CombinedGenerator extends ConsumeGenerator {
       comboDirty = false;
       comboTotalLiquidCap = 0f;
       comboTotalItemCap = 0;
+      comboNuclearItemCap = 0;
       super.onRemoved();
     }
 
@@ -1081,7 +1096,11 @@ public class CombinedGenerator extends ConsumeGenerator {
     // ---- Nuclear 模式 ----
     private void updateNuclear(CombinedGenerator cb) {
       int fuel = items.get(cb.nuclearFuelItem);
-      float fullness = (float) fuel / Math.max(comboTotalItemCap, 1);
+      // FIX[容量被撑大]: 分母只算"核反应堆这一类发电机的总容量"。
+      // 旧写法除以整组物品池容量（comboTotalItemCap）：组合里塞进一台容量极大的建筑后，
+      // 池子容量被撑到几万，燃料得按那个数量喂才能跑满效率（用户报的）。
+      // 效率再夹到 1，池里存的超出部分只当备料、不额外加发电量。
+      float fullness = Math.min((float) fuel / Math.max(comboNuclearItemCap, 1), 1f);
       productionEfficiency = fullness;
 
       if (fuel > 0 && enabled) {
@@ -1415,11 +1434,17 @@ public class CombinedGenerator extends ConsumeGenerator {
         for (Item item : cachedItems) {
           int total = items.get(item);
           if (total > 0) {
-            final int t = total, c = Math.max(comboTotalItemCap, 1);
+            final int t = total;
+            // 核模式的燃料条跟发电效率同一个口径：分母是核反应堆总容量，
+            // 超出部分只算备料（条画满），否则组合进大容量建筑后面板看着像没燃料。
+            boolean nuclearFuel = cb.mode == Mode.nuclear && item == cb.nuclearFuelItem;
+            final int c = nuclearFuel
+                ? Math.max(comboNuclearItemCap, 1)
+                : Math.max(comboTotalItemCap, 1);
             table.add(new Bar(
                 () -> item.localizedName + ": " + t + "/" + c,
                 () -> item.color,
-                () -> (float) t / c));
+                () -> Mathf.clamp((float) t / c)));
             table.row();
           }
         }
@@ -1690,6 +1715,8 @@ public class CombinedGenerator extends ConsumeGenerator {
       }
       comboTotalLiquidCap = ((CombinedGenerator) block).baseLiquidCapacity;
       comboTotalItemCap = block.itemCapacity;
+      // 读档落单时先按"自己一台"算；成组后 rebuildCombo 会重算整组的核容量
+      comboNuclearItemCap = ((CombinedGenerator) block).mode == Mode.nuclear ? block.itemCapacity : 0;
     }
   }
 }
