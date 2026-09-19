@@ -93,8 +93,20 @@ public class MultiBuildWeapon extends Weapon {
     check(unit, m);
 
     // 这一格造完/失效了就放开，下面重新认领一格
-    if (m.plan != null && m.target != null
-        && (!(world.build(m.plan.x, m.plan.y) instanceof ConstructBlock.ConstructBuild) || m.plan.progress >= 1f)) {
+    //
+    // 【接管的那一格换人了也要放开】玩家用拆除工具点过之后，原版会把这一格**换成一个新的
+    // ConstructBuild**（拆除态）；挂座手里攥着的是换掉之前的那个旧对象，继续对它 construct()
+    // 照样会作用在同一格上 —— 把拆除又造回去（用户报的"造到一半的建筑拆不掉/反而被造完"）。
+    if (m.plan != null && m.target != null) {
+      Building cur = world.build(m.plan.x, m.plan.y);
+      if (!(cur instanceof ConstructBlock.ConstructBuild) || cur != m.target || m.plan.progress >= 1f) {
+        release(m);
+      }
+    }
+    // 【这一格正在被拆】玩家用拆除工具点过之后，格子上的 ConstructBuild 会变成"正在拆"的
+    // （current 换成被拆的那个方块 / activeDeconstruct=true）。挂座原先不看这个，
+    // 继续对它 construct() —— 把拆除又造回去，表现就是"造到一半的建筑拆不掉/反而被造完"。
+    if (m.plan != null && deconstructing(m.target, m.plan)) {
       release(m);
     }
 
@@ -315,6 +327,10 @@ public class MultiBuildWeapon extends Weapon {
 
     Building existing = world.build(plan.x, plan.y);
     boolean constructing = existing instanceof ConstructBlock.ConstructBuild;
+    // 正在被拆的格子不认领（不管建造还是拆除计划）：构造计划认领会把拆除造回去，
+    // 拆除计划则由原版/队首那条计划去处理。
+    if (constructing && deconstructing((ConstructBlock.ConstructBuild) existing, plan))
+      return false;
     // 已经在施工：只在"接手"那一轮允许认领
     if(constructing && freshOnly)
       return false;
@@ -384,6 +400,12 @@ public class MultiBuildWeapon extends Weapon {
     // 不能走 Build.validPlace —— 它遇到已有 ConstructBuild 会返回 false，
     // 那样格子开工之后就永远没人接着施工，进度会卡死。
     if (existing instanceof ConstructBlock.ConstructBuild cb) {
+      // 正在被拆的格子不接手（不然会把拆除又造回去）
+      if (deconstructing(cb, plan)) {
+        m.plan = null;
+        m.target = null;
+        return;
+      }
       m.target = cb;
       m.plan = plan;
       plan.initialized = true;
@@ -437,6 +459,22 @@ public class MultiBuildWeapon extends Weapon {
     Tile tile = world.tile(plan.x, plan.y);
     return tile != null && tile.team() == mindustry.game.Team.derelict && tile.block() == plan.block
         && tile.build != null && plan.block.allowDerelictRepair && state.rules.derelictRepair;
+  }
+
+  /**
+   * 这一格是不是"正在被拆"。
+   *
+   * 玩家用拆除工具点过之后，格子上的 ConstructBuild 会切到拆除模式：
+   *   · {@code activeDeconstruct} 为真（正在被拆的那个 tick 起）；
+   *   · 或者它的 {@code current} 已经换成"被拆掉的那个方块"，对不上建造计划里的方块。
+   * 这两种情况下都不该再对它 construct()（那等于把拆除又造回去，用户报的"拆不掉/反而被造完"）。
+   */
+  static boolean deconstructing(ConstructBlock.ConstructBuild cb, @arc.util.Nullable BuildPlan plan){
+    if(cb == null)
+      return false;
+    if(cb.activeDeconstruct)
+      return true;
+    return plan != null && !plan.breaking && plan.block != null && cb.current != plan.block;
   }
 
   /** 计划被队首占用 / 被其他挂座抢了就放弃重找。 */
