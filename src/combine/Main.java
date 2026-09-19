@@ -125,6 +125,8 @@ public class Main extends Mod {
     Events.on(TileChangeEvent.class, e -> {
       if (Vars.state.isEditor() || Vars.world.isGenerating())
         return;
+      // 世界真被改动了（造/拆方块）：读档的去重窗口到此为止
+      ComboNet.markWorldModified();
       Block combo = Replacer.replaced.get(e.tile.block());
       if (combo != null && e.tile.build != null && !e.tile.build.dead) {
         e.tile.setBlock(combo, e.tile.team(), e.tile.build.rotation);

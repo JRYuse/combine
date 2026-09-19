@@ -67,9 +67,12 @@ verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑�
 
 原理：`Xvfb` 提供离屏 X，`SDL_VIDEODRIVER=offscreen` 让 SDL 走 EGL，Mesa 软渲染（llvmpipe）出画面；
 截图由 `verify/client/Driver.java`（一个驱动 mod）用 `ScreenUtils.saveScreenshot` 自己抓。
-驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn`、`-Ddrv.out=<目录>`
+驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn|bp|wall|rep`、`-Ddrv.out=<目录>`
 （`gen` = 核反应堆 + 一台容量 10 万的发电机，看燃料条/发电效率；`status` = 方块状态菱形 + 容器面板；
-`conn` = 两台组合工厂 + 一串组合连接器，看连接器贴图/连线与信息面板）。
+`conn` = 两台组合工厂 + 一串组合连接器，看连接器贴图/连线与信息面板；
+`bp` = 蓝图里存组合连接器，重进游戏后还在不在；`wall` = 组合墙修满不再显示破损；
+`rep` = 用户复现存档（stainedMountains）连续存读档，看物品总量会不会涨，
+数据目录用 `verify/make-repro-dataset.sh` 造）。
 
 **注意**：软渲染下一帧很慢（~5fps），截图之间要留够时间，别用 0.5 秒的小间隔下结论。
 
@@ -118,6 +121,7 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 | `combine.dbg.HeatProducerTest` | 任意（有 slag-heater） | 矿渣制热机：每台对外只报**自己**那份热量（邻着 N 台不会被算 N 遍），组内需热方仍拿到整组热量 |
 | `combine.dbg.LaunchLoadoutKeyTest` | 任意 | 发射蓝图与核心的对应：`Planet.defaultCore` 指向组合核心；serpulo/erekir 发射不会退回 core-shard 蓝图（Erekir 不该要铜/铅） |
 | `combine.dbg.BlueprintReloadTest` | 任意（先 `-Dbr.phase=write` 再 `-Dbr.phase=read`） | 蓝图里的组合连接器：按客户端顺序（读蓝图早于模组建方块）会被丢掉，模组重读蓝图库后恢复 |
+| `combine.dbg.LoadDedupeWindowTest` | 任意 | 读档头几帧再合并"同一份池子的副本"必须**去重**（不翻倍）；窗口结束后真库存照常相加 |
 
 ## 复现排版问题
 

@@ -123,6 +123,13 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::setupBlueprintScene, 5f);
                 Timer.schedule(() -> shot("blueprint_dialog"), 25f);
                 Timer.schedule(() -> { Log.info("[drv] bp 模式结束"); Core.app.exit(); }, 30f);
+            }else if(mode.equals("rep")){
+                // 用户复现存档（stainedMountains）：读档 → 存档 → 再读档，看物品会不会变多。
+                // 这些模组（ve 建 GL shader、饱和火力要 Java 25）在 headless 里跑不起来，所以用真客户端。
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupReproScene, 6f);
+                Timer.schedule(Driver::reproStep, 20f, 10f);
+                Timer.schedule(() -> { Log.info("[drv] rep 模式超时结束"); Core.app.exit(); }, 600f);
             }else if(mode.equals("status")){
                 // 两块东西一起看：
                 //  1) 升华站（sublimate）灌了氰气后的**方块状态**菱形（红=noinput / 绿=active）
@@ -369,6 +376,85 @@ public class Driver extends Mod{
 
     // ---------------- 组合墙修复 ----------------
     // ---------------- 蓝图里的组合连接器 ----------------
+    // ---------------- 用户复现存档：存读档物品变多 ----------------
+    static int repPhase = 0;
+    static int repBefore = -1;
+    static String repSaveName = "sector-serpulo-223.msav";
+
+    static int repWorldTotal(){
+        java.util.IdentityHashMap<mindustry.world.modules.ItemModule, Boolean> seen = new java.util.IdentityHashMap<>();
+        int total = 0;
+        for(Tile t : Vars.world.tiles){
+            if(t == null || t.build == null || t.build.items == null) continue;
+            if(seen.put(t.build.items, Boolean.TRUE) != null) continue;
+            total += t.build.items.total();
+        }
+        return total;
+    }
+
+    static String repCoreItems(){
+        for(Building b : Vars.state.teams.get(Team.sharded).cores){
+            StringBuilder sb = new StringBuilder();
+            for(mindustry.type.Item it : Vars.content.items()){
+                int n = b.items.get(it);
+                if(n > 0) sb.append(it.name).append('=').append(n).append(' ');
+            }
+            return sb.toString();
+        }
+        return "无核心";
+    }
+
+    static void setupReproScene(){
+        try{
+            hideDialogs();
+            arc.files.Fi f = Vars.dataDirectory.child("saves/" + repSaveName);
+            Log.info("[drv] rep 存档=@ 存在=@", f.absolutePath(), f.exists());
+            if(!f.exists()){ // 回退：也看看备份
+                f = Vars.dataDirectory.child("saves/" + repSaveName + "-backup.msav");
+                Log.info("[drv] rep 换备份存档=@ 存在=@", f.absolutePath(), f.exists());
+            }
+            mindustry.io.SaveIO.load(f);
+            Vars.state.set(mindustry.core.GameState.State.playing);
+            Vars.state.set(mindustry.core.GameState.State.paused);   // 暂停：隔离生产/消耗
+            Log.info("[drv] rep 载入完成 地图=@ sector=@", Vars.state.map.name(),
+                Vars.state.rules.sector == null ? "null" : Vars.state.rules.sector.name());
+        }catch(Throwable t){ Log.err("[drv] setupReproScene failed", t); }
+    }
+
+    static void repDump(String tag){
+        try{
+            Class.forName("combine.net.ComboNet", true, ml).getMethod("debugDumpPools", String.class).invoke(null, tag);
+        }catch(Throwable t){ Log.err("[drv] repDump failed", t); }
+    }
+
+    static void reproStep(){
+        try{
+            if(repPhase == 0){
+                repBefore = repWorldTotal();
+                Log.info("[drv] rep A 世界总量=@ 核心物品: @", repBefore, repCoreItems());
+                repDump("A 读档后");
+                mindustry.io.SaveIO.save(Core.files.absolute("/tmp/cl/repc1.msav"));
+                mindustry.io.SaveIO.load(Core.files.absolute("/tmp/cl/repc1.msav"));
+                repPhase = 1;
+            }else if(repPhase == 1){
+                int now = repWorldTotal();
+                Log.info("[drv] rep B 存读一次后 世界总量=@（差 @） 核心物品: @", now, now - repBefore, repCoreItems());
+                repDump("B 存读一次后");
+                mindustry.io.SaveIO.save(Core.files.absolute("/tmp/cl/repc2.msav"));
+                mindustry.io.SaveIO.load(Core.files.absolute("/tmp/cl/repc2.msav"));
+                repPhase = 2;
+            }else if(repPhase == 2){
+                int now = repWorldTotal();
+                Log.info("[drv] rep C 再存读一次后 世界总量=@（相对 A 差 @） 核心物品: @", now, now - repBefore, repCoreItems());
+                repDump("C 再存读一次后");
+                shot("repro_items");
+                Log.info("[drv] rep 结束");
+                Core.app.exit();
+                repPhase = 3;
+            }
+        }catch(Throwable t){ Log.err("[drv] reproStep failed", t); }
+    }
+
     static void setupBlueprintScene(){
         try{
             hideDialogs();

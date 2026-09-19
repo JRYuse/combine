@@ -68,6 +68,30 @@ public class ComboNet {
      */
     private static boolean dirty = false;
 
+    /**
+     * 读档后的"去重语义"还要保持多少帧。
+     *
+     * 读档时每台共享同一份池子的建筑都在存档里写了一份完整副本，合并这些副本必须**去重**
+     * （内容相同只留一份）而不是相加。以前这个语义只覆盖"读档那一轮"的合并，
+     * 但读档后的头几帧里本地组合体还在重建（updateTile / 组合节点网络重算），会再发生几次合并 ——
+     * 那几次落到了窗口外，按"运行期相加"处理，每台手里的整份副本就被当成真库存加进去，
+     * 物品正好翻倍（用户报的"重新读写后物品增加"，实测 993210 → 1983230）。
+     *
+     * 现在读档后头 N 帧一律按去重处理；世界一旦真的被改动（造/拆方块）就提前结束。
+     */
+    private static int loadDedupeFrames = 0;
+    private static final int loadDedupeGraceFrames = 20;
+
+    /** 读档去重语义还生效吗（CombinedStorageBlock / CoopCombo 共用）。 */
+    public static boolean pendingLoadDedupe(){
+        return loadDedupeFrames > 0;
+    }
+
+    /** 世界被真正改动过（造/拆方块）→ 读档去重语义到此为止。 */
+    public static void markWorldModified(){
+        loadDedupeFrames = 0;
+    }
+
     /** 在 Main.init() 里注册一次：每帧最多重建一次。 */
     public static void register(){
         arc.Events.run(mindustry.game.EventType.Trigger.update, ComboNet::flush);
@@ -87,6 +111,7 @@ public class ComboNet {
 
     /** 每帧一次的收口：只有真的脏了才重建。 */
     private static void flush(){
+        if(loadDedupeFrames > 0) loadDedupeFrames --;
         if(!dirty) return;
         dirty = false;
         rebuild();
@@ -125,6 +150,8 @@ public class ComboNet {
     /** WorldLoadBeginEvent：进入读档语义窗口。 */
     public static void beginWorldLoad(){
         loadingWorld = true;
+        // 读档后头几帧仍按去重语义合并（本地组合体/网络还在重建，见 loadDedupeFrames 注释）
+        loadDedupeFrames = loadDedupeGraceFrames;
     }
 
     public static void rebuildLoading(){
@@ -497,7 +524,7 @@ public class ComboNet {
         // 同一份池子的副本，谁先合并谁就必须按"内容相同的副本只留一份"来算。
         // ComboNet 每帧跑在它们之前，所以要以它们的标志为准，否则第一帧就把副本当三份真库存相加了。
         boolean loadPhase = loading || loadingWorld || world.isGenerating()
-            || CombinedStorageBlock.pendingDedupe() || CoopCombo.pendingDedupe();
+            || CombinedStorageBlock.pendingDedupe() || CoopCombo.pendingDedupe() || pendingLoadDedupe();
 
         try{
             Seq<Building> all = new Seq<>();

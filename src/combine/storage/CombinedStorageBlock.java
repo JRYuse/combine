@@ -131,7 +131,10 @@ public class CombinedStorageBlock extends StorageBlock {
       return;
     dirty = false;
     // 读档完成后的第一次重算带着"去重"语义；只有真正算完才清掉这个标记
-    boolean dedupe = dedupeOnce;
+    // 读档后头几帧也算"去重语义"（见 ComboNet.loadDedupeFrames）：
+    // 这几帧里本地组合体才刚重建完，还会再合并一次"每台手里的整份副本"，
+    // 漏掉它就会按运行期相加 → 物品翻倍（用户报的"重新读写后物品增加"）。
+    boolean dedupe = dedupeOnce || ComboNet.pendingLoadDedupe();
     dedupeOnce = false;
     sawStorage = false;
     rebuildAll(dedupe);

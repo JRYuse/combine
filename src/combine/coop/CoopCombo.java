@@ -630,7 +630,8 @@ public class CoopCombo {
     if (state == null || world == null || world.isGenerating()) return;
     if (dirty) {
       dirty = false;
-      boolean dedupe = dedupeOnce;
+      // 读档后头几帧也算去重语义（见 ComboNet.loadDedupeFrames）
+      boolean dedupe = dedupeOnce || ComboNet.pendingLoadDedupe();
       dedupeOnce = false;
       rebuild(dedupe);
     }
