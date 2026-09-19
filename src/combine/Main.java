@@ -25,6 +25,7 @@ import combine.turret.CombinedContinuousLiquidTurret;
 import combine.turret.CombinedItemTurret;
 import combine.turret.CombinedLiquidTurret;
 import combine.turret.CombinedTurret;
+import combine.ui.MultiBuildList;
 import combine.ui.Settings;
 import combine.units.CombinedLandingPad;
 import combine.units.CombinedLaunchPad;
@@ -113,6 +114,7 @@ public class Main extends Mod {
   @Override
   public void init() {
     Settings.load();
+    MultiBuildList.init();
     // 施工替换：残留的旧实例引用（其他模组静态字段等）→ 组合实例。
     Events.on(BlockBuildBeginEvent.class, e -> {
       if (e.breaking)
@@ -200,34 +202,33 @@ public class Main extends Mod {
     setupContent();
   }
 
-  /**
-   * 给指定单位挂 1 把建造武器（幂等；尊重用户偏好）。
-   *
-   * - 用户手动删过（偏好 = false）：不挂
-   * - 已经挂过：不重复
-   * - 否则挂一把，并行上限用 Main 硬编码的 count（会被武器上的 maxBuild / unitMaxBuild 覆盖）
-   */
   public static void addTestBuildWeapons(UnitType unit, int count) {
     if (unit == null || count <= 0) return;
 
-    // 用户手动删过：别再自动挂
-    Boolean pref = combine.ui.MultiBuildList.userEnabled(unit.name);
+    // Data 当 map 用：Main 默认并行数写进 defaultMaxBuild（只在还没值时写一次）。
+    MultiBuildList.MultiBuildData d = MultiBuildList.getOrCreate(unit.name);
+    if (d.defaultMaxBuild <= 0) d.defaultMaxBuild = count;
+
+    // 用户手动删过：别再自动挂（using 三态：只有 false 才跳过）。
+    Boolean pref = d.using;
     if (pref != null && !pref) return;
 
-    // 幂等：已经有挂座就不重复添加，否则重启/重进会越加越多
-    if (combine.ui.MultiBuildList.getWeapon(unit) != null) return;
+    // 幂等
+    if (MultiBuildList.getWeapon(unit) != null) return;
 
     TestMultiBuildWeapon w = new TestMultiBuildWeapon();
     w.mirror = false;
     w.x = 0f;
     w.y = 2f;
     w.speedMulti = 1f;
-    w.maxBuild = count;
-    if (visuals()) // 专用服务端没有图集，贴图字段跳过即可，不影响建造逻辑
-      w.load();
-    unit.weapons.add(w);
 
-    // 已经存在的单位补挂座（新造单位的挂座由 Unit 自己按 weapons.size 补齐）
+    // 用户拖过滑块就用用户值，否则用 Main 默认
+    w.maxBuild = d.maxBuild > 0 ? d.maxBuild : d.defaultMaxBuild;
+
+    w.buildBoost = d.buildBoost;
+
+    if (visuals()) w.load();
+    unit.weapons.add(w);
     Groups.unit.each(un -> un.type == unit, un -> un.setupWeapons(unit));
   }
 
@@ -259,6 +260,7 @@ public class Main extends Mod {
         addTestBuildWeapons(u, 5);
       }
     }
+    MultiBuildList.save();
   }
 
   /**

@@ -40,7 +40,6 @@ public class MultiBuildList {
     public static final Seq<MultiBuildData> dataSeq = new Seq<>();
     private static final String DATA_KEY = "combine-multibuild-data";
     private static boolean loaded = false;
-    private static boolean migrated = false;
 
     // ==================== 数据持久化 ====================
 
@@ -105,10 +104,11 @@ public class MultiBuildList {
         save();
     }
 
-    /** 界面里显示的最大建造数（优先用户值，其次全局默认）。 */
+    /** 界面里显示的最大建造数：用户值 > Main 默认值 > 全局设置。 */
     public static int maxBuild(UnitType u){
         MultiBuildData d = get(u.name);
         if(d != null && d.maxBuild > 0) return d.maxBuild;
+        if(d != null && d.defaultMaxBuild > 0) return d.defaultMaxBuild;
         return Settings.maxBuild() > 0 ? Settings.maxBuild() : 5;
     }
 
@@ -225,6 +225,18 @@ public class MultiBuildList {
 
         addFilterRow(table, whole, new int[]{FILTER_ALL, FILTER_HAS, FILTER_NONE},
                 new String[]{"全部", "有多倍建造", "无多倍建造"});
+        table.table(btns -> {
+            btns.left();
+            btns.button("全部添加", () -> {
+                for(UnitType u : list(query[0], filterMode)) addWeapon(u);
+                defer(rebuild);
+            }).growX().minWidth(0f).height(32f).padRight(6f);
+
+            btns.button("全部移除", () -> {
+                for(UnitType u : list(query[0], filterMode)) removeWeapon(u);
+                defer(rebuild);
+            }).growX().minWidth(0f).height(32f);
+        }).growX().left().padTop(6f).row();
 
         ScrollPane pane = new ScrollPane(list);
         pane.setFadeScrollBars(false);
@@ -301,6 +313,20 @@ public class MultiBuildList {
             else addWeapon(u);
             defer(rebuild);
         }).growX().height(40f).padTop(6f).left().row();
+
+        c.button("默认", Icon.refresh, () -> {
+            MultiBuildData d = getOrCreate(u.name);
+            d.def();
+
+            // 同步到武器上（如果这个单位现在有武器）
+            TestMultiBuildWeapon ww = getWeapon(u);
+            if(ww != null){
+                ww.maxBuild = d.defaultMaxBuild > 0 ? d.defaultMaxBuild : Settings.maxBuild();
+                ww.buildBoost = d.buildBoost;
+            }
+            save();
+            defer(rebuild);
+        }).growX().height(40f).padTop(6f).left().row();
     }
 
     public static void addWeapon(UnitType u){
@@ -345,47 +371,57 @@ public class MultiBuildList {
 
     public static class MultiBuildData {
         public String name;
-        public boolean buildBoost, using;
-        public int maxBuild;
+        public boolean buildBoost;
+        public int maxBuild, defaultMaxBuild;
+        /**
+         * 三态：
+         *   null  = 用户没表过态（Main 按默认表处理）
+         *   true  = 用户启用
+         *   false = 用户禁用
+         */
+        public Boolean using;
 
-        public MultiBuildData(String name){
-            this.name = name;
-        }
+        public MultiBuildData(String name){ this.name = name; }
 
         public MultiBuildData(String name, boolean buildBoost, int maxBuild){
-            this(name);
-            this.buildBoost = buildBoost;
-            this.maxBuild = maxBuild;
+            this(name); this.buildBoost = buildBoost; this.maxBuild = maxBuild;
         }
 
         public static MultiBuildData of(String str){
-            MultiBuildData data = new MultiBuildData("");
-            data.decode(str);
-            return data;
+            MultiBuildData d = new MultiBuildData("");
+            d.decode(str);
+            return d;
+        }
+
+        /** 恢复到"没设置过"状态：using 清空、maxBuild 回到 Main 默认、buildBoost 跟随全局。 */
+        public void def(){
+            maxBuild = 0;                    // 0 表示"用 defaultMaxBuild"
+            buildBoost = Settings.buildBoost();
+            using = null;                    // 关键：回到三态里的"未表态"
         }
 
         public void decode(String str){
             String[] a = str.split(",");
             name = a[0];
             if(a.length >= 2) buildBoost = Boolean.parseBoolean(a[1]);
-            if(a.length >= 3) maxBuild = parseIntSafe(a[2], 0);
-            if(a.length >= 4) using = Boolean.parseBoolean(a[3]);
+            if(a.length >= 3) maxBuild   = parseIntSafe(a[2], 0);
+            if(a.length >= 4){
+                String u = a[3].trim();
+                using = u.isEmpty() ? null : Boolean.parseBoolean(u);
+            }
+            if(a.length >= 5) defaultMaxBuild = parseIntSafe(a[4], 0);
         }
 
-        public UnitType type(){
-            return Vars.content.unit(name);
-        }
+        public UnitType type(){ return Vars.content.unit(name); }
 
         public String encode(){
-            return name + "," + buildBoost + "," + maxBuild + "," + using;
+            return name + "," + buildBoost + "," + maxBuild + ","
+                    + (using == null ? "" : using.toString()) + ","
+                    + defaultMaxBuild;
         }
 
         private static int parseIntSafe(String s, int def){
-            try{
-                return Integer.parseInt(s.trim());
-            }catch(Throwable t){
-                return def;
-            }
+            try{ return Integer.parseInt(s.trim()); }catch(Throwable t){ return def; }
         }
     }
 }
