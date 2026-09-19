@@ -35,10 +35,26 @@ public class ComboReflect {
         if(b == null) return false;
         if(b instanceof IUnitCombo) return true;
         if(b.block instanceof CombinedStorageBlock) return true;
+        // 被替换出来的组合墙等功能方块：自己维护分组（IComboGrouped），
+        // 也要能被组合节点/连接器接起来（用户要求：接上就该有完整组合功能，比如墙共享血量）。
+        if(b instanceof IComboGrouped) return true;
         // 协作组合（继承原版类、自己写了新功能的 js/java 方块）也当成组合方块：
         // 这样 ComboNet 的池子合并/拆分、连接器/节点、信息面板都能一视同仁。
         if(CoopCombo.eligible(b.block)) return true;
         return hasField(b, "comboGroup") || hasField(b, "comboLeader");
+    }
+
+    /**
+     * 让"自己维护分组"的组合建筑（组合墙等）重算分组 —— 组合节点/连接器的连线变了就要叫一次，
+     * 否则玩家连上了线、墙却还是两组（血池不共享）。
+     */
+    public static void markGroupDirty(Building b){
+        if(b instanceof IComboGrouped g){
+            try{
+                g.markGroupDirty();
+            }catch(Throwable ignored){
+            }
+        }
     }
 
     /**

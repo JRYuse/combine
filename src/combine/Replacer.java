@@ -224,6 +224,56 @@ public class Replacer {
     }
   }
 
+  /**
+   * 各星球的**默认核心**（{@code Planet.defaultCore}）换成组合实例。
+   *
+   * 这个字段是内容装配阶段（组合替换之前）赋的值：{@code Planet.defaultCore = Blocks.coreShard}
+   * 是字段初始值、Erekir 在自己的 content 里写死 {@code defaultCore = Blocks.coreBastion}。
+   * 替换发生后 {@code Blocks.coreBastion} 已经指向组合核心，但这个字段还攥着**被换掉的那个旧实例**。
+   *
+   * 用户在 Erekir 发射核心时（{@code PlanetDialog.playSelected}，Erekir 的 allowLaunchSchematics=false）：
+   * <pre>block = from.planet.defaultCore</pre>
+   * 于是拿旧核心去查默认发射蓝图 —— 查不到（默认蓝图现在挂在组合核心上）→
+   * 原版兜底成 {@code schematics.getLoadouts().get(coreShard).first()}（Serpulo 的核心蓝图），
+   * 显示出来就是"在 Erekir 发射却要铜和铅"（用户报的）。
+   */
+  public static void remapPlanetDefaults() {
+    if (replaced.isEmpty() || Vars.content == null)
+      return;
+    try {
+      for (mindustry.type.Planet planet : Vars.content.planets()) {
+        if (planet == null || planet.defaultCore == null)
+          continue;
+        Block combo = replaced.get(planet.defaultCore);
+        if (combo != null)
+          planet.defaultCore = combo;
+      }
+    } catch (Throwable t) {
+      Log.warn("[Replacer] planet defaultCore remap failed: @", t.getMessage());
+    }
+  }
+
+  /**
+   * 重新从磁盘读一遍蓝图库（{@code Vars.schematics.load()}）。
+   *
+   * 【为什么必须重读】客户端的加载顺序是
+   * {@code createModContent() → assets.load(schematics) → Mod.init()}：
+   * 蓝图是在 {@code Mod.init()} **之前**读的，而组合连接器/节点是 {@code Main.init()}
+   * 里才 new 出来的 —— 那一刻 "connection"/"node" 这两个名字在内容表里根本不存在，
+   * 原版 {@code Schematics.read} 会把查不到的方块当空气丢掉（{@code block == null || LegacyBlock → Blocks.air}）。
+   * 于是"保存蓝图 → 退出游戏 → 重进"以后，蓝图里的组合连接器就没了（用户报的）。
+   * 内容齐了再读一遍即可恢复；读的是磁盘上的 .msch，所以丢掉的信息能找回来。
+   */
+  public static void reloadSchematics() {
+    if (Vars.schematics == null)
+      return;
+    try {
+      Vars.schematics.load();
+    } catch (Throwable t) {
+      Log.warn("[Replacer] 蓝图库重读失败: @", t.getMessage());
+    }
+  }
+
   /** 集合里凡是"被替换掉的原实例"都换成组合实例；其余（含组合实例本身）原样保留。 */
   private static <T extends mindustry.ctype.UnlockableContent> void remap(
       arc.struct.ObjectSet<T> set) {

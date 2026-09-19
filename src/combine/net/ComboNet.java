@@ -1078,13 +1078,20 @@ public class ComboNet {
         return out;
     }
 
+    /**
+     * 一个组合体对外能提供的热量 = **整组成员**各自 heat() 之和。
+     *
+     * 以前这里是"取第一个成员（HeatBlock）的 heat()"——那时组合产热机的 heat() 报的是整组总量，
+     * 所以取一台就够。现在产热机的 heat() 改回原版语义（只报自己那一份，避免相邻多台被重复计入），
+     * 汇总就得在这里做：整组求和。
+     */
     private static float groupHeatSource(Building leader){
+        float sum = 0f;
         for(Building m : ComboReflect.group(leader)){
-            if(m.isValid() && m instanceof HeatBlock hb && !(m instanceof ComboNode.ComboNodeBuild)){
-                return Math.max(0f, hb.heat());
-            }
+            if(m == null || !m.isValid() || m instanceof ComboNode.ComboNodeBuild) continue;
+            if(m instanceof HeatBlock hb) sum += Math.max(0f, hb.heat());
         }
-        return 0f;
+        return sum;
     }
 
     private static float groupHeatDemand(Building leader){

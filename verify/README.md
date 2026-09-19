@@ -115,6 +115,9 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 | `combine.dbg.LinkWallRepairTest` | 任意（有 copper-wall + mend-projector） | 组合墙血池：伤害整组分摊；修复投影能把整组修到满血（不再永远"破损"） |
 | `combine.dbg.NewBuildAfterLoadTest` | 任意 | 读档后新建/拆掉组合建筑，核心与各组合建筑的物品总量一份不差 |
 | `combine.dbg.DerelictRepairTest` | 任意 | team=derelict 的废墟：排一串计划（蓝图框）后应当**全部**立刻被修好 |
+| `combine.dbg.HeatProducerTest` | 任意（有 slag-heater） | 矿渣制热机：每台对外只报**自己**那份热量（邻着 N 台不会被算 N 遍），组内需热方仍拿到整组热量 |
+| `combine.dbg.LaunchLoadoutKeyTest` | 任意 | 发射蓝图与核心的对应：`Planet.defaultCore` 指向组合核心；serpulo/erekir 发射不会退回 core-shard 蓝图（Erekir 不该要铜/铅） |
+| `combine.dbg.BlueprintReloadTest` | 任意（先 `-Dbr.phase=write` 再 `-Dbr.phase=read`） | 蓝图里的组合连接器：按客户端顺序（读蓝图早于模组建方块）会被丢掉，模组重读蓝图库后恢复 |
 
 ## 复现排版问题
 

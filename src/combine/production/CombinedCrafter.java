@@ -381,9 +381,6 @@ public class CombinedCrafter extends GenericCrafter {
         public int[] comboItemNeedPerCraft;
         public float[] comboLiquidNeedPerCraft;
         public long comboAggregateTick = Long.MIN_VALUE;
-        /** heat() 的组内产热总和缓存（每 tick 一次，否则邻居读取是 O(N²)） */
-        public long comboProducerHeatTick = Long.MIN_VALUE;
-        public float comboProducerHeatSum = 0f;
 
         public float getComboTotalLiquidAmount() {
             return liquids != null ? liquids.currentAmount() : 0f;
@@ -513,27 +510,22 @@ public class CombinedCrafter extends GenericCrafter {
          * 无递归：本方法只读 producerHeat 字段，绝不调用其它建筑的 heat()。
          */
         /**
-         * 对外暴露的产量 = 整组 heatproducer 成员的 producerHeat 之和
-         * （与 CombinedGenerator 的"簇共享池"语义一致：贴到组内任意一台即读整组总产量）。
-         * 其余模式恒为 0。只读字段、无递归。
+         * 对外暴露的热量 = **这一台自己的** producerHeat（原版 HeatProducer 就是这么报的）。
+         *
+         * 【不能报整组之和】原版耗热方（热熔炉 / 导热管 / 导热路由器 / 各种 heat 扫描）是把
+         * 每个**相邻** HeatBlock 的 heat() 加起来算的。以前这里每台都返回整组总量，
+         * 于是贴着组合体里 N 台产热机就会被算 N 遍 —— 用户报的"10 台矿渣制热机，
+         * 每台只有 8 热，连起来后每台都报 80（整组总和），耗热方看到 800"。
+         *
+         * 组内共享不受影响：heatcrafter 成员的 availableHeat() 是直接按整组 producerHeat 求和
+         * （按组去重），跨组合体的网络热量由 {@link ComboNet} 按组汇总。
          */
         @Override
         public float heat() {
             CombinedCrafter cb = (CombinedCrafter) block;
             if (cb.mode != Mode.heatproducer)
                 return 0f;
-            // 邻居每 tick 都会来读 heat()，原先每次都遍历整组 → O(N²)；按 tick 缓存一次
-            CombinedCrafterBuild l = leader();
-            if (l.comboProducerHeatTick != state.updateId) {
-                l.comboProducerHeatTick = state.updateId;
-                float sum = 0f;
-                for (CombinedCrafterBuild m : l.group()) {
-                    if (m.isValid() && ((CombinedCrafter) m.block).mode == Mode.heatproducer)
-                        sum += m.producerHeat;
-                }
-                l.comboProducerHeatSum = sum;
-            }
-            return l.comboProducerHeatSum;
+            return producerHeat;
         }
 
         public float heatFrac() {
@@ -1689,7 +1681,6 @@ public class CombinedCrafter extends GenericCrafter {
         /** 组结构变化（重建/成员增删）后让聚合缓存失效。 */
         public void invalidateComboAggregate() {
             comboAggregateTick = Long.MIN_VALUE;
-            comboProducerHeatTick = Long.MIN_VALUE;
         }
 
         /** 刷新 leader 上的组级聚合；每 tick 至多算一次，之后所有查询都是 O(1)。 */

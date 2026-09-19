@@ -117,6 +117,12 @@ public class Driver extends Mod{
                 Timer.schedule(() -> shot("wall_damaged"), 16f);
                 Timer.schedule(Driver::wallRepairStep, 18f, 0.5f);
                 Timer.schedule(() -> { Log.info("[drv] wall 模式超时结束"); Core.app.exit(); }, 150f);
+            }else if(mode.equals("bp")){
+                // 蓝图里的组合连接器：写一个含连接器的蓝图 → 重新从磁盘 load() → 打印/截图看还在不在
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupBlueprintScene, 5f);
+                Timer.schedule(() -> shot("blueprint_dialog"), 25f);
+                Timer.schedule(() -> { Log.info("[drv] bp 模式结束"); Core.app.exit(); }, 30f);
             }else if(mode.equals("status")){
                 // 两块东西一起看：
                 //  1) 升华站（sublimate）灌了氰气后的**方块状态**菱形（红=noinput / 绿=active）
@@ -362,6 +368,68 @@ public class Driver extends Mod{
     static int unitCreates = 0;
 
     // ---------------- 组合墙修复 ----------------
+    // ---------------- 蓝图里的组合连接器 ----------------
+    static void setupBlueprintScene(){
+        try{
+            hideDialogs();
+            Block conn = null;
+            for(Block b : Vars.content.blocks()) if(b.getClass().getName().equals("combine.net.ComboConnector")) conn = b;
+            if(conn == null){ Log.err("[drv] 没找到组合连接器"); return; }
+            Log.info("[drv] 连接器=@ name=@ id=@", conn, conn.name, conn.id);
+            Log.info("[drv] 连接器状态: alwaysUnlocked=@ unlocked=@ unlockedNow=@ visible=@ banned=@ placeable=@",
+                conn.alwaysUnlocked, conn.unlocked(), conn.unlockedNow(), conn.isVisible(), conn.isBanned(), conn.isPlaceable());
+
+            // 先看"启动时从磁盘读进来的"蓝图：修复前这里会缺连接器（读蓝图早于模组建方块）
+            for(mindustry.game.Schematic sc : Vars.schematics.all()){
+                if(!"组合连接器测试".equals(sc.tags.get("name"))) continue;
+                StringBuilder sb = new StringBuilder();
+                int n = 0;
+                for(mindustry.game.Schematic.Stile st : sc.tiles){
+                    sb.append(st.block == null ? "air" : st.block.name).append(' ');
+                    if(st.block != null && st.block.getClass().getName().equals("combine.net.ComboConnector")) n++;
+                }
+                Log.info("[drv] 启动时读到的老蓝图: 格数=@ 连接器=@/3 方块: @", sc.tiles.size, n, sb);
+            }
+
+            var s = new mindustry.game.Schematic(new arc.struct.Seq<>(), new arc.struct.StringMap(), 3, 1);
+            for(int i = 0; i < 3; i++)
+                s.tiles.add(new mindustry.game.Schematic.Stile(conn, i, 0, null, (byte)0));
+            s.tags.put("name", "组合连接器测试");
+            arc.files.Fi dir = Vars.dataDirectory.child("schematics");
+            dir.mkdirs();
+            arc.files.Fi file = dir.child("comboconn-test.msch");
+            mindustry.game.Schematics.write(s, file);
+            Log.info("[drv] 蓝图写好: @ (@ 字节) 格数=@", file.absolutePath(), file.length(), s.tiles.size);
+
+            // 重新从磁盘读（= 退出重进时走的那条路）
+            Vars.schematics.load();
+            mindustry.game.Schematic found = null;
+            for(mindustry.game.Schematic sc : Vars.schematics.all()){
+                if("组合连接器测试".equals(sc.tags.get("name"))) found = sc;
+            }
+            if(found == null){
+                Log.err("[drv] 重新 load() 后找不到这张蓝图！");
+            }else{
+                StringBuilder sb = new StringBuilder();
+                int count = 0;
+                for(mindustry.game.Schematic.Stile st : found.tiles){
+                    sb.append(st.block == null ? "null" : st.block.name).append(' ');
+                    if(st.block != null && st.block.getClass().getName().equals("combine.net.ComboConnector")) count++;
+                }
+                Log.info("[drv] 重新 load() 后: 格数=@ 连接器=@/3 方块: @", found.tiles.size, count, sb);
+                var plans = Vars.schematics.toPlans(found, 10, 10, true);
+                StringBuilder pb = new StringBuilder();
+                int pconn = 0;
+                for(var plan : plans){
+                    pb.append(plan.block == null ? "null" : plan.block.name).append(' ');
+                    if(plan.block != null && plan.block.getClass().getName().equals("combine.net.ComboConnector")) pconn++;
+                }
+                Log.info("[drv] 放到场上会生成 @ 个计划，其中连接器 @ 个: @", plans.size, pconn, pb);
+            }
+            Vars.ui.schematics.show();
+        }catch(Throwable t){ Log.err("[drv] setupBlueprintScene failed", t); }
+    }
+
     static Building wall1, wall2, wall3;
     static int wallFrames = -1, wallPhase = 0;
 

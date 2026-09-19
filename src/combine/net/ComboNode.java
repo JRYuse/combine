@@ -72,6 +72,8 @@ public class ComboNode extends Block {
                 entity.links.removeValue(value);
                 if(entity.power != null) entity.power.links.removeValue(value);
                 if(other != null && other.power != null) other.power.links.removeValue(entity.pos());
+                // 被断开的如果是有自己分组的组合建筑（组合墙），让它重算分组
+                ComboReflect.markGroupDirty(other);
                 // 【电力必须两端各建一张新电网】原来只给节点这边 reflow、对面用 updatePowerGraph()，
                 // 那只把"旧的那张（合并过的）电网"继续分给对面 —— 旧图的 all 里还列着这边的机器，
                 // 于是"线断了，电照样过去"（用户报的）。原版 PowerNode 就是这么两段式 reflow 的。
@@ -91,6 +93,7 @@ public class ComboNode extends Block {
                 ComboNet.markDirty();
             }else if(valid && entity.links.size < maxNodes){
                 entity.addLink(other);
+                ComboReflect.markGroupDirty(other);
             }
         });
 
@@ -404,6 +407,7 @@ public class ComboNode extends Block {
             CoopCombo.markDirty();
             if(other == null || !other.isValid()) return;
             links.addUnique(other.pos());
+            ComboReflect.markGroupDirty(other);
             if(power != null && other.power != null){
                 power.links.addUnique(other.pos());
                 if(other.team == team){
@@ -419,6 +423,7 @@ public class ComboNode extends Block {
         public void removeLink(Building other){
             if(other == null) return;
             links.removeValue(other.pos());
+            ComboReflect.markGroupDirty(other);
             if(power != null && other != null && other.power != null){
                 power.links.removeValue(other.pos());
                 other.power.links.removeValue(pos());
@@ -449,6 +454,8 @@ public class ComboNode extends Block {
                 Building other = world.build(links.get(i));
                 if(other != null){
                     links.removeIndex(i);
+                    // 节点被拆掉 → 被它接起来的组合墙要重算分组（血池拆回两段）
+                    ComboReflect.markGroupDirty(other);
                     if(power != null && other.power != null){
                         power.links.removeValue(other.pos());
                         other.power.links.removeValue(pos());

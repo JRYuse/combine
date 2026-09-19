@@ -142,6 +142,7 @@ public class Main extends Mod {
       // 必须在任何 UI/建造校验读到它之前纠正，否则客户端建造菜单里组合建筑会全部消失。
       Replacer.remapStaleContent();
       Replacer.remapSectorInfos();
+      Replacer.remapPlanetDefaults();
       ComboNet.rebuildLoading();
     });
 
@@ -183,9 +184,14 @@ public class Main extends Mod {
     // 客户端在这之后才把蓝图库从磁盘读进来（assets.load(schematics)），再兜一次键；
     // 顺带把内置发射蓝图里的核心实例再对齐一遍（幂等）。
     Events.on(ClientLoadEvent.class, e -> {
+      // 【必须在最前面】客户端的 assets.load(schematics) 跑在 Mod.init() 之前，
+      // 那时组合连接器/节点还没建出来 —— 含它们的老蓝图会被当成未知方块丢掉。
+      // 现在内容齐了，先重读一遍蓝图库，再做键/引用的对齐。
+      Replacer.reloadSchematics();
       Replacer.remapBuiltinLoadouts();
       Replacer.remapLoadoutKeys();
       Replacer.remapSectorInfos();
+      Replacer.remapPlanetDefaults();
     });
 
     // 组合仓库并仓（机制本体在 CombinedStorageBlock 里）：没连核心时像其它组合建筑一样
@@ -308,6 +314,9 @@ public class Main extends Mod {
       Replacer.remapLoadoutKeys();
       // 发射界面拿的是 from.info.bestCoreType（Planet.load() 阶段按名字反查出来的旧核心实例）
       Replacer.remapSectorInfos();
+      // 以及 from.planet.defaultCore（内容装配阶段写死的旧核心实例）——
+      // Erekir 的 allowLaunchSchematics=false，发射时用的就是这个字段
+      Replacer.remapPlanetDefaults();
     } catch (Throwable t) {
       Log.err("[combine] content setup failed", t);
     }

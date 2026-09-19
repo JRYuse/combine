@@ -1,5 +1,11 @@
 package combine.defense;
+import combine.net.ComboConnector.ComboConnectorBuild;
+import combine.net.ComboConnector;
+import combine.net.ComboNode.ComboNodeBuild;
+import combine.net.ComboNode;
+import combine.coop.CoopCombo;
 import combine.util.ComboUi;
+import combine.util.IComboGrouped;
 import arc.Core;
 import arc.graphics.g2d.Draw;
 import arc.graphics.g2d.TextureRegion;
@@ -118,12 +124,14 @@ public class LinkWall extends Wall {
     });
   }
 
-  public class LinkWallBuild extends Building {
+  public class LinkWallBuild extends Building implements IComboGrouped {
 
     public Seq<LinkWallBuild> links = new Seq<>();
     public LinkWallBuild linkLeader;
     public boolean linksDirty = true;
     public int seqSize = 1;
+    /** 上一次"挨着/连着的组合连接器、节点的links"指纹：变了就重算分组（跨距离连线也要算同组）。 */
+    public int lastLinkerHash = Integer.MIN_VALUE;
     /** 上一次"是否允许组合"的判定结果：队伍里玩家有变动时自动重算一次。 */
     public boolean groupAllowedLast = true;
     public boolean open = false;
@@ -193,17 +201,33 @@ public class LinkWall extends Wall {
       }
       ObjectSet<LinkWallBuild> visited = new ObjectSet<>();
       Queue<LinkWallBuild> queue = new Queue<>();
+      // 连到本墙的组合连接器/节点（走过它们能到别的墙 —— 用户要的"接上节点/连接器就是完整组合"）
+      ObjectSet<Building> seenLinkers = new ObjectSet<>();
       queue.addLast(this);
       visited.add(this);
+      // 组合节点是**跨距离**的：节点不在墙的邻格里，墙自己发现不了"有人连我"。
+      // 到节点登记表里找"links 里直接写了本墙"的节点，从它们出发走一遍。
+      try {
+        for (Building nb : CoopCombo.trackedNodesCopy()) {
+          if (nb instanceof ComboNodeBuild node && node.links != null && node.links.contains(pos()))
+            walkLinkers(node, seenLinkers, visited, queue);
+        }
+      } catch (Throwable ignored) {
+      }
       while (!queue.isEmpty()) {
         LinkWallBuild cur = queue.removeFirst();
         found.add(cur);
         for (Point2 edge : Edges.getEdges(cur.block.size)) {
           Tile t = Vars.world.tile(cur.tile.x + edge.x, cur.tile.y + edge.y);
-          if (t == null || !(t.build instanceof LinkWallBuild b) || b.dead())
+          if (t == null || t.build == null)
             continue;
-          if (b.block instanceof LinkWall && visited.add(b))
-            queue.addLast(b);
+          if (t.build instanceof LinkWallBuild b) {
+            if (!b.dead() && b.block instanceof LinkWall && visited.add(b))
+              queue.addLast(b);
+          } else if (isLinker(t.build)) {
+            // 组合连接器/节点：穿过它，把它能到的墙也并进这一组
+            walkLinkers(t.build, seenLinkers, visited, queue);
+          }
         }
       }
       LinkWallBuild newLeader = this;
@@ -222,6 +246,70 @@ public class LinkWall extends Wall {
         redistributeHealth();
     }
 
+    /** 被"组合节点/连接器"接起来的墙也要算同一组（于是血池、门联动这些整组行为跟着走）。 */
+    private void walkLinkers(Building start, ObjectSet<Building> seenLinkers,
+                             ObjectSet<LinkWallBuild> visited, Queue<LinkWallBuild> queue) {
+      Queue<Building> linkers = new Queue<>();
+      if (!seenLinkers.add(start))
+        return;
+      linkers.addLast(start);
+      while (!linkers.isEmpty()) {
+        Building cur = linkers.removeFirst();
+        // 1) 这个连接件（连接器）旁边贴着的墙
+        if (cur.proximity != null) {
+          for (Building nb : cur.proximity) {
+            if (nb instanceof LinkWallBuild w && !w.dead() && w.block instanceof LinkWall && visited.add(w))
+              queue.addLast(w);
+          }
+        }
+        // 2) 顺着连接件之间的连线继续走
+        if (cur instanceof ComboConnectorBuild c) {
+          for (Building nb : c.proximity) {
+            if (nb != null && nb.isValid() && isLinker(nb) && seenLinkers.add(nb))
+              linkers.addLast(nb);
+          }
+        } else if (cur instanceof ComboNodeBuild n) {
+          for (int i = 0; i < n.links.size; i++) {
+            Building nb = Vars.world.build(n.links.get(i));
+            if (nb == null || !nb.isValid())
+              continue;
+            if (isLinker(nb)) {
+              if (seenLinkers.add(nb))
+                linkers.addLast(nb);
+            } else if (nb instanceof LinkWallBuild w && !w.dead() && w.block instanceof LinkWall && visited.add(w)) {
+              queue.addLast(w);
+            }
+          }
+        }
+      }
+    }
+
+    private static boolean isLinker(Building b) {
+      return b instanceof ComboConnectorBuild || b instanceof ComboNodeBuild;
+    }
+
+    /**
+     * 挨着/连着的连接器、节点的指纹（节点把 links 也算进来）：
+     * 节点那边"连上/断开"不会触发这面墙的 proximity 更新，只能自己每帧比一次指纹。
+     */
+    private int linkerHash() {
+      int h = 5;
+      for (Point2 edge : Edges.getEdges(block.size)) {
+        Tile t = Vars.world.tile(tile.x + edge.x, tile.y + edge.y);
+        if (t == null || t.build == null)
+          continue;
+        Building b = t.build;
+        if (b instanceof ComboConnectorBuild) {
+          h = h * 31 + b.pos();
+        } else if (b instanceof ComboNodeBuild n) {
+          h = h * 31 + b.pos();
+          for (int i = 0; i < n.links.size; i++)
+            h = h * 31 + n.links.get(i);
+        }
+      }
+      return h;
+    }
+
     @Override
     public void onProximityUpdate() {
       super.onProximityUpdate();
@@ -238,6 +326,15 @@ public class LinkWall extends Wall {
     @Override
     public void updateTile() {
       super.updateTile();
+      // 连着的节点改了 links（连上/断开别的组合体）时，本墙要重算分组 ——
+      // 节点的连线变化不会触发这面墙的 onProximityUpdate。
+      if (!dead() && !linksDirty) {
+        int h = linkerHash();
+        if (h != lastLinkerHash) {
+          lastLinkerHash = h;
+          markGroupDirty();
+        }
+      }
       if (linksDirty && !dead())
         rebuildLinks();
       // 队伍里玩家来了/走了（PvP 换边、联机加入等）→ 判定变了就重算一次：

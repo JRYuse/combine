@@ -43,6 +43,15 @@ public class LinkWallRepairTest implements ApplicationListener{
             }
         }catch(Throwable ignored){}
         return -1; }
+    static Object refl(Object o, String name){
+        try{
+            Class<?> c = o.getClass();
+            while(c != null){
+                try{ var f = c.getDeclaredField(name); f.setAccessible(true); return f.get(o); }
+                catch(NoSuchFieldException ignored){ c = c.getSuperclass(); }
+            }
+        }catch(Throwable ignored){}
+        return null; }
     static String hp(Building b){ return b == null ? "null" : String.format(java.util.Locale.ROOT, "%.4f", b.health); }
 
     @Override public void init(){
@@ -117,6 +126,65 @@ public class LinkWallRepairTest implements ApplicationListener{
         run(2);
         System.out.println("[LR] 只治一面 30: 治疗前 " + before + " → 现在 " + hp(w1) + " / " + hp(w2) + " / " + hp(w3));
         check("治一面的治疗量会摊到整组（不是只涨那一格）", w2.health > 0.0f && Math.abs(w1.health - w2.health) < 0.01f);
+
+        // ---------- 组合节点 / 连接器接起来的墙 = 同一组（跨距离也共享血量） ----------
+        Block node = null, conn = null;
+        for(Block b : Vars.content.blocks()){
+            if(node == null && b.getClass().getName().equals("combine.net.ComboNode")) node = b;
+            if(conn == null && b.getClass().getName().equals("combine.net.ComboConnector")) conn = b;
+        }
+        if(node != null && conn != null){
+            for(int y=40;y<140;y++) for(int x=20;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            run(5);
+            Building n1 = place(wall, 60, 80, Team.sharded);
+            Building n2 = place(wall, 61, 80, Team.sharded);
+            Building n3 = place(wall, 70, 80, Team.sharded);
+            Building n4 = place(wall, 71, 80, Team.sharded);
+            run(20);
+            System.out.println("[LR] 节点前: 组1=" + seqSize(n1) + " 组2=" + seqSize(n3));
+            check("节点前是两组", seqSize(n1) == 2 && seqSize(n3) == 2);
+            Building nd = place(node, 65, 80, Team.sharded);
+            run(10);
+            check("节点放下后不自动连线（还是两组）", seqSize(n1) == 2 && seqSize(n3) == 2);
+            nd.onConfigureBuildTapped(n1);
+            run(6);
+            check("只连一边时还是两组", seqSize(n1) == 2 && seqSize(n3) == 2);
+            nd.onConfigureBuildTapped(n3);
+            run(20);
+            System.out.println("[LR] 节点连两边后: 组1=" + seqSize(n1) + " 组2=" + seqSize(n3));
+            check("节点把两段墙接成一组（4 台）", seqSize(n1) == 4 && seqSize(n3) == 4);
+            System.out.println("[LR] 节点 links=" + refl(nd, "links"));
+            n3.damage(400f);
+            run(5);
+            System.out.println("[LR] 节点组掉血: " + hp(n1) + "/" + hp(n2) + "/" + hp(n3) + "/" + hp(n4));
+            check("跨节点也共享血池（没被打的那段也掉血）", n1.damaged() && n4.damaged());
+            nd.onConfigureBuildTapped(n3);   // 断开
+            run(2);
+            System.out.println("[LR] 断开后立刻: 节点 links=" + refl(nd, "links"));
+            run(18);
+            System.out.println("[LR] 节点断开后: 组1=" + seqSize(n1) + " 组2=" + seqSize(n3));
+            check("节点断开后又分成两组", seqSize(n1) == 2 && seqSize(n3) == 2);
+
+            // 连接器：贴着两段墙
+            for(int y=40;y<140;y++) for(int x=20;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            run(5);
+            Building c1 = place(wall, 60, 100, Team.sharded);
+            Building c2 = place(wall, 61, 100, Team.sharded);
+            Building c3 = place(wall, 63, 100, Team.sharded);
+            Building c4 = place(wall, 64, 100, Team.sharded);
+            run(10);
+            check("连接器前是两组", seqSize(c1) == 2 && seqSize(c3) == 2);
+            place(conn, 62, 100, Team.sharded);   // 夹在两段墙中间
+            run(20);
+            System.out.println("[LR] 连接器接上后: 组1=" + seqSize(c1) + " 组2=" + seqSize(c3));
+            check("连接器把两段墙接成一组", seqSize(c1) == 4 && seqSize(c3) == 4);
+            c3.damage(400f);
+            run(5);
+            System.out.println("[LR] 连接器组掉血: " + hp(c1) + "/" + hp(c2) + "/" + hp(c3) + "/" + hp(c4));
+            check("跨连接器也共享血池", c1.damaged() && c4.damaged());
+        }else{
+            System.out.println("[LR] 缺组合节点/连接器，跳过跨距离分组");
+        }
 
         System.out.println("[LR] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
         System.exit(fail==0?0:1);
