@@ -726,8 +726,10 @@ public class ComboNet {
     private static boolean isCorePool(Building b){
         if(b instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild) return true;
         if(b instanceof CombinedStorageBlock.CombinedStorageBuild s) return s.linkedCoreOf() != null;
-        // 网络重整的那一瞬并仓状态可能还没刷新，这里直接按"模块是不是核心库存"兜一层
-        return usesCorePool(b);
+        // 【注意】这里**不能**用"模块正好是核心那份"来判断：组合工厂临时挂在核心池上时
+        // 也满足这个条件，那样断开组合后它会被当成核心成员、永远留在核心库存上。
+        // 判定"谁有资格待在核心池里"只看并仓状态；usesCorePool() 只在挑池子时当偏好用。
+        return false;
     }
 
     private static void splitItemsAcrossComponents(Seq<Seq<Building>> comps){
@@ -753,7 +755,20 @@ public class ComboNet {
         for(var entry : owners.entrySet()){
             IntSet ownerComps = entry.getValue();
             if(ownerComps.size <= 1) continue;
-            if(coreOwned.containsKey(entry.getKey())) continue;
+            if(coreOwned.containsKey(entry.getKey())){
+                // 核心那份池子不拆（核心 + 并仓仓库本来就说好共用）。
+                // 但**不是**核心成员的（例如被组合节点接进来的组合工厂）必须脱离：
+                // 断开之后还挂在核心库存上，就会出现"组合断了、物品还跟着那台机器走"。
+                ItemModule core = entry.getKey();
+                for(int i = 0; i < comps.size; i++){
+                    for(Building m : comps.get(i)){
+                        if(m.items == core && !isCorePool(m)){
+                            m.items = new ItemModule();
+                        }
+                    }
+                }
+                continue;
+            }
 
             ItemModule old = entry.getKey();
             int n = ownerComps.size;
@@ -809,7 +824,18 @@ public class ComboNet {
         for(var entry : owners.entrySet()){
             IntSet ownerComps = entry.getValue();
             if(ownerComps.size <= 1) continue;
-            if(coreOwned.containsKey(entry.getKey())) continue;
+            if(coreOwned.containsKey(entry.getKey())){
+                // 同物品：核心的液体池不拆，但非核心成员要脱离
+                LiquidModule core = entry.getKey();
+                for(int i = 0; i < comps.size; i++){
+                    for(Building m : comps.get(i)){
+                        if(m.liquids == core && !isCorePool(m)){
+                            m.liquids = new LiquidModule();
+                        }
+                    }
+                }
+                continue;
+            }
 
             LiquidModule old = entry.getKey();
             int n = ownerComps.size;

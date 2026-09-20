@@ -203,6 +203,18 @@ sharePower = true : 同电网=true  a.power.status=1.0  b.power.status=1.0   ←
 sharePower = false: 同电网=false a.power.status=1.0  b.power.status=0.0   ← 对照组：第二台没电
 ```
 
+### 8.1 并仓仓库 + 组合节点的池子归属
+
+「组合仓库并进核心」和「组合节点把别的组合体接成一张网络」同时出现时，池子的归属必须固定：
+
+- 网络里只要有一台**并仓仓库**（或它的模块就是某座核心的库存），网络池就必须选**核心那一份** ——
+  否则核心会瞬间少掉一大截库存、玩家看到的是「核心的东西全跑到石墨压缩机里去了」；
+- 断开组合时，**有资格留在核心池里的只有核心自己和并仓仓库**；被节点接进来的组合工厂/别的组合体
+  必须换回自己的一份空模块（物品留在核心），不然就会出现「组合断了、物品还跟着那台机器走」。
+
+两处分别在 `ComboNet.moduleOfFirst/usesCorePool` 与 `ComboNet.splitItemsAcrossComponents`、
+`CombinedStorageBlock.unlinkFromCore` 里实现，回归测试 `verify/tests/CorePoolPullTest.java`。
+
 ### 9.0 为什么组合体不再"共用一份 PowerModule"
 
 早期实现是 `member.power = leader.power`（整组共用领导者的电力模块），好处是"任一成员接电 = 整组通电"。
