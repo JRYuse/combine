@@ -126,6 +126,7 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 | `combine.dbg.LoadDedupeWindowTest` | 任意 | 读档头几帧再合并"同一份池子的副本"必须**去重**（不翻倍）；窗口结束后真库存照常相加 |
 | `combine.dbg.NoModCompatTest` | 任意（两阶段：先带模组 `-Dmode=write`，再用**不带模组**的数据目录 `-Dmode=read`） | 关掉模组后存档还能读：地图区里只写原版字节，组合建筑回落到原版建筑（模组自己加的方块回落成空气），物品总量一分不差 |
 | `combine.dbg.ComboChunkSaveTest` | 任意 | 自定义存档块真的在搬运模组字段：发电机选中的燃料/炮塔选中的弹药/组合墙 breakTimer 存读档后还在，组合体仍共用一个池子、物品不翻倍 |
+| `combine.dbg.AssemblerPayloadTest` | 任意 | 组装机（UnitAssembler）要交的建筑 payload 收不收：配方里的 `PayloadStack.item` 必须已经换成组合实例（还是老实例的话 `acceptPayload` 里 `b.item == payload.content()` 恒 false —— 用户报的"组装机不收建筑输入"）；顺带卡浅层扫描的耗时与幂等 |
 | `combine.dbg.HalfBuiltBreakTest` | 任意 | 造到一半的建筑要能拆：挂座认领着的那一格被玩家下拆除指令后必须松手（不能把拆除又 construct 回去） |
 
 ## 复现排版问题

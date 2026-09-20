@@ -200,6 +200,8 @@ public class Main extends Mod {
       Replacer.remapLoadoutKeys();
       Replacer.remapSectorInfos();
       Replacer.remapPlanetDefaults();
+      // 别的模组可能到这一步才动过方块配方（组装机的 PayloadStack 等），再兜一次
+      Replacer.remapCapturedBlocks();
     });
 
     // 组合仓库并仓（机制本体在 CombinedStorageBlock 里）：没连核心时像其它组合建筑一样
@@ -314,6 +316,11 @@ public class Main extends Mod {
       getWhiteList();
       processModBlocks();
       processWalls();
+      // 内容初始化期被"按引用抓走"的老方块实例（典型：组装机 UnitAssembler 配方里的
+      // PayloadStack.item = 老钨墙/碳化墙）换回组合实例 —— 不换的话原版
+      // UnitAssemblerBuild.acceptPayload 里 b.item == payload.content() 恒 false，
+      // 组装机就不收建筑 payload（用户报的）
+      Replacer.remapCapturedBlocks();
       // 造价表必须在 content.load() 之后现造（Items.* 是 load() 阶段才赋值的静态字段）
       initRequirementTables();
       createLinkBlocks();
