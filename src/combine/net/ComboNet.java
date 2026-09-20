@@ -726,7 +726,8 @@ public class ComboNet {
     private static boolean isCorePool(Building b){
         if(b instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild) return true;
         if(b instanceof CombinedStorageBlock.CombinedStorageBuild s) return s.linkedCoreOf() != null;
-        return false;
+        // 网络重整的那一瞬并仓状态可能还没刷新，这里直接按"模块是不是核心库存"兜一层
+        return usesCorePool(b);
     }
 
     private static void splitItemsAcrossComponents(Seq<Seq<Building>> comps){
@@ -906,6 +907,25 @@ public class ComboNet {
     }
 
     /**
+     * 手里这份模块**就是某座核心的库存**吗（不管它是核心自己、并仓的仓库，还是别人的模块在
+     * 网络重整时被换成了核心那份）。
+     *
+     * 【为什么还要查一遍】并仓状态（linkedCore）是 CombinedStorageBlock 那边重算出来的，
+     * 和 ComboNet 的重建不是同一时刻：中间那一瞬 coreLinked() 可能还是 false，
+     * 于是网络池会挑成组合工厂那一份 —— 玩家看到的就是"核心的东西全跑到工厂里去了"
+     * （用户报的：组合节点接组合仓库 + 石墨压缩机）。
+     */
+    private static boolean usesCorePool(Building m){
+        if(m == null || m.items == null || state == null || m.team == null) return false;
+        var data = state.teams.get(m.team);
+        if(data == null || data.cores == null) return false;
+        for(var core : data.cores){
+            if(core != null && core.items == m.items) return true;
+        }
+        return false;
+    }
+
+    /**
      * 取 pos 最小的成员手里的那份模块，保证每次重建选到同一个池对象。
      *
      * 例外：并进核心的组合仓库，它的模块**就是核心库存**。如果网络里有这么一台，
@@ -915,7 +935,7 @@ public class ComboNet {
         ItemModule core = null;
         int corePos = Integer.MAX_VALUE;
         for(Building m : members){
-            if(m.items != null && coreLinked(m) && candidates.contains(m.items, true) && m.pos() < corePos){
+            if(m.items != null && (coreLinked(m) || usesCorePool(m)) && candidates.contains(m.items, true) && m.pos() < corePos){
                 core = m.items;
                 corePos = m.pos();
             }
@@ -937,7 +957,7 @@ public class ComboNet {
         LiquidModule core = null;
         int corePos = Integer.MAX_VALUE;
         for(Building m : members){
-            if(m.liquids != null && coreLinked(m) && candidates.contains(m.liquids, true) && m.pos() < corePos){
+            if(m.liquids != null && (coreLinked(m) || usesCorePool(m)) && candidates.contains(m.liquids, true) && m.pos() < corePos){
                 core = m.liquids;
                 corePos = m.pos();
             }

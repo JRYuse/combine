@@ -46,7 +46,6 @@ import mindustry.world.meta.StatUnit;
 import mindustry.world.meta.StatValues;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
-import mindustry.world.modules.PowerModule;
 
 import static mindustry.Vars.*;
 import static mindustry.Vars.iconMed;
@@ -903,20 +902,7 @@ public class CombinedCrafter extends GenericCrafter {
                 CombinedCrafterBuild b = kicked.get(i);
                 b.items = newItemMods[i];
                 b.liquids = newLiquidMods[i];
-                // FIX[电力共享]: 离组成员重建独立电力模块并保留原连接
-                if (b.power != null) {
-                    PowerModule oldPower = b.power;
-                    b.power = new PowerModule();
-                    if (oldPower != null) {
-                        // 只带走"对面确实指着本台"的连线，别把整组的线全抄过来（见 ComboPower.copyOwnLinks）
-                        combine.util.ComboPower.copyOwnLinks(oldPower, b, b.power);
-                        b.power.status = oldPower.status;
-                    }
-                    b.updatePowerGraph();
-                    // 新建的模块如果没并进任何电网（原版的扇形拆分此时把同组共享的模块
-                    // 互相覆盖过），它就会一直待在空电网里 —— 登记一下让对账器重划
-                    combine.util.ComboPower.markAround(b);
-                }
+                // 离组成员本来就各自持有电力模块（见 shareModules），这里不用动电网
             }
         }
 
@@ -991,29 +977,12 @@ public class CombinedCrafter extends GenericCrafter {
                 }
             }
 
-            // FIX[电力共享]: 全组共用领导者的电力模块——任一成员接电即整组通电。
-            // links 存在 PowerModule 里: 先摘旧电网, 把成员自己的节点链接并入领导者模块, 再换模块
-            if (leader.power != null) {
-                for (CombinedCrafterBuild member : group()) {
-                    if (member != leader && member.isValid() && member.power != null
-                            && member.power != leader.power) {
-                        PowerModule oldPower = member.power;
-                        if (oldPower.graph != null)
-                            oldPower.graph.remove(member);
-                        for (int li = 0; li < oldPower.links.size; li++) {
-                            int link = oldPower.links.get(li);
-                            if (!leader.power.links.contains(link))
-                                leader.power.links.add(link);
-                        }
-                        member.power = leader.power;
-                        member.updatePowerGraph();
-                        // 摘旧图/换模块都可能让某几台掉在原版那张没人更新的旧电网里：交给对账器收口
-                        combine.util.ComboPower.markAround(member);
-                    }
-                }
-                combine.util.ComboPower.mark(leader);
-            }
-
+            // 【不再共用 PowerModule】以前把整组的 power 指向领导者那一份，好让"任一成员接电=整组通电"。
+            // 但原版 PowerGraph 假设"一台建筑一份模块"：共用之后，电网里到底算进哪几台、算多少电，
+            // 取决于原版并网/拆网的执行顺序 —— 游戏里摆出来的基地和读档/入服建出来的基地会算出
+            // 两个不同的数（用户联机截图：服务端 +2.4k、客户端 -9.2k），而且拆网时还会把成员漏在旧图上。
+            // 现在每台保留自己的模块：组合方块本来就是导电体（conductivePower = true），
+            // 相邻/连线接上就自动并进同一张电网，语义不变，记账变成确定性的。
         }
 
         // -------------------- 生命周期 --------------------
@@ -1071,25 +1040,7 @@ public class CombinedCrafter extends GenericCrafter {
                     if (shared)
                         liquids = new LiquidModule();
                 }
-                if (power != null) {
-                    boolean sharedPower = false;
-                    for (CombinedCrafterBuild member : members) {
-                        if (member != this && member.isValid() && member.power == this.power) {
-                            sharedPower = true;
-                            break;
-                        }
-                    }
-                    if (sharedPower) {
-                        // FIX[电力共享]: 换独立模块但保留电力连接(links 存在模块里, 直接 new 会丢光)
-                        PowerModule oldPower = power;
-                        power = new PowerModule();
-                        if (oldPower != null) {
-                            power.links.addAll(oldPower.links);
-                            power.status = oldPower.status;
-                        }
-                        updatePowerGraph();
-                    }
-                }
+                // 电力模块各归各的（见 shareModules），拆自己的时候不用再分离共享模块
             }
 
             if (wasLeader) {

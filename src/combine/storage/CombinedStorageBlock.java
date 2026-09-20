@@ -629,6 +629,18 @@ public class CombinedStorageBlock extends StorageBlock {
 
     /** 解链：物品早已在核心池里（链接期间共用模块），这里给它一份空模块即可。 */
     void unlinkFromCore() {
+      // 【保险】并仓期间 ComboNet 可能把整张网络的池子换成了**别台建筑**那一份
+      // （网络里混进了组合工厂/别的仓库时）。那种情况下手里这份不是核心库存 ——
+      // 直接丢弃就等于把玩家的东西留在了别人身上：用户报的
+      // 「核心东西全跑到石墨压缩机里，切断组合也不会复原」。
+      // 解链前先把"不属于核心的那部分"还回核心，再给自己一份空模块。
+      if (linkedCore instanceof CoreBuild core && core.isValid() && core.items != null
+          && items != null && items != core.items) {
+        try {
+          moveItems(items, core.items);
+        } catch (Throwable ignored) {
+        }
+      }
       linkedCore = null;
       items = new ItemModule();
       comboStorageCap = -1;
