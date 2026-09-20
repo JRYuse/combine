@@ -341,12 +341,17 @@ public class CoopCombo {
 
   private static boolean computeEligible(Block b, boolean ignoreManualBlacklist) {
     if (!enabled) return false;
-    // 【不组合名单】传输类等明确不该组合的类（含 js/java 子类）直接排除；
-    // 界面上列清单（ignoreManualBlacklist=true）时只看类名单，手动屏蔽的也要能列出来再勾回去
     if (ignoreManualBlacklist ? NoCombo.blockedByClass(b) : NoCombo.blocked(b)) return false;
     if (b.getClass().getName().startsWith("combine.")) return false;
-    // 原版方块一律不碰：combine 该替换的已经替换掉了，剩下没被替换的原版方块
-    // （例如 oil-extractor/Fracker 这类"子类但不是匿名类"的）保持原样，别顺手把它们也连起来。
+
+    // combine 自己通过 Replacer 生成的组合方块（原版→组合），已经有 combine 的组合机制，
+    // 不能再被 CoopCombo 接管 —— 否则炮塔这种"弹药不在 ItemModule 里"的方块会被
+    // 无意义地拉进"共享物品池"，表现为"替换了但还是被协作组合接管"。
+    // 这条也兜住了通过 CompatRegistry 注册的附属组合方块（CombinedWHItemTurret 等）。
+    try {
+      if (Replacer.replaced.containsValue(b, true)) return false;
+    } catch (Throwable ignored) {}
+
     if (b.getClass().getName().startsWith("mindustry.")) return false;
     if (!ignoreManualBlacklist && blacklist.contains(b.name)) return false;
     if (b instanceof CoreBlock) return false;
