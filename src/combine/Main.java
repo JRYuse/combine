@@ -215,6 +215,9 @@ public class Main extends Mod {
     // 连接器/节点（方块 id 与客户端不一致），联机的地图里这些建筑会被服务端当成未知 id
     // 直接变成空气，客户端进图自然什么都看不到。
     setupContent();
+    // 附属模组可能在 combine 之后才 init()，注册表那时还没填 —— 客户端/服务端加载完成后兜一次
+    Events.on(ClientLoadEvent.class, e -> processCompatBlocks());
+    Events.on(mindustry.game.EventType.ServerLoadEvent.class, e -> processCompatBlocks());
   }
 
   public static void addTestBuildWeapons(UnitType unit, int count) {
@@ -352,6 +355,7 @@ public class Main extends Mod {
       getWhiteList();
       processModBlocks();
       processWalls();
+      processCompatBlocks();
       // 造价表必须在 content.load() 之后现造（Items.* 是 load() 阶段才赋值的静态字段）
       initRequirementTables();
       createLinkBlocks();
@@ -1059,6 +1063,46 @@ public class Main extends Mod {
         postInit(lw);
       } catch (Exception ex) {
         Log.err("processWalls: failed for " + b.name, ex);
+      }
+    }
+  }
+
+  /**
+   * 附属兼容：遍历所有方块，命中 CompatRegistry 里注册的源类就替换成对应组合类。
+   *
+   * 与 processModBlocks() 的区别：这里走的是"附属模组已经写好了 CombinedXxx"的路子，
+   * combine 不需要知道那个组合类的内部，只需要 createCombo + copyFields + init。
+   *
+   * 可以多次调用：已替换过的会被 originalToCombo/comboToOriginal 过滤掉。
+   */
+  void processCompatBlocks() {
+    if (combine.compat.CompatRegistry.size() == 0)
+      return;
+
+    Seq<Content> snapshot = new Seq<>(Vars.content.getBy(ContentType.block));
+    for (var c : snapshot) {
+      Block b = (Block) c;
+      if (originalToCombo.containsKey(b) || comboToOriginal.containsKey(b))
+        continue;
+      if (list.contains(b.name))
+        continue;
+      if (NoCombo.blockedByClass(b))
+        continue;
+
+      Class<? extends Block> comboClass = combine.compat.CompatRegistry.comboFor(b.getClass());
+      if (comboClass == null)
+        continue;
+
+      try {
+        Block combo = createCombo(b, comboClass);
+        copyFields(b, combo);
+        combo.init();
+        combo.postInit();
+        if (visuals())
+          combo.loadIcon();
+        postInit(combo);
+      } catch (Throwable th) {
+        Log.err("[combine] compat 替换失败: " + b.name, th);
       }
     }
   }
