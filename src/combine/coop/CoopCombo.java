@@ -450,6 +450,18 @@ public class CoopCombo {
     if (node != null && trackedNodes.add(node)) dirty = true;
   }
 
+  /**
+   * 已登记的组合节点（拷贝一份）。
+   *
+   * 【组合墙用】节点是跨距离连接的：节点不在墙的邻格里，墙自己没法从 proximity 发现"有人连我"。
+   * 所以墙重算分组时来这份名单里找"links 里有我的节点"。
+   */
+  public static Seq<Building> trackedNodesCopy() {
+    Seq<Building> out = new Seq<>();
+    for (Building b : trackedNodes) out.add(b);
+    return out;
+  }
+
   public static void untrackNode(Building node) {
     if (node != null && trackedNodes.remove(node)) dirty = true;
   }
@@ -618,7 +630,8 @@ public class CoopCombo {
     if (state == null || world == null || world.isGenerating()) return;
     if (dirty) {
       dirty = false;
-      boolean dedupe = dedupeOnce;
+      // 读档后头几帧也算去重语义（见 ComboNet.loadDedupeFrames）
+      boolean dedupe = dedupeOnce || ComboNet.pendingLoadDedupe();
       dedupeOnce = false;
       rebuild(dedupe);
     }

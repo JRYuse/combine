@@ -98,6 +98,10 @@ public class TurretCoolantTest implements ApplicationListener{
             store.liquids.add(Liquids.water, 400f);
             store.liquids.add(Liquids.cryofluid, 400f);
             Building node = place(nodeBlock, 67, 60, Team.sharded);
+            // 节点不再自动连线：手动把仓库和炮塔组合体接上
+            node.onConfigureBuildTapped(store);
+            run(6);
+            node.onConfigureBuildTapped(t1);
             run(30);
             StringBuilder keys = new StringBuilder();
             for(Class<?> k : t1.block.configurations.keys()) keys.append(k.getSimpleName()).append(' ');

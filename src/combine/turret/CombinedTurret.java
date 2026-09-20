@@ -254,21 +254,15 @@ public class CombinedTurret extends Turret {
       Seq<CombinedTurretBuild> oldGroup = comboGroup != null ? new Seq<>(comboGroup) : new Seq<>();
       comboGroup = new Seq<>();
       comboGroup.add(this);
-      IntSet visited = new IntSet();
-      Queue<CombinedTurretBuild> queue = new Queue<>();
-      queue.add(this);
-      visited.add(pos());
-      while (!queue.isEmpty()) {
-        CombinedTurretBuild cur = queue.removeFirst();
-        for (Building b : cur.proximity) {
-          if (b instanceof CombinedTurretBuild o && o.team == team && o.isValid()
-              && !visited.contains(o.pos())) {
-            visited.add(o.pos());
-            queue.addLast(o);
-            comboGroup.add(o);
-          }
-        }
-      }
+            // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
+            for (Building b : ComboReflect.linkedReachable(this,
+                    o -> o instanceof CombinedTurretBuild other && other.team == team && other.isValid(),
+                    (cur, o) -> cur.block == o.block
+                    || ((CombinedTurret) cur.block).allowCrossTypeCombo
+                    || ((CombinedTurret) o.block).allowCrossTypeCombo)) {
+                if (b != this)
+                    comboGroup.add((CombinedTurretBuild) b);
+            }
       CombinedTurretBuild newLeader = this;
       for (CombinedTurretBuild b : comboGroup)
         if (b.isValid() && b.pos() < newLeader.pos())
@@ -309,29 +303,27 @@ public class CombinedTurret extends Turret {
 
     /** 被踢出的成员按容量比例分走液体 */
     public void splitAssets(Seq<CombinedTurretBuild> oldGroup, Seq<CombinedTurretBuild> newGroup) {
-      CombinedTurretBuild oldLeader = null;
+      // FIX[双重拆分]: 网络层(ComboNet)可能已把池子按组件拆过一轮、给部分成员发过新模块。
+      // 那些份额先并回主池（新组长持有的模块），再由本地逻辑按容量统一重分，
+      // 否则两轮拆分各分各的，总额对不上账（物资凭空丢/复制）。
+      CombinedTurretBuild newLeader = null;
+      for (CombinedTurretBuild b : newGroup)
+          if (b.isValid() && (newLeader == null || b.pos() < newLeader.pos()))
+              newLeader = b;
+      if (newLeader == null)
+          newLeader = this;
+      LiquidModule poolLiquids = newLeader.liquids;
       for (CombinedTurretBuild b : oldGroup) {
-        if (!b.isValid())
-          continue;
-        for (CombinedTurretBuild o : oldGroup) {
-          if (o != b && o.isValid() && o.liquids == b.liquids) {
-            oldLeader = b;
-            break;
-          }
-        }
-        if (oldLeader != null)
-          break;
-      }
-      if (oldLeader == null) {
-        for (CombinedTurretBuild b : oldGroup)
-          if (b.isValid()) {
-            oldLeader = b;
-            break;
+          if (!b.isValid()) continue;
+          if (poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
+              for (Liquid liquid : content.liquids()) {
+                  float amt = b.liquids.get(liquid);
+                  if (amt > 0.001f) { poolLiquids.add(liquid, amt); b.liquids.remove(liquid, amt); }
+              }
           }
       }
-      if (oldLeader == null)
-        oldLeader = this;
-      LiquidModule oldLiquids = oldLeader.liquids;
+      CombinedTurretBuild oldLeader = newLeader;
+      LiquidModule oldLiquids = poolLiquids;
       Seq<CombinedTurretBuild> kicked = new Seq<>();
       for (CombinedTurretBuild b : oldGroup)
         if (b.isValid() && !newGroup.contains(b))

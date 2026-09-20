@@ -68,6 +68,30 @@ public class ComboNet {
      */
     private static boolean dirty = false;
 
+    /**
+     * 读档后的"去重语义"还要保持多少帧。
+     *
+     * 读档时每台共享同一份池子的建筑都在存档里写了一份完整副本，合并这些副本必须**去重**
+     * （内容相同只留一份）而不是相加。以前这个语义只覆盖"读档那一轮"的合并，
+     * 但读档后的头几帧里本地组合体还在重建（updateTile / 组合节点网络重算），会再发生几次合并 ——
+     * 那几次落到了窗口外，按"运行期相加"处理，每台手里的整份副本就被当成真库存加进去，
+     * 物品正好翻倍（用户报的"重新读写后物品增加"，实测 993210 → 1983230）。
+     *
+     * 现在读档后头 N 帧一律按去重处理；世界一旦真的被改动（造/拆方块）就提前结束。
+     */
+    private static int loadDedupeFrames = 0;
+    private static final int loadDedupeGraceFrames = 20;
+
+    /** 读档去重语义还生效吗（CombinedStorageBlock / CoopCombo 共用）。 */
+    public static boolean pendingLoadDedupe(){
+        return loadDedupeFrames > 0;
+    }
+
+    /** 世界被真正改动过（造/拆方块）→ 读档去重语义到此为止。 */
+    public static void markWorldModified(){
+        loadDedupeFrames = 0;
+    }
+
     /** 在 Main.init() 里注册一次：每帧最多重建一次。 */
     public static void register(){
         arc.Events.run(mindustry.game.EventType.Trigger.update, ComboNet::flush);
@@ -87,6 +111,7 @@ public class ComboNet {
 
     /** 每帧一次的收口：只有真的脏了才重建。 */
     private static void flush(){
+        if(loadDedupeFrames > 0) loadDedupeFrames --;
         if(!dirty) return;
         dirty = false;
         rebuild();
@@ -125,6 +150,8 @@ public class ComboNet {
     /** WorldLoadBeginEvent：进入读档语义窗口。 */
     public static void beginWorldLoad(){
         loadingWorld = true;
+        // 读档后头几帧仍按去重语义合并（本地组合体/网络还在重建，见 loadDedupeFrames 注释）
+        loadDedupeFrames = loadDedupeGraceFrames;
     }
 
     public static void rebuildLoading(){
@@ -497,7 +524,7 @@ public class ComboNet {
         // 同一份池子的副本，谁先合并谁就必须按"内容相同的副本只留一份"来算。
         // ComboNet 每帧跑在它们之前，所以要以它们的标志为准，否则第一帧就把副本当三份真库存相加了。
         boolean loadPhase = loading || loadingWorld || world.isGenerating()
-            || CombinedStorageBlock.pendingDedupe() || CoopCombo.pendingDedupe();
+            || CombinedStorageBlock.pendingDedupe() || CoopCombo.pendingDedupe() || pendingLoadDedupe();
 
         try{
             Seq<Building> all = new Seq<>();
@@ -1033,6 +1060,14 @@ public class ComboNet {
         if(node == null || state == null || node.power == null) return;
         beginHeatFrame();
 
+        // 节点互连后，同一条链上的每个节点看到的组完全一样 —— 热量分配必须由
+        // 链上唯一"负责人"（互连/贴邻节点簇里 pos 最小者）做一次，否则同一批
+        // 产热组的存量热被每个节点各扣一遍、需热组各领一份（越领越多/速耗翻倍）。
+        if(!isHeatAuthority(node)){
+            node.heat = 0f;
+            return;
+        }
+
         Seq<Building> groups = linkedHeatGroups(node);
         int n = groups.size;
         if(n == 0){
@@ -1066,25 +1101,67 @@ public class ComboNet {
         }
     }
 
+    /**
+     * 这条节点是不是自己所在"节点簇"的热量负责人。
+     * 节点簇 = 经节点互连连线、贴邻、或同贴一个连接器而连在一起的全部节点 —
+     * 簇内 pos 最小的节点负责给整个网络做热量分配。
+     */
+    private static boolean isHeatAuthority(ComboNode.ComboNodeBuild node){
+        ObjectSet<Building> seen = new ObjectSet<>();
+        Queue<Building> q = new Queue<>();
+        q.addLast(node);
+        seen.add(node);
+        while(!q.isEmpty()){
+            Building v = q.removeFirst();
+            Seq<Building> nbs = new Seq<>();
+            if(v instanceof ComboConnector.ComboConnectorBuild c){
+                if(c.proximity != null) for(Building nb : c.proximity) nbs.add(nb);
+            }else if(v instanceof ComboNode.ComboNodeBuild n){
+                for(int i = 0; i < n.links.size; i++){
+                    Building l = world.build(n.links.get(i));
+                    if(l != null && l.isValid()) nbs.add(l);
+                }
+                if(n.proximity != null) for(Building nb : n.proximity) nbs.add(nb);
+            }
+            for(int i = 0; i < nbs.size; i++){
+                Building nb = nbs.get(i);
+                if(nb instanceof ComboNode.ComboNodeBuild nn && seen.add(nn)) q.addLast(nn);
+            }
+        }
+        for(Building b : seen){
+            if(b instanceof ComboNode.ComboNodeBuild nb && nb != node && nb.pos() < node.pos()) return false;
+        }
+        return true;
+    }
+
     private static Seq<Building> linkedHeatGroups(ComboNode.ComboNodeBuild node){
+        // 直接走网络分量：节点互连后链上所有组都是同一个"组合网络"，
+        // 产热/需热要和物品/液体池按同一套连通性通算。
         Seq<Building> out = new Seq<>();
         ObjectSet<Building> seen = new ObjectSet<>();
-        for(int i = 0; i < node.links.size; i++){
-            Building link = world.build(node.links.get(i));
-            if(link == null || !link.isValid() || !ComboReflect.isComboBuild(link)) continue;
-            Building leader = ComboReflect.leader(link);
+        for(Building m : componentMembers(node)){
+            if(m == null || !m.isValid() || m instanceof ComboNode.ComboNodeBuild) continue;
+            if(!ComboReflect.isComboBuild(m)) continue;
+            Building leader = ComboReflect.leader(m);
             if(leader != null && seen.add(leader)) out.add(leader);
         }
         return out;
     }
 
+    /**
+     * 一个组合体对外能提供的热量 = **整组成员**各自 heat() 之和。
+     *
+     * 以前这里是"取第一个成员（HeatBlock）的 heat()"——那时组合产热机的 heat() 报的是整组总量，
+     * 所以取一台就够。现在产热机的 heat() 改回原版语义（只报自己那一份，避免相邻多台被重复计入），
+     * 汇总就得在这里做：整组求和。
+     */
     private static float groupHeatSource(Building leader){
+        float sum = 0f;
         for(Building m : ComboReflect.group(leader)){
-            if(m.isValid() && m instanceof HeatBlock hb && !(m instanceof ComboNode.ComboNodeBuild)){
-                return Math.max(0f, hb.heat());
-            }
+            if(m == null || !m.isValid() || m instanceof ComboNode.ComboNodeBuild) continue;
+            if(m instanceof HeatBlock hb) sum += Math.max(0f, hb.heat());
         }
-        return 0f;
+        return sum;
     }
 
     private static float groupHeatDemand(Building leader){

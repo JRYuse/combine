@@ -192,21 +192,15 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
       Seq<CombinedContinuousLiquidTurretBuild> oldGroup = comboGroup != null ? new Seq<>(comboGroup) : new Seq<>();
       comboGroup = new Seq<>();
       comboGroup.add(this);
-      IntSet visited = new IntSet();
-      Queue<CombinedContinuousLiquidTurretBuild> queue = new Queue<>();
-      queue.add(this);
-      visited.add(pos());
-      while (!queue.isEmpty()) {
-        CombinedContinuousLiquidTurretBuild cur = queue.removeFirst();
-        for (Building b : cur.proximity) {
-          if (b instanceof CombinedContinuousLiquidTurretBuild o && o.team == team && o.isValid()
-              && !visited.contains(o.pos())) {
-            visited.add(o.pos());
-            queue.addLast(o);
-            comboGroup.add(o);
-          }
-        }
-      }
+            // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
+            for (Building b : ComboReflect.linkedReachable(this,
+                    o -> o instanceof CombinedContinuousLiquidTurretBuild other && other.team == team && other.isValid(),
+                    (cur, o) -> cur.block == o.block
+                    || ((CombinedContinuousLiquidTurret) cur.block).allowCrossTypeCombo
+                    || ((CombinedContinuousLiquidTurret) o.block).allowCrossTypeCombo)) {
+                if (b != this)
+                    comboGroup.add((CombinedContinuousLiquidTurretBuild) b);
+            }
       CombinedContinuousLiquidTurretBuild newLeader = this;
       for (CombinedContinuousLiquidTurretBuild b : comboGroup)
         if (b.isValid() && b.pos() < newLeader.pos())
@@ -247,29 +241,27 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
 
     /** 被踢出的成员按容量比例分走液体 */
     public void splitAssets(Seq<CombinedContinuousLiquidTurretBuild> oldGroup, Seq<CombinedContinuousLiquidTurretBuild> newGroup) {
-      CombinedContinuousLiquidTurretBuild oldLeader = null;
+      // FIX[双重拆分]: 网络层(ComboNet)可能已把池子按组件拆过一轮、给部分成员发过新模块。
+      // 那些份额先并回主池（新组长持有的模块），再由本地逻辑按容量统一重分，
+      // 否则两轮拆分各分各的，总额对不上账（物资凭空丢/复制）。
+      CombinedContinuousLiquidTurretBuild newLeader = null;
+      for (CombinedContinuousLiquidTurretBuild b : newGroup)
+          if (b.isValid() && (newLeader == null || b.pos() < newLeader.pos()))
+              newLeader = b;
+      if (newLeader == null)
+          newLeader = this;
+      LiquidModule poolLiquids = newLeader.liquids;
       for (CombinedContinuousLiquidTurretBuild b : oldGroup) {
-        if (!b.isValid())
-          continue;
-        for (CombinedContinuousLiquidTurretBuild o : oldGroup) {
-          if (o != b && o.isValid() && o.liquids == b.liquids) {
-            oldLeader = b;
-            break;
-          }
-        }
-        if (oldLeader != null)
-          break;
-      }
-      if (oldLeader == null) {
-        for (CombinedContinuousLiquidTurretBuild b : oldGroup)
-          if (b.isValid()) {
-            oldLeader = b;
-            break;
+          if (!b.isValid()) continue;
+          if (poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
+              for (Liquid liquid : content.liquids()) {
+                  float amt = b.liquids.get(liquid);
+                  if (amt > 0.001f) { poolLiquids.add(liquid, amt); b.liquids.remove(liquid, amt); }
+              }
           }
       }
-      if (oldLeader == null)
-        oldLeader = this;
-      LiquidModule oldLiquids = oldLeader.liquids;
+      CombinedContinuousLiquidTurretBuild oldLeader = newLeader;
+      LiquidModule oldLiquids = poolLiquids;
       Seq<CombinedContinuousLiquidTurretBuild> kicked = new Seq<>();
       for (CombinedContinuousLiquidTurretBuild b : oldGroup)
         if (b.isValid() && !newGroup.contains(b))
@@ -481,17 +473,21 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
 
     
 
-    // ===== 弹药空值防护 (单副本, 全限定类型) =====
+    /**
+     * 【原版语义：持续液体炮塔的"有弹药"看液体池，不看物品弹药队列】
+     * 以前这里照抄了物品炮塔（CombinedItemTurret）那套 `ammo` 队列判断，
+     * 而液体炮塔从来不往 `ammo` 里放东西（acceptItem 恒为 false、useAmmo() 也不消耗弹药条目），
+     * 于是 hasAmmo() 恒为 false：
+     *   1) 状态显示 noinput（TurretBuild.status()：enabled && !hasAmmo() ⇒ noInput）；
+     *   2) 原版 TurretBuild.updateTile() 里"找目标 / 开火"整段都套在 `if(hasAmmo())` 里，
+     *      所以氰气/臭氧灌满也不找目标、不开火（用户报的现象）。
+     * 正确判定 = 池里有能当弹药的液体、且已经能持续供弹（activated，与原版一致）。
+     */
     @Override
     public boolean hasAmmo() {
-      if (ammo == null)
-        return false;
-      for (int i = 0; i < ammo.size; i++) {
-        mindustry.world.blocks.defense.turrets.Turret.AmmoEntry e = ammo.get(i);
-        if (e != null && e.type() != null && e.amount > 0)
-          return true;
-      }
-      return false;
+      Liquid l = effectiveLiquid();
+      return hasCorrectAmmo() && l != null && ammoTypes.containsKey(l)
+          && liquids != null && liquids.get(l) > 0f && activated;
     }
 
     @Override

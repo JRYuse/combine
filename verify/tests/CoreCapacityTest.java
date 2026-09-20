@@ -144,14 +144,52 @@ public class CoreCapacityTest implements ApplicationListener{
         System.out.println("[CC] E 链读档后: 总量=" + total() + " 容量=" + cap() + " 玻璃=" + glass());
         check("E 仓库链读档后总量不涨（" + beforeE + " → " + total() + "）", total() == beforeE);
 
+        // ---------- G 容量只跟"核心 + 连通仓库"走，不跟库存走 ----------
+        // 用户报的：次代核心 9000 + 一堆 300 的容器，面板上限却固定在 23074（= 某种物品的存量），
+        // 拆容器也不掉。以前"容量至少要装得下现在这些存货"的地板写成 items.total()/单项最大值，
+        // 这次的断言：每种物品**都超过**容量，上限依旧只能是"核心 + 容器"。
+        clearArea();
+        Building g0 = place(Blocks.coreShard, 60, 60, Team.sharded);
+        run(10);
+        int capG = cap(), types = 0;
+        for(Item it : Vars.content.items()){ g0.items.set(it, capG + 700); types++; }
+        int totalG = g0.items.total();
+        System.out.println("[CC] G 每种都超容: 容量=" + capG + " 物品种类=" + types + " 单项=" + (capG + 700)
+            + " 物品总和=" + totalG);
+        // 放一台容器（会触发组合仓库重算）——容量只该多出容器的 300，不该跳到 items.total()
+        Building g1 = place(cont, 63, 60, Team.sharded);
+        run(60);
+        int capG2 = cap();
+        System.out.println("[CC] G 放容器重算后: 容量=" + capG2 + "（应为 " + (capG + cont.itemCapacity) + "）"
+            + " (并进核心=" + (g1.items == g0.items) + ") 玻璃=" + g0.items.get(Items.metaglass)
+            + " 铜=" + g0.items.get(Items.copper) + " 总和=" + g0.items.total());
+        check("G 容量只按容量算、不看库存（" + capG + " → " + capG2 + "，物品总和 " + totalG + "）",
+            capG2 == capG + cont.itemCapacity);
+        check("G 超容的存量一份都没被删", g0.items.total() == totalG);
+        try{ g1.tile.setBlock(Blocks.air); }catch(Throwable ignored){}
+        run(60);
+        System.out.println("[CC] G 拆掉容器后: 容量=" + cap() + "（应为 " + capG + "） 总和=" + g0.items.total());
+        check("G 拆掉仓库容量掉回核心自身（" + cap() + "）", cap() == capG);
+        check("G 拆掉仓库后物品一份没少（" + g0.items.total() + "/" + totalG + "）", g0.items.total() == totalG);
+
         // ---------- F 直接读用户的存档，看看读档前后数量 ----------
         try{
-            Fi usr = Core.files.absolute(System.getProperty("user.home") + "/sd/save/sector-serpulo-175.msav");
+            Fi usr = Core.files.absolute(System.getProperty("user.home") + "/sd/a/sector-serpulo-175.msav");
+            if(!usr.exists()) usr = Core.files.absolute(System.getProperty("user.home") + "/sd/save/sector-serpulo-175.msav");
             if(usr.exists()){
                 SaveIO.load(usr);
                 run(60);
                 StringBuilder sb = new StringBuilder();
                 Building cc = core();
+                int containers = 0, containerCap = 0;
+                java.util.IdentityHashMap<Building, Boolean> seen = new java.util.IdentityHashMap<>();
+                for(Tile t : Vars.world.tiles){
+                    if(t == null || !(t.build instanceof mindustry.world.blocks.storage.StorageBlock.StorageBuild sb2)
+                        || t.build instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild) continue;
+                    if(seen.put(t.build, Boolean.TRUE) != null) continue;
+                    containers++;
+                    containerCap += t.build.block.itemCapacity;
+                }
                 if(cc != null){
                     for(Item it : Vars.content.items()){
                         int a = cc.items.get(it);
@@ -159,7 +197,12 @@ public class CoreCapacityTest implements ApplicationListener{
                     }
                 }
                 System.out.println("[CC] F 用户存档 加载后: 核心=" + (cc == null ? "无" : cc.block.name)
-                    + " 容量=" + cap() + " 物品: " + sb);
+                    + " 容量=" + cap() + "（核心静态 " + (cc == null ? -1 : cc.block.itemCapacity)
+                    + " + " + containers + " 个仓库 " + containerCap + "）物品: " + sb);
+                check("F 读档后容量 = 核心 + 连通仓库（" + cap() + "），不跟库存走",
+                    cc != null && cap() == cc.block.itemCapacity + containerCap);
+                check("F 读档后地图里的库存没被原版 sector info 回灌清掉（总量 " + (cc == null ? -1 : cc.items.total()) + "）",
+                    cc != null && cc.items.total() > 0);
                 int t1 = total();
                 SaveIO.save(Core.files.absolute("/tmp/cl/user-roundtrip.msav"));
                 SaveIO.load(Core.files.absolute("/tmp/cl/user-roundtrip.msav"));

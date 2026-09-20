@@ -93,8 +93,20 @@ public class MultiBuildWeapon extends Weapon {
     check(unit, m);
 
     // 这一格造完/失效了就放开，下面重新认领一格
-    if (m.plan != null && m.target != null
-        && (!(world.build(m.plan.x, m.plan.y) instanceof ConstructBlock.ConstructBuild) || m.plan.progress >= 1f)) {
+    //
+    // 【接管的那一格换人了也要放开】玩家用拆除工具点过之后，原版会把这一格**换成一个新的
+    // ConstructBuild**（拆除态）；挂座手里攥着的是换掉之前的那个旧对象，继续对它 construct()
+    // 照样会作用在同一格上 —— 把拆除又造回去（用户报的"造到一半的建筑拆不掉/反而被造完"）。
+    if (m.plan != null && m.target != null) {
+      Building cur = world.build(m.plan.x, m.plan.y);
+      if (!(cur instanceof ConstructBlock.ConstructBuild) || cur != m.target || m.plan.progress >= 1f) {
+        release(m);
+      }
+    }
+    // 【这一格正在被拆】玩家用拆除工具点过之后，格子上的 ConstructBuild 会变成"正在拆"的
+    // （current 换成被拆的那个方块 / activeDeconstruct=true）。挂座原先不看这个，
+    // 继续对它 construct() —— 把拆除又造回去，表现就是"造到一半的建筑拆不掉/反而被造完"。
+    if (m.plan != null && deconstructing(m.target, m.plan)) {
       release(m);
     }
 
@@ -221,6 +233,11 @@ public class MultiBuildWeapon extends Weapon {
         BuildPlan p = plans.get(i);
         if (p == null || p.breaking || p.block == null)
           continue;
+        // 【修废墟不能当成"已经造好"】废墟格上的方块和计划里的方块是同一种（同名同 id），
+        // 直接按"b.block == p.block"判会把整框的修复计划全删掉 ——
+        // 表现就是"修废墟时一个都不修"（用户报的）。
+        if (derelictPlan(p))
+          continue;
         Building b = world.build(p.x, p.y);
         if (b != null && !(b instanceof ConstructBlock.ConstructBuild) && b.block == p.block) {
           plans.removeIndex(i);
@@ -281,9 +298,11 @@ public class MultiBuildWeapon extends Weapon {
             continue;
           if (own != null && own.x == p.x && own.y == p.y)
             continue; // 自己正在造的那格
-          if (!claimable(weaponUnit, tm, p.x, p.y, pass == 0))
+          BuildPlan bp = new BuildPlan(p.x, p.y, p.rotation, p.block, p.config);
+          // 用 BuildPlan 版判定：这样"废墟修复"的格子也能被队伍计划表的建造者认领
+          if (!claimable(weaponUnit, tm, bp, pass == 0))
             continue;
-          return new BuildPlan(p.x, p.y, p.rotation, p.block, p.config);
+          return bp;
         }
       }
     }
@@ -308,6 +327,10 @@ public class MultiBuildWeapon extends Weapon {
 
     Building existing = world.build(plan.x, plan.y);
     boolean constructing = existing instanceof ConstructBlock.ConstructBuild;
+    // 正在被拆的格子不认领（不管建造还是拆除计划）：构造计划认领会把拆除造回去，
+    // 拆除计划则由原版/队首那条计划去处理。
+    if (constructing && deconstructing((ConstructBlock.ConstructBuild) existing, plan))
+      return false;
     // 已经在施工：只在"接手"那一轮允许认领
     if(constructing && freshOnly)
       return false;
@@ -317,7 +340,8 @@ public class MultiBuildWeapon extends Weapon {
         return false;
     }else{
       // 建造计划：已经有别的方块，说明造好了/这里不是该造的东西
-      if(existing != null && !constructing)
+      // 例外：废墟修复 —— 格子上就是衍生物团队的**同名**方块，原版会当场修好，属于"可认领"
+      if(existing != null && !constructing && !derelictPlan(plan))
         return false;
     }
 
@@ -327,42 +351,6 @@ public class MultiBuildWeapon extends Weapon {
         return false;
     }
     return notClaimedByOtherMount(weaponUnit, tm, plan.x, plan.y);
-  }
-
-  /**
-   * 这一格能不能认领：射程内、没开工、没被自己身上其它挂座认领、
-   * 也不是自己正在造的那格（队首由单位自己的建造逻辑负责）。
-   */
-  boolean claimable(Unit weaponUnit, BuildWeaponMount tm, int x, int y) {
-    return claimable(weaponUnit, tm, x, y, true);
-  }
-
-  /**
-   * 这一格能不能认领。
-   *
-   * @param freshOnly true = 只认领还没开工的格子；false = 也允许接手已经存在的 ConstructBuild
-   *                  （原版 BuilderComp 就是靠"tile.build instanceof ConstructBuild 就直接继续"
-   *                  来接手的，只靠 Build.validPlace() 会因为 ConstructBuild 已存在而被拒，
-   *                  结果格子开工后没人继续施工、进度卡死）。
-   */
-  boolean claimable(Unit weaponUnit, BuildWeaponMount tm, int x, int y, boolean freshOnly) {
-    if (!weaponUnit.within(x * 8f, y * 8f, range))
-      return false;
-
-    Building existing = world.build(x, y);
-    boolean constructing = existing instanceof ConstructBlock.ConstructBuild;
-    // 已经在施工：只有允许接手时才行
-    if (constructing && freshOnly)
-      return false;
-    // 已经是别的方块了（造完了/不是计划中的东西），跳过
-    if (existing != null && !constructing)
-      return false;
-
-    BuildPlan own = weaponUnit.buildPlan();
-    if (own != null && own.x == x && own.y == y)
-      return false;
-
-    return notClaimedByOtherMount(weaponUnit, tm, x, y);
   }
 
   /** 同一格没有被本机别的建造挂座认领 */
@@ -412,9 +400,27 @@ public class MultiBuildWeapon extends Weapon {
     // 不能走 Build.validPlace —— 它遇到已有 ConstructBuild 会返回 false，
     // 那样格子开工之后就永远没人接着施工，进度会卡死。
     if (existing instanceof ConstructBlock.ConstructBuild cb) {
+      // 正在被拆的格子不接手（不然会把拆除又造回去）
+      if (deconstructing(cb, plan)) {
+        m.plan = null;
+        m.target = null;
+        return;
+      }
       m.target = cb;
       m.plan = plan;
       plan.initialized = true;
+      return;
+    }
+
+    // 废墟修复：同格同名方块 + team=derelict → 原版 beginPlace 会**当场**把它变成自己的建筑
+    // （不走施工阶段、不要材料）。这里不需要接住什么 ConstructBuild，
+    // 处理完就把这格松开，下一帧再去找别的格子（多把武器因此能同时修好几格）。
+    if (derelictPlan(plan)) {
+      if (Build.validPlace(plan.block, unit.team, plan.x, plan.y, plan.rotation)) {
+        Build.beginPlace(unit, plan.block, unit.team, plan.x, plan.y, plan.rotation, plan.config);
+      }
+      m.plan = null;
+      m.target = null;
       return;
     }
 
@@ -437,6 +443,38 @@ public class MultiBuildWeapon extends Weapon {
         plan.initialized = true;
       }
     }
+  }
+
+  /**
+   * 这一格是不是"修废墟"：team=derelict 的**同名**方块。
+   *
+   * 原版 Build.beginPlace 遇到这种格子会**当场把它变成自己的建筑**（不经过施工阶段、
+   * 也不要材料），所以：
+   *   · 它不能算"已经造好"（清残留计划时不能删它，删了玩家排的框就再也不会被修）；
+   *   · 它也应该能被本模组的建造武器认领，这样几把武器能同时修好几格（用户要的"立刻全修好"）。
+   */
+  static boolean derelictPlan(BuildPlan plan){
+    if(plan == null || plan.breaking || plan.block == null)
+      return false;
+    Tile tile = world.tile(plan.x, plan.y);
+    return tile != null && tile.team() == mindustry.game.Team.derelict && tile.block() == plan.block
+        && tile.build != null && plan.block.allowDerelictRepair && state.rules.derelictRepair;
+  }
+
+  /**
+   * 这一格是不是"正在被拆"。
+   *
+   * 玩家用拆除工具点过之后，格子上的 ConstructBuild 会切到拆除模式：
+   *   · {@code activeDeconstruct} 为真（正在被拆的那个 tick 起）；
+   *   · 或者它的 {@code current} 已经换成"被拆掉的那个方块"，对不上建造计划里的方块。
+   * 这两种情况下都不该再对它 construct()（那等于把拆除又造回去，用户报的"拆不掉/反而被造完"）。
+   */
+  static boolean deconstructing(ConstructBlock.ConstructBuild cb, @arc.util.Nullable BuildPlan plan){
+    if(cb == null)
+      return false;
+    if(cb.activeDeconstruct)
+      return true;
+    return plan != null && !plan.breaking && plan.block != null && cb.current != plan.block;
   }
 
   /** 计划被队首占用 / 被其他挂座抢了就放弃重找。 */

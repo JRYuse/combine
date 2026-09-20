@@ -12,7 +12,7 @@ import mindustry.ui.dialogs.*; import mindustry.world.*; import mindustry.world.
 public class Driver extends Mod{
     static String outDir = System.getProperty("drv.out", System.getProperty("user.home") + "/sd/shots");
     static ClassLoader ml;
-    static Building b1, b2;
+    static Building b1, b2, c1;
 
     /** 目录里已有的最大序号 + 1（没有目录就从 1 开始）。 */
     static int nextIndex(){
@@ -90,6 +90,113 @@ public class Driver extends Mod{
                 // 否则会截到面板还没重画的那一帧（看起来像"没实时刷新"）。
                 Timer.schedule(Driver::maybeShotAfter, 10f, 0.5f);
                 Timer.schedule(() -> { Log.info("[drv] 超时，直接截"); shot("coop_panel_after"); finish(); }, 75f);
+            }else if(mode.equals("gen")){
+                // 核反应堆组合进"容量极大的发电机"后：
+                //   1) 发电效率只看核反应堆自己的容量（喂满即可 100%）；
+                //   2) 面板里的燃料条也要按同一个口径显示（不然看着像没燃料）。
+                // 软渲染下一帧很慢：截图靠"真的过了 N 帧"来卡，不用固定秒数。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupGenScene, 5f);
+                Timer.schedule(() -> { hideDialogs(); genSetFuel(Math.max(genNukeCap / 2, 1)); openGenPanel(); }, 12f);
+                Timer.schedule(Driver::genStep, 13f, 0.5f);
+                Timer.schedule(() -> { Log.info("[drv] gen 模式超时结束"); Core.app.exit(); }, 120f);
+            }else if(mode.equals("conn")){
+                // 组合连接器：两块组合工厂之间铺一连串连接器 → 世界截图（看贴图/连线）
+                // + 连接器信息面板截图（看"连接组合 xN"和池子内容）。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupConnScene, 5f);
+                Timer.schedule(Driver::stepConn, 8f, 0.5f);
+                Timer.schedule(() -> { Log.info("[drv] conn 模式超时结束"); Core.app.exit(); }, 90f);
+            }else if(mode.equals("wall")){
+                // 组合墙：3 面铜墙成一组 → 打成残血 → 修复投影修 → 截图看还破不破损（裂纹）
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupWallScene, 5f);
+                Timer.schedule(() -> shot("wall_damaged"), 16f);
+                Timer.schedule(Driver::wallRepairStep, 18f, 0.5f);
+                Timer.schedule(() -> { Log.info("[drv] wall 模式超时结束"); Core.app.exit(); }, 150f);
+            }else if(mode.equals("bp")){
+                // 蓝图里的组合连接器：写一个含连接器的蓝图 → 重新从磁盘 load() → 打印/截图看还在不在
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupBlueprintScene, 5f);
+                Timer.schedule(() -> shot("blueprint_dialog"), 25f);
+                Timer.schedule(() -> { Log.info("[drv] bp 模式结束"); Core.app.exit(); }, 30f);
+            }else if(mode.equals("rep")){
+                // 用户复现存档（stainedMountains）：读档 → 存档 → 再读档，看物品会不会变多。
+                // 这些模组（ve 建 GL shader、饱和火力要 Java 25）在 headless 里跑不起来，所以用真客户端。
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupReproScene, 6f);
+                Timer.schedule(Driver::reproStep, 20f, 10f);
+                Timer.schedule(() -> { Log.info("[drv] rep 模式超时结束"); Core.app.exit(); }, 600f);
+            }else if(mode.equals("status")){
+                // 两块东西一起看：
+                //  1) 升华站（sublimate）灌了氰气后的**方块状态**菱形（红=noinput / 绿=active）
+                //     —— 开了 renderer.drawStatus 才会画出来，和玩家按 F6 看到的是同一条代码路径；
+                //  2) 容器（组合仓库并进核心）的信息面板，看"已并入核心 容量 N"这个数字对不对。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupStatusScene, 5f);
+                Timer.schedule(() -> shot("status_world"), 12f);
+                Timer.schedule(Driver::openStatusPanel, 14f);
+                Timer.schedule(() -> shot("status_panel"), 18f);
+                Timer.schedule(() -> { Log.info("[drv] status 模式结束"); Core.app.exit(); }, 22f);
+            }else if(mode.equals("tech")){
+                // 科技树：真的把 ResearchDialog 打开（用户报"打开科技树崩溃"），
+                // 顺带按原版 canSpend 的写法把整棵树解引用一遍，报出是哪个节点坏。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::techScan, 5f);
+                Timer.schedule(() -> {
+                    try{
+                        Vars.ui.research.show();
+                        Log.info("[drv] 科技树已打开");
+                    }catch(Throwable t){ Log.err("[drv] 打开科技树失败", t); }
+                }, 7f);
+                Timer.schedule(() -> shot("tech_tree"), 12f);
+                Timer.schedule(Driver::techScan, 13f);
+                Timer.schedule(() -> { Log.info("[drv] tech 模式结束（frames=@）", frames); Core.app.exit(); }, 16f);
+            }else if(mode.equals("tech2")){
+                // 进图之后再开科技树：WorldLoadEvent 上本模组会按星球换造价 + 扫一遍树，
+                // 这条路径和"主菜单直接开树"不一样，用户是在游戏里点开的。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupTechWorld, 5f);
+                Timer.schedule(Driver::techScan, 20f);
+                Timer.schedule(Driver::openTechRoots, 22f);
+                Timer.schedule(Driver::techScan, 55f);
+                Timer.schedule(() -> { Log.info("[drv] tech2 模式结束（frames=@）", frames); Core.app.exit(); }, 58f);
+            }else if(mode.equals("technode")){
+                // 只关心"三个方块在不在两棵树上、图标画得对不对"：切到塞普罗/埃里克尔树，
+                // 把镜头居中到该节点再截图（树很大，不居中的话节点在屏幕外）。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(() -> {
+                    // 三个方块的节点在"没解锁前置物品"时会显示锁图标（原版行为），
+                    // 这里把它们的材料解锁掉，让节点画出方块本身的样子，方便对图。
+                    for(Item it : new Item[]{Items.copper, Items.lead, Items.silicon, Items.metaglass,
+                        Items.beryllium, Items.tungsten, Items.oxide}){
+                        it.unlock();
+                    }
+                    Vars.ui.research.show();
+                    Timer.schedule(() -> Vars.ui.research.rebuildTree(Blocks.coreShard.techNode), 1f);
+                    Timer.schedule(() -> Driver.treeHasOurNodes("打开后（未切换）"), 2.5f);
+                    Timer.schedule(() -> centerTree("connection"), 3f);
+                    Timer.schedule(Driver::locateTechNodes, 5f);
+                    Timer.schedule(() -> shot("serpulo_connection"), 6f);
+                    Timer.schedule(() -> centerTree("liquid-unloader"), 7f);
+                    Timer.schedule(Driver::locateTechNodes, 9f);
+                    Timer.schedule(() -> shot("serpulo_unloader"), 10f);
+                    Timer.schedule(() -> Vars.ui.research.rebuildTree(Blocks.coreBastion.techNode), 11f);
+                    Timer.schedule(() -> centerTree("connection"), 13f);
+                    Timer.schedule(Driver::locateTechNodes, 15f);
+                    Timer.schedule(() -> shot("erekir_connection"), 16f);
+                    Timer.schedule(() -> centerTree("liquid-unloader"), 17f);
+                    Timer.schedule(Driver::locateTechNodes, 19f);
+                    Timer.schedule(() -> shot("erekir_unloader"), 20f);
+                    Timer.schedule(() -> { Log.info("[drv] technode 模式结束"); Core.app.exit(); }, 23f);
+                }, 6f);
             }else{
                 Timer.schedule(Driver::step1, 4f);
             }
@@ -164,6 +271,137 @@ public class Driver extends Mod{
             for(arc.scene.Element c : g.getChildren()) if(hit(c, key)) return true;
         }
         return false;
+    }
+
+    /** 载一张图并跑起来，让 WorldLoadEvent 上的处理（换星球造价 / 扫树）真的执行一遍。 */
+    static void setupTechWorld(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            Log.info("[drv] tech2 场景: 地图=@ 星球=@ 战役=@", map.name(),
+                Vars.state.getPlanet() == null ? "null" : Vars.state.getPlanet().name, Vars.state.isCampaign());
+        }catch(Throwable t){ Log.err("[drv] setupTechWorld failed", t); }
+    }
+
+    /** 真正打开科技树，并把每棵根树的页面都切一遍（rebuildTree → rebuildAll → canSpend）。 */
+    static void openTechRoots(){
+        try{
+            Vars.ui.research.show();
+            Log.info("[drv] 科技树已打开，根数=@", mindustry.content.TechTree.roots.size);
+            float t = 1f;
+            for(mindustry.content.TechTree.TechNode r : new arc.struct.Seq<>(mindustry.content.TechTree.roots)){
+                String rootName = r.content == null ? "null" : r.content.name;
+                // 一棵树一步地切、切完再截：全挤在同一帧里切的话，截图永远只拍到最后一棵。
+                // rebuildTree = switchTree + checkNodes + treeLayout（只 switchTree 不排布，节点会全叠中间）
+                Timer.schedule(() -> {
+                    try{
+                        Vars.ui.research.rebuildTree(r);
+                        Log.info("[drv] rebuildTree @ (content=@)", r.localizedName(), rootName);
+                    }catch(Throwable ex){ Log.err("[drv] rebuildTree 崩了: @", r, ex); }
+                }, t);
+                t += 1f;
+                Timer.schedule(() -> shot("tech_root_" + rootName), t);
+                t += 1f;
+            }
+        }catch(Throwable t){ Log.err("[drv] openTechRoots failed", t); }
+    }
+
+    /** 科技树体检：按原版 canSpend 的写法把每个节点解引用一遍，报出坏节点是谁。 */
+    /** 把镜头居中到当前这棵树里某个方块的节点上（树很大，不居中节点会在屏幕外）。 */
+    /** 当前界面缓存的那棵树里，有没有我们三个方块（用来验 ResearchDialog 的节点缓存新不新）。 */
+    static void treeHasOurNodes(String tag){
+        try{
+            StringBuilder sb = new StringBuilder();
+            for(String n : new String[]{"connection", "node", "liquid-unloader"}){
+                boolean found = false;
+                for(mindustry.ui.dialogs.ResearchDialog.TechTreeNode ttn : Vars.ui.research.nodes){
+                    if(ttn.node != null && ttn.node.content != null && ttn.node.content.name.equals(n)){ found = true; break; }
+                }
+                sb.append(n).append('=').append(found).append(' ');
+            }
+            Log.info("[drv] 界面树缓存（@）: 节点@ 个，其中 @", tag, Vars.ui.research.nodes.size, sb);
+        }catch(Throwable t){ Log.err("[drv] treeHasOurNodes failed", t); }
+    }
+
+    static void centerTree(String contentName){
+        try{
+            for(mindustry.ui.dialogs.ResearchDialog.TechTreeNode ttn : Vars.ui.research.nodes){
+                if(ttn.node == null || ttn.node.content == null) continue;
+                if(!ttn.node.content.name.equals(contentName)) continue;
+                Vars.ui.research.view.panX = -ttn.x;
+                Vars.ui.research.view.panY = -ttn.y + 60f;
+                Log.info("[drv] 居中 @: 树坐标 @,@ (当前树可见节点 @ 个)", contentName,
+                    (int)ttn.x, (int)ttn.y, Vars.ui.research.nodes.size);
+                return;
+            }
+            Log.err("[drv] 当前这棵树里没有 @", contentName);
+        }catch(Throwable t){ Log.err("[drv] centerTree failed", t); }
+    }
+
+    /** 把三个方块在当前这棵树里的节点位置打出来（截图按坐标裁）。 */
+    static void locateTechNodes(){
+        try{
+            for(arc.scene.Element e : Vars.ui.research.view.getChildren()){
+                if(!(e instanceof arc.scene.ui.ImageButton btn)) continue;
+                if(!(btn.userObject instanceof mindustry.content.TechTree.TechNode tn) || tn.content == null) continue;
+                String n = tn.content.name;
+                if(!(n.equals("connection") || n.equals("node") || n.equals("liquid-unloader"))) continue;
+                arc.math.geom.Vec2 v = new arc.math.geom.Vec2(btn.x + btn.getWidth() / 2f, btn.y + btn.getHeight() / 2f);
+                e.parent.localToStageCoordinates(v);
+                Log.info("[drv] 节点 @: 屏幕 x=@ y=@ (截图坐标 y'=@) 材料@项 有图标=@",
+                    n, (int)v.x, (int)v.y, (int)(Core.graphics.getHeight() - v.y),
+                    tn.requirements.length, tn.content.uiIcon != null && tn.content.uiIcon.found());
+            }
+        }catch(Throwable t){ Log.err("[drv] locateTechNodes failed", t); }
+    }
+
+    static void techScan(){
+        try{
+            int bad = 0, total = mindustry.content.TechTree.all.size;
+            for(mindustry.content.TechTree.TechNode n : mindustry.content.TechTree.all){
+                if(n == null || n.content == null){ Log.err("[drv] 坏节点: content=null"); bad++; continue; }
+                try{
+                    if(n.requirements == null || n.finishedRequirements == null
+                        || n.requirements.length != n.finishedRequirements.length){
+                        Log.err("[drv] 坏节点 @: req=@ fin=@", n.content.name,
+                            n.requirements == null ? "null" : n.requirements.length,
+                            n.finishedRequirements == null ? "null" : n.finishedRequirements.length);
+                        bad++;
+                        continue;
+                    }
+                    for(int i = 0; i < n.requirements.length; i++){
+                        // 照抄原版 canSpend 的取值顺序
+                        int finAmount = n.finishedRequirements[i].amount, reqAmount = n.requirements[i].amount;
+                        if(n.requirements[i].item == null){
+                            Log.err("[drv] 坏节点 @ 第 @ 项 item=null", n.content.name, i);
+                            bad++;
+                        }
+                    }
+                }catch(NullPointerException e){
+                    StringBuilder sb = new StringBuilder();
+                    for(int i = 0; i < n.requirements.length; i++){
+                        sb.append(i).append(':');
+                        sb.append(n.requirements[i] == null ? "null"
+                            : n.requirements[i].item == null ? "item=null" : n.requirements[i].item.name);
+                        sb.append(n.finishedRequirements[i] == null ? "|fin=null " : " ");
+                    }
+                    Log.err("[drv] canSpend 会在 @ 上崩: @", n.content.name, sb);
+                    bad++;
+                }
+            }
+            Log.info("[drv] 科技树扫描: 总节点=@ 坏节点=@", total, bad);
+            for(String bn : new String[]{"connection", "node", "liquid-unloader"}){
+                Block b = Vars.content.block(bn);
+                if(b == null){ Log.err("[drv] 找不到方块 @", bn); continue; }
+                Log.info("[drv] 方块 @: cls=@ 有 techNode=@ techNodes=@ 解锁=@ uiIcon=@ 图标可用=@",
+                    b.name, b.getClass().getName(), b.techNode != null, b.techNodes.size, b.alwaysUnlocked,
+                    b.uiIcon, b.uiIcon != null && b.uiIcon.found());
+            }
+        }catch(Throwable t){ Log.err("[drv] techScan failed", t); }
     }
 
     static void shot(String name){
@@ -247,6 +485,492 @@ public class Driver extends Mod{
     /** 载入一张有核心的图，然后真的把原版发射界面弹出来（看它会不会崩 / 内置蓝图在不在）。 */
     static boolean launchShown;
 
+    /**
+     * 场1：核心 + 两台容器（并进核心）+ 一台灌了氰气的升华站。
+     * 打开"方块状态"显示（renderer.drawStatus），并把容器信息面板弹出来截图对比数字。
+     */
+    static void setupStatusScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            // 方块状态菱形（红=noinput / 橙=nooutput / 绿=active）
+            Vars.renderer.drawStatus = true;
+            Core.settings.put("blockstatus", true);
+            for(int y=40;y<120;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+
+            Block coreB = null, contB = null, subB = null;
+            for(Block b : Vars.content.blocks()){
+                if(b.name.equals("core-shard")) coreB = b;
+                if(b.name.equals("container")) contB = b;
+                if(b.name.equals("sublimate")) subB = b;
+            }
+            if(coreB == null || contB == null || subB == null){
+                Log.err("[drv] status 场景缺方块: core=@ cont=@ sublimate=@", coreB, contB, subB);
+                return;
+            }
+            Building core = placeBL(coreB, 60, 60);
+            // 容器要**紧贴**核心才能并进核心池（中间隔一格就不算相邻）
+            c1 = placeBL(contB, 63, 60);
+            placeBL(contB, 65, 60);
+            int cap = core instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild cb ? cb.storageCapacity : -1;
+            // 每种物品各自装满容量：容量是"每种物品各自"的上限，
+            // 以前的地板写成 items.total()（所有物品总和）→ 面板会显示成 6 倍的容量。
+            Item[] types = {Items.copper, Items.lead, Items.graphite, Items.silicon, Items.metaglass, Items.titanium};
+            // 故意塞到**超过**容量（用户存档就是这种历史超容存量）：上限必须还是"核心 + 容器"，
+            // 不能跟着库存抬成 23074 这种数字，同时这些超容存量也不该被删。
+            for(Item it : types) core.items.set(it, cap + 500);
+            int total = core.items.total();
+
+            // 升华站：只灌氰气（用户场景），方块状态菱形必须是绿的
+            Building sub = placeBL(subB, 72, 60);
+            sub.liquids.add(Liquids.cyanogen, 500f);
+            // 镜头把三样东西都框进来：无限火力工厂 / 核心+容器 / 升华站
+            Core.camera.position.set(sub.x - 56f, sub.y);
+
+            // 无限火力（X 端的 rules.cheat）下组合单位工厂照样要产出单位：
+            // 把工厂激活延迟清零、打开 cheat、进度推到完工线，几秒后它应该已经吐出一个单位载荷。
+            Vars.state.rules.unitFactoryActivationDelay = 0f;
+            Team.sharded.rules().unitFactoryActivationDelay = 0f;
+            Block facB = null;
+            for(Block blk : Vars.content.blocks())
+                if(blk.getClass().getName().startsWith("combine.units.CombinedUnitFactory")){ facB = blk; break; }
+            if(facB != null && ((mindustry.world.blocks.units.UnitFactory) facB).plans.size > 0){
+                Building fac = placeBL(facB, 52, 60);
+                Team.sharded.rules().cheat = true;
+                var ufb = (mindustry.world.blocks.units.UnitFactory.UnitFactoryBuild) fac;
+                ufb.currentPlan = 0;
+                ufb.progress = ((mindustry.world.blocks.units.UnitFactory) facB).plans.get(0).time - 1f;
+                Log.info("[drv] 无限火力工厂: @ 计划=@ 时间=@ 池内物品=@ cheat=@",
+                    facB.name, ((mindustry.world.blocks.units.UnitFactory) facB).plans.get(0).unit.name,
+                    ((mindustry.world.blocks.units.UnitFactory) facB).plans.get(0).time, fac.items.total(), fac.cheating());
+            }
+
+            Log.info("[drv] status 场景: 核心静态容量=@ 已塞物品总和=@ 升华站类=@ 氰气=@",
+                cap, total, subB.getClass().getName(), sub.liquids.get(Liquids.cyanogen));
+            Events.on(EventType.UnitCreateEvent.class, e -> {
+                unitCreates++;
+                Log.info("[drv] 单位产出事件 #@: @", unitCreates, e.unit.type.name);
+            });
+        }catch(Throwable t){ Log.err("[drv] setupStatusScene failed", t); }
+    }
+
+    static int unitCreates = 0;
+
+    // ---------------- 组合墙修复 ----------------
+    // ---------------- 蓝图里的组合连接器 ----------------
+    // ---------------- 用户复现存档：存读档物品变多 ----------------
+    static int repPhase = 0;
+    static int repBefore = -1;
+    static String repSaveName = "sector-serpulo-223.msav";
+
+    static int repWorldTotal(){
+        java.util.IdentityHashMap<mindustry.world.modules.ItemModule, Boolean> seen = new java.util.IdentityHashMap<>();
+        int total = 0;
+        for(Tile t : Vars.world.tiles){
+            if(t == null || t.build == null || t.build.items == null) continue;
+            if(seen.put(t.build.items, Boolean.TRUE) != null) continue;
+            total += t.build.items.total();
+        }
+        return total;
+    }
+
+    static String repCoreItems(){
+        for(Building b : Vars.state.teams.get(Team.sharded).cores){
+            StringBuilder sb = new StringBuilder();
+            for(mindustry.type.Item it : Vars.content.items()){
+                int n = b.items.get(it);
+                if(n > 0) sb.append(it.name).append('=').append(n).append(' ');
+            }
+            return sb.toString();
+        }
+        return "无核心";
+    }
+
+    static void setupReproScene(){
+        try{
+            hideDialogs();
+            arc.files.Fi f = Vars.dataDirectory.child("saves/" + repSaveName);
+            Log.info("[drv] rep 存档=@ 存在=@", f.absolutePath(), f.exists());
+            if(!f.exists()){ // 回退：也看看备份
+                f = Vars.dataDirectory.child("saves/" + repSaveName + "-backup.msav");
+                Log.info("[drv] rep 换备份存档=@ 存在=@", f.absolutePath(), f.exists());
+            }
+            mindustry.io.SaveIO.load(f);
+            Vars.state.set(mindustry.core.GameState.State.playing);
+            Vars.state.set(mindustry.core.GameState.State.paused);   // 暂停：隔离生产/消耗
+            Log.info("[drv] rep 载入完成 地图=@ sector=@", Vars.state.map.name(),
+                Vars.state.rules.sector == null ? "null" : Vars.state.rules.sector.name());
+        }catch(Throwable t){ Log.err("[drv] setupReproScene failed", t); }
+    }
+
+    static void repDump(String tag){
+        try{
+            Class.forName("combine.net.ComboNet", true, ml).getMethod("debugDumpPools", String.class).invoke(null, tag);
+        }catch(Throwable t){ Log.err("[drv] repDump failed", t); }
+    }
+
+    static void reproStep(){
+        try{
+            if(repPhase == 0){
+                repBefore = repWorldTotal();
+                Log.info("[drv] rep A 世界总量=@ 核心物品: @", repBefore, repCoreItems());
+                repDump("A 读档后");
+                mindustry.io.SaveIO.save(Core.files.absolute("/tmp/cl/repc1.msav"));
+                mindustry.io.SaveIO.load(Core.files.absolute("/tmp/cl/repc1.msav"));
+                repPhase = 1;
+            }else if(repPhase == 1){
+                int now = repWorldTotal();
+                Log.info("[drv] rep B 存读一次后 世界总量=@（差 @） 核心物品: @", now, now - repBefore, repCoreItems());
+                repDump("B 存读一次后");
+                mindustry.io.SaveIO.save(Core.files.absolute("/tmp/cl/repc2.msav"));
+                mindustry.io.SaveIO.load(Core.files.absolute("/tmp/cl/repc2.msav"));
+                repPhase = 2;
+            }else if(repPhase == 2){
+                int now = repWorldTotal();
+                Log.info("[drv] rep C 再存读一次后 世界总量=@（相对 A 差 @） 核心物品: @", now, now - repBefore, repCoreItems());
+                repDump("C 再存读一次后");
+                shot("repro_items");
+                Log.info("[drv] rep 结束");
+                Core.app.exit();
+                repPhase = 3;
+            }
+        }catch(Throwable t){ Log.err("[drv] reproStep failed", t); }
+    }
+
+    static void setupBlueprintScene(){
+        try{
+            hideDialogs();
+            Block conn = null;
+            for(Block b : Vars.content.blocks()) if(b.getClass().getName().equals("combine.net.ComboConnector")) conn = b;
+            if(conn == null){ Log.err("[drv] 没找到组合连接器"); return; }
+            Log.info("[drv] 连接器=@ name=@ id=@", conn, conn.name, conn.id);
+            Log.info("[drv] 连接器状态: alwaysUnlocked=@ unlocked=@ unlockedNow=@ visible=@ banned=@ placeable=@",
+                conn.alwaysUnlocked, conn.unlocked(), conn.unlockedNow(), conn.isVisible(), conn.isBanned(), conn.isPlaceable());
+
+            // 先看"启动时从磁盘读进来的"蓝图：修复前这里会缺连接器（读蓝图早于模组建方块）
+            for(mindustry.game.Schematic sc : Vars.schematics.all()){
+                if(!"组合连接器测试".equals(sc.tags.get("name"))) continue;
+                StringBuilder sb = new StringBuilder();
+                int n = 0;
+                for(mindustry.game.Schematic.Stile st : sc.tiles){
+                    sb.append(st.block == null ? "air" : st.block.name).append(' ');
+                    if(st.block != null && st.block.getClass().getName().equals("combine.net.ComboConnector")) n++;
+                }
+                Log.info("[drv] 启动时读到的老蓝图: 格数=@ 连接器=@/3 方块: @", sc.tiles.size, n, sb);
+            }
+
+            var s = new mindustry.game.Schematic(new arc.struct.Seq<>(), new arc.struct.StringMap(), 3, 1);
+            for(int i = 0; i < 3; i++)
+                s.tiles.add(new mindustry.game.Schematic.Stile(conn, i, 0, null, (byte)0));
+            s.tags.put("name", "组合连接器测试");
+            arc.files.Fi dir = Vars.dataDirectory.child("schematics");
+            dir.mkdirs();
+            arc.files.Fi file = dir.child("comboconn-test.msch");
+            mindustry.game.Schematics.write(s, file);
+            Log.info("[drv] 蓝图写好: @ (@ 字节) 格数=@", file.absolutePath(), file.length(), s.tiles.size);
+
+            // 重新从磁盘读（= 退出重进时走的那条路）
+            Vars.schematics.load();
+            mindustry.game.Schematic found = null;
+            for(mindustry.game.Schematic sc : Vars.schematics.all()){
+                if("组合连接器测试".equals(sc.tags.get("name"))) found = sc;
+            }
+            if(found == null){
+                Log.err("[drv] 重新 load() 后找不到这张蓝图！");
+            }else{
+                StringBuilder sb = new StringBuilder();
+                int count = 0;
+                for(mindustry.game.Schematic.Stile st : found.tiles){
+                    sb.append(st.block == null ? "null" : st.block.name).append(' ');
+                    if(st.block != null && st.block.getClass().getName().equals("combine.net.ComboConnector")) count++;
+                }
+                Log.info("[drv] 重新 load() 后: 格数=@ 连接器=@/3 方块: @", found.tiles.size, count, sb);
+                var plans = Vars.schematics.toPlans(found, 10, 10, true);
+                StringBuilder pb = new StringBuilder();
+                int pconn = 0;
+                for(var plan : plans){
+                    pb.append(plan.block == null ? "null" : plan.block.name).append(' ');
+                    if(plan.block != null && plan.block.getClass().getName().equals("combine.net.ComboConnector")) pconn++;
+                }
+                Log.info("[drv] 放到场上会生成 @ 个计划，其中连接器 @ 个: @", plans.size, pconn, pb);
+            }
+            Vars.ui.schematics.show();
+        }catch(Throwable t){ Log.err("[drv] setupBlueprintScene failed", t); }
+    }
+
+    static Building wall1, wall2, wall3;
+    static int wallFrames = -1, wallPhase = 0;
+
+    static void setupWallScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<140;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            Block wall = null, mendBlock = null;
+            for(Block b : Vars.content.blocks()){
+                if(wall == null && b.name.equals("copper-wall")) wall = b;
+                if(mendBlock == null && b.name.equals("mend-projector")) mendBlock = b;
+            }
+            final Block mend = mendBlock;
+            if(wall == null || mend == null){ Log.err("[drv] wall 场景缺方块: wall=@ mend=@", wall, mend); return; }
+            wall1 = placeBL(wall, 60, 60);
+            wall2 = placeBL(wall, 61, 60);
+            wall3 = placeBL(wall, 62, 60);
+            // 修复投影要电：直接给这个队伍开 cheat
+            Team.sharded.rules().cheat = true;
+            wall2.damage(600f);
+            Core.camera.position.set(wall2.x, wall2.y + 24f);
+            Log.info("[drv] wall 场景: 1=@ 2=@ 3=@ 组=@ 血=@/@/@ 破损=@", wall1, wall2, wall3,
+                field(wall1, "seqSize"), wall1.health, wall2.health, wall3.health, wall1.damaged());
+            Timer.schedule(() -> {
+                try{
+                    placeBL(mend, 61, 56);
+                    Log.info("[drv] 修复投影已放置");
+                }catch(Throwable t){ Log.err("[drv] 放修复投影失败", t); }
+            }, 10f);
+        }catch(Throwable t){ Log.err("[drv] setupWallScene failed", t); }
+    }
+
+    static void wallRepairStep(){
+        try{
+            if(wall1 == null) return;
+            if(wallFrames < 0){
+                wallFrames = frames;
+                return;
+            }
+            if(frames - wallFrames < 30) return;
+            if(wallPhase == 0){
+                shot("wall_damaged");
+                Log.info("[drv] wall 残血: 血=@/@/@ 破损=@", wall1.health, wall2.health, wall3.health, wall1.damaged());
+                wallPhase = 1;
+                wallFrames = -1;
+            }else if(wallPhase == 1 && !wall1.damaged() && !wall2.damaged() && !wall3.damaged()){
+                shot("wall_repaired");
+                Log.info("[drv] wall 已修满: 血=@/@/@ 破损=@", wall1.health, wall2.health, wall3.health, wall1.damaged());
+                wallPhase = 2;
+                Core.app.exit();
+            }
+        }catch(Throwable t){ Log.err("[drv] wallRepairStep failed", t); }
+    }
+
+    // ---------------- 组合连接器 ----------------
+    static Building connA, connB, connLink, connNode;
+    static int connPhase = 0, connFrames = -1;
+
+    static void setupConnScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<120;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+
+            Block press = null, connB_ = null, nodeB = null;
+            for(Block b : Vars.content.blocks()){
+                if(press == null && b.getClass().getName().equals("combine.production.CombinedCrafter") && b.size == 2) press = b;
+                if(connB_ == null && b.getClass().getName().equals("combine.net.ComboConnector")) connB_ = b;
+                if(nodeB == null && b.getClass().getName().equals("combine.net.ComboNode")) nodeB = b;
+            }
+            if(press == null || connB_ == null || nodeB == null){ Log.err("[drv] conn 场景缺方块"); return; }
+            // 左边一台组合工厂 + 一串连接器 + 右边一台组合工厂
+            connA = placeBL(press, 60, 60);
+            connLink = placeBL(connB_, 62, 60);
+            placeBL(connB_, 63, 60);
+            placeBL(connB_, 64, 60);
+            connB = placeBL(press, 65, 60);
+            // 旁边再放一个组合节点（看它会不会自动连线）
+            connNode = placeBL(nodeB, 61, 66);
+            connA.items.add(Items.copper, 40);
+            Core.camera.position.set((connA.x + connB.x) / 2f, connA.y + 8f);
+            Log.info("[drv] conn 场景: A=@ B=@ 同池=@ 连接器=@ 节点links=@",
+                connA, connB, connA.items == connB.items, connLink, field(connNode, "links"));
+        }catch(Throwable t){ Log.err("[drv] setupConnScene failed", t); }
+    }
+
+    static void stepConn(){
+        try{
+            if(connLink == null) return;
+            if(connFrames < 0){ connFrames = frames; return; }
+            if(frames - connFrames < 25) return;
+            if(connPhase == 0){
+                shot("conn_world");
+                Log.info("[drv] conn 世界截图: A池=@ B池=@ 同池=@", connA.items.total(), connB.items.total(), connA.items == connB.items);
+                connPhase = 1;
+                connFrames = -1;
+                openConnPanel();
+            }else{
+                shot("conn_panel");
+                Log.info("[drv] conn 模式结束");
+                Core.app.exit();
+            }
+        }catch(Throwable t){ Log.err("[drv] stepConn failed", t); }
+    }
+
+    static void openConnPanel(){
+        try{
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            connLink.getClass().getMethod("display", arc.scene.ui.layout.Table.class).invoke(connLink, panel);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("组合连接器信息");
+            d.cont.add(panel).pad(10f);
+            d.show();
+            Log.info("[drv] conn 面板已弹出: 子元素=@", panel.getChildren().size);
+        }catch(Throwable t){ Log.err("[drv] openConnPanel failed", t); }
+    }
+
+    // ---------------- 核反应堆发电效率 / 燃料条 ----------------
+    static Building genNuke, genOther;
+    static int genNukeCap = 30;
+
+    static Object field(Object o, String name){
+        try{
+            Class<?> c = o.getClass();
+            while(c != null){
+                try{ var f = c.getDeclaredField(name); f.setAccessible(true); return f.get(o); }
+                catch(NoSuchFieldException ignored){ c = c.getSuperclass(); }
+            }
+        }catch(Throwable ignored){}
+        return null; }
+
+    static float productionEfficiency(Building b){
+        Object v = field(b, "productionEfficiency");
+        return v instanceof Number n ? n.floatValue() : -1f; }
+
+    /**
+     * 核反应堆 + 一台"容量被撑到 10 万"的发电机（模拟用户说的"组合了一台容量极大的建筑"）。
+     * 核容量应该还是核反应堆自己那一份，燃料只要够那一份就该满效率。
+     */
+    static void setupGenScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            // 客户端 `display()` 里有 "不是本方就只画标题" 的检查，而暂停时 updateTile 不跑
+            // （效率永远是 0），所以这里：建在玩家自己的队上 + 别停在暂停态。
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<120;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+
+            Block nuke = null, other = null;
+            for(Block b : Vars.content.blocks()){
+                if(b.name.equals("thorium-reactor")) nuke = b;
+                if(other == null && b.getClass().getName().endsWith("CombinedGenerator")
+                    && "consume".equals(String.valueOf(field(b, "mode"))) && b.itemCapacity <= 20) other = b;
+            }
+            if(nuke == null || other == null){ Log.err("[drv] gen 场景缺方块: nuke=@ other=@", nuke, other); return; }
+            other.itemCapacity = 100000;   // 撑大池子容量
+            int nsz = Math.max(nuke.size, 1);
+            genNukeCap = Math.max(nuke.itemCapacity, 1);
+            genNuke = placeBL(nuke, 60, 60, Vars.player.team());
+            genOther = placeBL(other, 60 + nsz, 60, Vars.player.team());
+            Core.camera.position.set(genNuke.x, genNuke.y);
+            Log.info("[drv] gen 场景: 队=@ 玩家队=@ paused=@ playing=@ 同池=@ 池容量=@ 核容量=@ 单台核容量=@",
+                genNuke.team, Vars.player.team(), Vars.state.isPaused(), Vars.state.isPlaying(),
+                genNuke.items == genOther.items, field(genNuke, "comboTotalItemCap"),
+                field(genNuke, "comboNuclearItemCap"), nuke.itemCapacity);
+        }catch(Throwable t){ Log.err("[drv] setupGenScene failed", t); }
+    }
+
+    static void genSetFuel(int n){
+        try{
+            if(genNuke == null){ Log.err("[drv] genNuke 为空"); return; }
+            genNuke.items.set(Items.thorium, n);
+            // 让下一帧真的跑过 updateTile（面板/效率都靠它算）
+            Timer.schedule(() -> Log.info("[drv] gen 燃料=@ 效率=@", genNuke.items.get(Items.thorium),
+                productionEfficiency(genNuke)), 0.5f);
+        }catch(Throwable t){ Log.err("[drv] genSetFuel failed", t); }
+    }
+
+    static void openGenPanel(){
+        try{
+            if(genNuke == null){ Log.err("[drv] genNuke 为空"); return; }
+            Log.info("[drv] gen 开面板: 燃料=@ 效率=@ 池容量=@ 核容量=@",
+                genNuke.items.get(Items.thorium), productionEfficiency(genNuke),
+                field(genNuke, "comboTotalItemCap"), field(genNuke, "comboNuclearItemCap"));
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            genNuke.getClass().getMethod("display", arc.scene.ui.layout.Table.class).invoke(genNuke, panel);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("核反应堆面板（组合进大容量发电机）");
+            d.cont.add(panel).pad(10f);
+            d.show();
+            Log.info("[drv] gen 面板已弹出: 子元素=@ 场景顶层=@ 尺寸=@x@",
+                panel.getChildren().size, Core.scene == null ? -1 : Core.scene.root.getChildren().size,
+                (int)d.getWidth(), (int)d.getHeight());
+        }catch(Throwable t){ Log.err("[drv] openGenPanel failed", t); }
+    }
+
+    /**
+     * 卡帧数的截图推进：
+     *   开面板 → 真过了 30 帧 → 截"半池" → 塞 1000 个（超核容量）重开面板 → 再 30 帧 → 截"满池" → 退出。
+     */
+    static int genPhase = 0, genFrames = -1;
+
+    static void genStep(){
+        try{
+            if(genNuke == null) return;
+            if(genFrames < 0){
+                genFrames = frames;
+                return;
+            }
+            if(frames - genFrames < 30) return;
+            if(genPhase == 0){
+                shot("gen_panel_half");
+                Log.info("[drv] gen 半池: 燃料=@ 效率=@", genNuke.items.get(Items.thorium), productionEfficiency(genNuke));
+                genPhase = 1;
+                genFrames = -1;
+                hideDialogs();
+                genSetFuel(1000);
+                openGenPanel();
+            }else{
+                shot("gen_panel_over1000");
+                Log.info("[drv] gen 超容量: 燃料=@ 效率=@", genNuke.items.get(Items.thorium), productionEfficiency(genNuke));
+                Log.info("[drv] gen 模式结束（frames=@ paused=@）", frames, Vars.state.isPaused());
+                Core.app.exit();
+            }
+        }catch(Throwable t){ Log.err("[drv] genStep failed", t); }
+    }
+
+    /** 等仓库重算跑完（合并/容量都稳定）再打印数字 + 把容器的信息面板弹出来截图。 */
+    static void openStatusPanel(){
+        try{
+            if(c1 == null){ Log.err("[drv] c1 为空，没法开面板"); return; }
+            mindustry.world.blocks.storage.CoreBlock.CoreBuild core = c1.team.core();
+            Log.info("[drv] status 结果: 核心容量=@ 库存总和=@ 容器并入核心=@ 容器模块==核心模块=@",
+                core == null ? -1 : core.storageCapacity,
+                core == null || core.items == null ? -1 : core.items.total(),
+                c1 instanceof mindustry.world.blocks.storage.StorageBlock.StorageBuild sb && sb.linkedCore != null,
+                core != null && c1.items == core.items);
+            Building fac = null;
+            for(Building b : Vars.state.teams.get(Team.sharded).buildings)
+                if(b.block.getClass().getName().startsWith("combine.units.CombinedUnitFactory")) { fac = b; break; }
+            if(fac != null){
+                var ufb = (mindustry.world.blocks.units.UnitFactory.UnitFactoryBuild) fac;
+                Log.info("[drv] 无限火力工厂结果: progress=@ 计划=@ payload=@ 单位=@",
+                    ufb.progress, ufb.unit() == null ? "-" : ufb.unit().name,
+                    ufb.payload, ufb.payload == null ? "-" : ufb.payload.unit.type.name);
+            }
+            Log.info("[drv] 无限火力工厂累计产出单位数=@", unitCreates);
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            c1.getClass().getMethod("display", arc.scene.ui.layout.Table.class).invoke(c1, panel);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("容器面板（组合仓库并进核心）");
+            d.cont.add(panel).pad(10f);
+            d.show();
+            Log.info("[drv] 容器面板已弹出（panel 子元素=@）", panel.getChildren().size);
+        }catch(Throwable t){ Log.err("[drv] openStatusPanel failed", t); }
+    }
+
     static void setupLaunchScene(){
         try{
             hideDialogs();
@@ -325,6 +1049,19 @@ public class Driver extends Mod{
         mindustry.world.Build.beginPlace(null, b, Team.sharded, x, y, 0, null);
         mindustry.world.blocks.ConstructBlock.constructed(Vars.world.tile(x, y), b, null, (byte)0, Team.sharded, null);
         return Vars.world.build(x, y);
+    }
+
+    /** 和 headless 测试同一套坐标约定：(x,y) 是方块左下角，锚点 = 左下角 + (size-1)/2。 */
+    static Building placeBL(Block b, int x, int y){
+        return placeBL(b, x, y, Team.sharded);
+    }
+
+    static Building placeBL(Block b, int x, int y, Team team){
+        int size = Math.max(b.size, 1);
+        int ax = x + (size - 1) / 2, ay = y + (size - 1) / 2;
+        mindustry.world.Build.beginPlace(null, b, team, ax, ay, 0, null);
+        mindustry.world.blocks.ConstructBlock.constructed(Vars.world.tile(ax, ay), b, null, (byte)0, team, null);
+        return Vars.world.build(ax, ay);
     }
 
     /** 往共享池里加物品/液体（CoopPanel 应该立刻显示出来）。 */

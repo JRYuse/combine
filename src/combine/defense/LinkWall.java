@@ -1,5 +1,11 @@
 package combine.defense;
+import combine.net.ComboConnector.ComboConnectorBuild;
+import combine.net.ComboConnector;
+import combine.net.ComboNode.ComboNodeBuild;
+import combine.net.ComboNode;
+import combine.coop.CoopCombo;
 import combine.util.ComboUi;
+import combine.util.IComboGrouped;
 import arc.Core;
 import arc.graphics.g2d.Draw;
 import arc.graphics.g2d.TextureRegion;
@@ -118,12 +124,14 @@ public class LinkWall extends Wall {
     });
   }
 
-  public class LinkWallBuild extends Building {
+  public class LinkWallBuild extends Building implements IComboGrouped {
 
     public Seq<LinkWallBuild> links = new Seq<>();
     public LinkWallBuild linkLeader;
     public boolean linksDirty = true;
     public int seqSize = 1;
+    /** 上一次"挨着/连着的组合连接器、节点的links"指纹：变了就重算分组（跨距离连线也要算同组）。 */
+    public int lastLinkerHash = Integer.MIN_VALUE;
     /** 上一次"是否允许组合"的判定结果：队伍里玩家有变动时自动重算一次。 */
     public boolean groupAllowedLast = true;
     public boolean open = false;
@@ -183,6 +191,25 @@ public class LinkWall extends Wall {
       Seq<LinkWallBuild> found = new Seq<>();
       // 不组合的队伍：自己就是一组（组员只有自己 → 伤害/治疗/门开关都退回原版单格行为）
       groupAllowedLast = groupAllowed();
+      // 本墙的"本地连通块"（只沿墙邻格走，不过节点/连接器）：节点扫描用。
+      // 不能用重建前的旧 group —— 断开节点后旧 group 里还列着对面半组，扫描会把
+      // 已断开的节点再拉回来（断链拆组场景实测）。本地块是实时从地形算出来的，没这个问题。
+      ObjectSet<LinkWallBuild> localGroup = new ObjectSet<>();
+      {
+        Queue<LinkWallBuild> lq = new Queue<>();
+        lq.addLast(this);
+        localGroup.add(this);
+        while (!lq.isEmpty()) {
+          LinkWallBuild cur = lq.removeFirst();
+          for (Point2 edge : Edges.getEdges(cur.block.size)) {
+            Tile t = Vars.world.tile(cur.tile.x + edge.x, cur.tile.y + edge.y);
+            if (t == null || !(t.build instanceof LinkWallBuild w) || w.dead()
+                || !(w.block instanceof LinkWall) || !localGroup.add(w))
+              continue;
+            lq.addLast(w);
+          }
+        }
+      }
       if (!groupAllowedLast) {
         links = found;
         found.add(this);
@@ -193,17 +220,47 @@ public class LinkWall extends Wall {
       }
       ObjectSet<LinkWallBuild> visited = new ObjectSet<>();
       Queue<LinkWallBuild> queue = new Queue<>();
+      // 连到本墙的组合连接器/节点（走过它们能到别的墙 —— 用户要的"接上节点/连接器就是完整组合"）
+      ObjectSet<Building> seenLinkers = new ObjectSet<>();
       queue.addLast(this);
       visited.add(this);
+      // 组合节点是**跨距离**的：节点不在墙的邻格里，墙自己发现不了"有人连我"。
+      // 到节点登记表里找"links 里直接写了本地块任一成员"的节点，从它们出发走一遍。
+      // 必须按"本地块"扫描而不是只扫自己：节点直链的可能是块里隔壁那格（直链 B，A/C 与 B
+      // 相邻）——只扫"links 里有没有我"会让 A、C 失去跨节点合并的机会（墙链场景实测漏组）。
+      // 完整性：被节点直链的墙在连线时自己那块也会被标脏重建，两侧各自都能把整链拉全。
+      try {
+        for (Building nb : CoopCombo.trackedNodesCopy()) {
+          if (!(nb instanceof ComboNodeBuild node) || node.links == null)
+            continue;
+          for (LinkWallBuild member : localGroup) {
+            if (member.dead())
+              continue;
+            if (node.links.contains(member.pos())) {
+              walkLinkers(node, seenLinkers, visited, queue);
+              break;
+            }
+          }
+        }
+      } catch (Throwable ignored) {
+      }
       while (!queue.isEmpty()) {
         LinkWallBuild cur = queue.removeFirst();
         found.add(cur);
         for (Point2 edge : Edges.getEdges(cur.block.size)) {
           Tile t = Vars.world.tile(cur.tile.x + edge.x, cur.tile.y + edge.y);
-          if (t == null || !(t.build instanceof LinkWallBuild b) || b.dead())
+          if (t == null || t.build == null)
             continue;
-          if (b.block instanceof LinkWall && visited.add(b))
-            queue.addLast(b);
+          if (t.build instanceof LinkWallBuild b) {
+            if (!b.dead() && b.block instanceof LinkWall && visited.add(b))
+              queue.addLast(b);
+          } else if (t.build instanceof ComboConnectorBuild) {
+            // 组合连接器：贴脸即连接，穿过它把邻墙并进这一组。
+            // 组合节点不走这里 —— 节点的连接以 links 名单为准，贴墙的墙不被拉进
+            // （否则墙一挨着节点就静默并入节点连的远处组，fuzz 实测多组员）。
+            // 节点直链的墙由上面的节点扫描（links ∩ 本地块）发现。
+            walkLinkers(t.build, seenLinkers, visited, queue);
+          }
         }
       }
       LinkWallBuild newLeader = this;
@@ -222,6 +279,72 @@ public class LinkWall extends Wall {
         redistributeHealth();
     }
 
+    /** 被"组合节点/连接器"接起来的墙也要算同一组（于是血池、门联动这些整组行为跟着走）。 */
+    private void walkLinkers(Building start, ObjectSet<Building> seenLinkers,
+                             ObjectSet<LinkWallBuild> visited, Queue<LinkWallBuild> queue) {
+      Queue<Building> linkers = new Queue<>();
+      if (!seenLinkers.add(start))
+        return;
+      linkers.addLast(start);
+      while (!linkers.isEmpty()) {
+        Building cur = linkers.removeFirst();
+        // 1) 这个连接件旁边贴着的墙 —— 只有连接器吃"贴脸入组"（它本来就是靠邻接工作的，
+        //    没有连接表）。组合节点以自己的 links 名单为准：贴墙但没被连线的墙不入组，
+        //    否则节点旁边没连的墙会被静默并进远处的组（fuzz 实测：组里多出邻格墙）。
+        if (cur instanceof ComboConnectorBuild && cur.proximity != null) {
+          for (Building nb : cur.proximity) {
+            if (nb instanceof LinkWallBuild w && !w.dead() && w.block instanceof LinkWall && visited.add(w))
+              queue.addLast(w);
+          }
+        }
+        // 2) 顺着连接件之间的连线继续走
+        if (cur instanceof ComboConnectorBuild c) {
+          for (Building nb : c.proximity) {
+            if (nb != null && nb.isValid() && isLinker(nb) && seenLinkers.add(nb))
+              linkers.addLast(nb);
+          }
+        } else if (cur instanceof ComboNodeBuild n) {
+          for (int i = 0; i < n.links.size; i++) {
+            Building nb = Vars.world.build(n.links.get(i));
+            if (nb == null || !nb.isValid())
+              continue;
+            if (isLinker(nb)) {
+              if (seenLinkers.add(nb))
+                linkers.addLast(nb);
+            } else if (nb instanceof LinkWallBuild w && !w.dead() && w.block instanceof LinkWall && visited.add(w)) {
+              queue.addLast(w);
+            }
+          }
+        }
+      }
+    }
+
+    private static boolean isLinker(Building b) {
+      return b instanceof ComboConnectorBuild || b instanceof ComboNodeBuild;
+    }
+
+    /**
+     * 挨着/连着的连接器、节点的指纹（节点把 links 也算进来）：
+     * 节点那边"连上/断开"不会触发这面墙的 proximity 更新，只能自己每帧比一次指纹。
+     */
+    private int linkerHash() {
+      int h = 5;
+      for (Point2 edge : Edges.getEdges(block.size)) {
+        Tile t = Vars.world.tile(tile.x + edge.x, tile.y + edge.y);
+        if (t == null || t.build == null)
+          continue;
+        Building b = t.build;
+        if (b instanceof ComboConnectorBuild) {
+          h = h * 31 + b.pos();
+        } else if (b instanceof ComboNodeBuild n) {
+          h = h * 31 + b.pos();
+          for (int i = 0; i < n.links.size; i++)
+            h = h * 31 + n.links.get(i);
+        }
+      }
+      return h;
+    }
+
     @Override
     public void onProximityUpdate() {
       super.onProximityUpdate();
@@ -238,8 +361,18 @@ public class LinkWall extends Wall {
     @Override
     public void updateTile() {
       super.updateTile();
-      if (linksDirty && !dead())
+      // 连着的节点改了 links（连上/断开别的组合体）时，本墙要重算分组 ——
+      // 节点的连线变化不会触发这面墙的 onProximityUpdate。
+      if (!dead() && !linksDirty) {
+        int h = linkerHash();
+        if (h != lastLinkerHash) {
+          lastLinkerHash = h;
+          markGroupDirty();
+        }
+      }
+      if (linksDirty && !dead()) {
         rebuildLinks();
+      }
       // 队伍里玩家来了/走了（PvP 换边、联机加入等）→ 判定变了就重算一次：
       // 该组合的重新连起来，不该组合的拆回单格
       if (!linksDirty && !dead() && groupAllowedLast != groupAllowed())
@@ -409,30 +542,82 @@ public class LinkWall extends Wall {
      */
     @Override
     public void heal(float amount) {
-      super.heal(amount);
-      redistributeHealth();
+      Seq<LinkWallBuild> members = liveMembers();
+      if (members.size <= 1) {
+        super.heal(amount);
+        return;
+      }
+      // 【整组=一整面墙】治疗量加在"血池总量"上，再按各成员最大血量摊回去。
+      //
+      // 以前的写法是 super.heal(amount)（只治这一格，并且会被这格的 maxHealth 截断）
+      // 之后再 redistributeHealth()：血池越接近满，那一次治疗里被截掉的部分就越多，
+      // 于是每修一次只涨"当前缺口"的一小部分（几何收敛），最后卡在比满血低一点点的
+      // 浮点定点上 —— 表现就是**怎么修都还是破损状态**（用户报的）。
+      float pool = poolHealth(members);
+      float totalMax = poolMax(members);
+      distributeHealth(members, Math.min(pool + amount, totalMax), totalMax);
+    }
+
+    /** 组里还活着的成员（死掉的格子不该继续摊血，否则活着的永远修不满）。 */
+    private Seq<LinkWallBuild> liveMembers() {
+      Seq<LinkWallBuild> out = new Seq<>();
+      for (LinkWallBuild b : group())
+        if (b != null && !b.dead() && b.isValid())
+          out.add(b);
+      if (out.isEmpty())
+        out.add(this);
+      return out;
+    }
+
+    private static float poolHealth(Seq<LinkWallBuild> members) {
+      float total = 0f;
+      for (LinkWallBuild b : members)
+        total += Math.max(b.health, 0f);
+      return total;
+    }
+
+    private static float poolMax(Seq<LinkWallBuild> members) {
+      float total = 0f;
+      for (LinkWallBuild b : members)
+        total += Math.max(b.maxHealth, 0f);
+      return total;
+    }
+
+    /**
+     * 把血池总量 total 按各成员最大血量的比重摊到每一格上。
+     *
+     * 最后一个成员拿"剩余量"（而不是各算各的浮点比例），并且整段用 double 算 ——
+     * float 比例乘法每格都差一丁点，加起来正好让血池离满血差最后一丝，
+     * `damaged()`（health &lt; maxHealth - 0.001）就一直为真：画面上永远有裂纹。
+     */
+    private static void distributeHealth(Seq<LinkWallBuild> members, float total, float totalMax) {
+      if (members.size <= 0)
+        return;
+      if (totalMax <= 0.001f) {
+        for (LinkWallBuild b : members) {
+          b.health = Math.max(total, 0f);
+          b.healthChanged();
+        }
+        return;
+      }
+      double assigned = 0.0;
+      for (int i = 0; i < members.size; i++) {
+        LinkWallBuild b = members.get(i);
+        double v = i == members.size - 1
+            ? (double) total - assigned
+            : (double) total * ((double) b.maxHealth / (double) totalMax);
+        assigned += v;
+        b.health = (float) Math.max(0.0, Math.min(v, b.maxHealth));
+        b.healthChanged();
+      }
     }
 
     /** 把整组的血量按各成员最大血量比重重新分配（总量不变，各格回到同一百分比）。 */
     public void redistributeHealth() {
-      Seq<LinkWallBuild> members = new Seq<>(group());
-      int n = members.size;
-      if (n <= 1)
+      Seq<LinkWallBuild> members = liveMembers();
+      if (members.size <= 1)
         return;
-      float totalMax = 0f, total = 0f;
-      for (int i = 0; i < n; i++) {
-        LinkWallBuild b = members.get(i);
-        totalMax += b.maxHealth;
-        total += Math.max(b.health, 0f);
-      }
-      if (totalMax <= 0.001f)
-        return;
-      for (int i = 0; i < n; i++) {
-        LinkWallBuild b = members.get(i);
-        b.health = total * (b.maxHealth / totalMax);
-        b.clampHealth();
-        b.healthChanged();
-      }
+      distributeHealth(members, poolHealth(members), poolMax(members));
     }
 
     @Override
@@ -459,25 +644,18 @@ public class LinkWall extends Wall {
       } else {
         damage /= dm;
       }
-      Seq<LinkWallBuild> members = new Seq<>(group());
+      Seq<LinkWallBuild> members = liveMembers();
       if (members.isEmpty())
         return;
-      float totalMax = 0f;
-      for (LinkWallBuild b : members)
-        totalMax += b.maxHealth;
+      float totalMax = poolMax(members);
       if (totalMax <= 0.001f) {
         super.damage(damage);
         return;
       }
-      for (LinkWallBuild b : members) {
-        b.health -= damage * (b.maxHealth / totalMax);
-      }
-      // 分摊完立刻摊平：各格始终保持同一个百分比，这样不会出现"某一格血量先见底就被单独打掉"，
-      // 更不会因为那一格见底而把满血的同伴一起带走（以前这里是 health <= 0 就整组 kill）。
-      redistributeHealth();
-      float pool = 0f;
-      for (LinkWallBuild b : members)
-        pool += Math.max(b.health, 0f);
+      // 伤害从"血池总量"里扣，再摊平：各格始终保持同一个百分比，
+      // 不会出现"某一格血量先见底就被单独打掉"，也不会因为那一格见底把满血同伴一起带走。
+      float pool = Math.max(poolHealth(members) - damage, 0f);
+      distributeHealth(members, pool, totalMax);
       // 只有整组的血池被打空，这面组合墙才算倒
       if (pool <= 0.001f) {
         for (LinkWallBuild b : members)

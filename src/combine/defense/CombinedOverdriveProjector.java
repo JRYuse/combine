@@ -136,24 +136,14 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
             Seq<CombinedOverdriveProjectorBuild> oldGroup = comboGroup != null ? new Seq<>(comboGroup) : new Seq<>();
             comboGroup = new Seq<>();
             comboGroup.add(this);
-            IntSet visited = new IntSet();
-            Queue<CombinedOverdriveProjectorBuild> queue = new Queue<>();
-            queue.add(this);
-            visited.add(pos());
-            while (!queue.isEmpty()) {
-                CombinedOverdriveProjectorBuild cur = queue.removeFirst();
-                for (Building b : cur.proximity) {
-                    if (b instanceof CombinedOverdriveProjectorBuild o && o.team == team && o.isValid()
-                            && !visited.contains(o.pos())) {
-                        CombinedOverdriveProjector cb = (CombinedOverdriveProjector) cur.block,
-                                ob = (CombinedOverdriveProjector) o.block;
-                        if (cur.block == o.block || cb.allowCrossTypeCombo || ob.allowCrossTypeCombo) {
-                            visited.add(o.pos());
-                            queue.addLast(o);
-                            comboGroup.add(o);
-                        }
-                    }
-                }
+            // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
+            for (Building b : ComboReflect.linkedReachable(this,
+                    o -> o instanceof CombinedOverdriveProjectorBuild other && other.team == team && other.isValid(),
+                    (cur, o) -> cur.block == o.block
+                    || ((CombinedOverdriveProjector) cur.block).allowCrossTypeCombo
+                    || ((CombinedOverdriveProjector) o.block).allowCrossTypeCombo)) {
+                if (b != this)
+                    comboGroup.add((CombinedOverdriveProjectorBuild) b);
             }
             CombinedOverdriveProjectorBuild newLeader = this;
             for (CombinedOverdriveProjectorBuild b : comboGroup)
@@ -199,30 +189,35 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
 
         public void splitAssets(Seq<CombinedOverdriveProjectorBuild> oldGroup,
                 Seq<CombinedOverdriveProjectorBuild> newGroup) {
-            CombinedOverdriveProjectorBuild oldLeader = null;
+            // FIX[双重拆分]: 网络层(ComboNet)可能已把池子按组件拆过一轮、给部分成员发过新模块。
+            // 那些份额先并回主池（新组长持有的模块），再由本地逻辑按容量统一重分，
+            // 否则两轮拆分各分各的，总额对不上账（物资凭空丢/复制）。
+            CombinedOverdriveProjectorBuild newLeader = null;
+            for (CombinedOverdriveProjectorBuild b : newGroup)
+                if (b.isValid() && (newLeader == null || b.pos() < newLeader.pos()))
+                    newLeader = b;
+            if (newLeader == null)
+                newLeader = this;
+            ItemModule poolItems = newLeader.items;
+            LiquidModule poolLiquids = newLeader.liquids;
             for (CombinedOverdriveProjectorBuild b : oldGroup) {
-                if (!b.isValid())
-                    continue;
-                for (CombinedOverdriveProjectorBuild o : oldGroup) {
-                    if (o != b && o.isValid() && (o.items == b.items || o.liquids == b.liquids)) {
-                        oldLeader = b;
-                        break;
+                if (!b.isValid()) continue;
+                if (poolItems != null && b.items != null && b.items != poolItems) {
+                    for (Item item : content.items()) {
+                        int amt = b.items.get(item);
+                        if (amt > 0) { poolItems.add(item, amt); b.items.remove(item, amt); }
                     }
                 }
-                if (oldLeader != null)
-                    break;
-            }
-            if (oldLeader == null) {
-                for (CombinedOverdriveProjectorBuild b : oldGroup)
-                    if (b.isValid()) {
-                        oldLeader = b;
-                        break;
+                if (poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
+                    for (Liquid liquid : content.liquids()) {
+                        float amt = b.liquids.get(liquid);
+                        if (amt > 0.001f) { poolLiquids.add(liquid, amt); b.liquids.remove(liquid, amt); }
                     }
+                }
             }
-            if (oldLeader == null)
-                oldLeader = this;
-            ItemModule oldItems = oldLeader.items;
-            LiquidModule oldLiquids = oldLeader.liquids;
+            CombinedOverdriveProjectorBuild oldLeader = newLeader;
+            ItemModule oldItems = poolItems;
+            LiquidModule oldLiquids = poolLiquids;
             Seq<CombinedOverdriveProjectorBuild> kicked = new Seq<>();
             for (CombinedOverdriveProjectorBuild b : oldGroup)
                 if (b.isValid() && !newGroup.contains(b))

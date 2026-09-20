@@ -164,6 +164,32 @@ public class SublimateTest implements ApplicationListener{
         check("开火时不会把非弹药液体（水）当弹药消耗",
             Math.abs(t1.liquids.get(Liquids.water) - 100f) < 1f);
 
+        // ---------- 单台、只灌一种弹药（氰气），**不**强制指定目标 ----------
+        // 用户报的：升华站被替换成组合炮塔后，灌满氰气/臭氧，方块状态仍然显示 noinput、也不发射。
+        // 根因是 hasAmmo() 照抄了物品炮塔的 ammo 队列判断（液体炮塔的 ammo 永远是空的），
+        // 而原版 TurretBuild 的"找目标 + 开火"整段都在 if(hasAmmo()) 里。
+        for(int y=40;y<160;y++) for(int x=20;x<260;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+        run(5);
+        Building solo = place(sub, 60, 60, Team.sharded);
+        run(10);
+        solo.liquids.add(Liquids.cyanogen, 500f);
+        run(30);
+        System.out.println("[SL] 单台只灌氰气: hasAmmo=" + call(solo, "hasAmmo") + " status=" + solo.status()
+            + " activated=" + field(solo, "activated") + " 氰气=" + solo.liquids.get(Liquids.cyanogen));
+        check("单台：只灌氰气时 hasAmmo() 为真", Boolean.TRUE.equals(call(solo, "hasAmmo")));
+        check("单台：只灌氰气时方块状态不是 noinput（实际=" + solo.status() + "）",
+            solo.status() != mindustry.world.meta.BlockStatus.noInput);
+        // 射程内自己找目标（不调 fieldSet 强制指定）
+        Unit ez = UnitTypes.dagger.create(Team.crux);
+        ez.maxHealth = 1e9f; ez.health = 1e9f;
+        ez.set(60 * 8f + 80f, 60 * 8f);
+        ez.add();
+        run(60);
+        System.out.println("[SL] 单台有敌人: target=" + field(solo, "target") + " isShooting=" + field(solo, "isShooting")
+            + " 光束数=" + bullets(solo) + " 氰气=" + solo.liquids.get(Liquids.cyanogen));
+        check("单台：能自己找到射程内的敌人（不靠测试强制指定）", field(solo, "target") != null);
+        check("单台：找到敌人后真的开火", Boolean.TRUE.equals(field(solo, "isShooting")));
+
         System.out.println("[SL] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
         System.exit(fail==0?0:1);
       }catch(Throwable t){ t.printStackTrace(); System.exit(2); }

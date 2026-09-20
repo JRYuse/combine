@@ -1,4 +1,5 @@
 package combine;
+
 import combine.coop.CoopCombo;
 import combine.defense.CombinedForceProjector;
 import combine.defense.CombinedMendProjector;
@@ -21,6 +22,7 @@ import combine.saves.SafeWLegacy;
 import combine.saves.SafeWShort;
 import combine.saves.SafeWVer;
 import combine.storage.CombinedStorageBlock;
+import combine.storage.LiquidUnloader;
 import combine.turret.CombinedContinuousLiquidTurret;
 import combine.turret.CombinedItemTurret;
 import combine.turret.CombinedLiquidTurret;
@@ -38,11 +40,13 @@ import arc.struct.ObjectMap;
 import arc.struct.Seq;
 import arc.struct.StringMap;
 import arc.util.Log;
+import arc.util.Time;
 import arc.util.serialization.JsonReader;
 import arc.util.serialization.JsonValue;
 import java.util.IdentityHashMap;
 import mindustry.Vars;
 import mindustry.content.Items;
+import mindustry.content.Planets;
 import mindustry.content.TechTree;
 import mindustry.content.UnitTypes;
 import mindustry.content.TechTree.TechNode;
@@ -58,6 +62,7 @@ import mindustry.game.EventType.TileChangeEvent;
 import mindustry.game.Schematic;
 import mindustry.mod.Mod;
 import mindustry.mod.Mods.LoadedMod;
+import mindustry.type.Item;
 import mindustry.type.ItemStack;
 import mindustry.type.UnitType;
 import mindustry.type.Weapon;
@@ -107,6 +112,7 @@ public class Main extends Mod {
   static Seq<String> list = new Seq<>();
   public static ComboConnector comboConnector;
   public static ComboNode comboNode;
+  public static LiquidUnloader liquidUnloader;
 
   static JsonReader reader = new JsonReader();
   static JsonValue json;
@@ -129,6 +135,8 @@ public class Main extends Mod {
     Events.on(TileChangeEvent.class, e -> {
       if (Vars.state.isEditor() || Vars.world.isGenerating())
         return;
+      // 世界真被改动了（造/拆方块）：读档的去重窗口到此为止
+      ComboNet.markWorldModified();
       Block combo = Replacer.replaced.get(e.tile.block());
       if (combo != null && e.tile.build != null && !e.tile.build.dead) {
         e.tile.setBlock(combo, e.tile.team(), e.tile.build.rotation);
@@ -145,6 +153,8 @@ public class Main extends Mod {
       // 联机入服时 rules 是刚按名字反查出来的（researched/bannedBlocks 可能装着被替换掉的原版实例），
       // 必须在任何 UI/建造校验读到它之前纠正，否则客户端建造菜单里组合建筑会全部消失。
       Replacer.remapStaleContent();
+      Replacer.remapSectorInfos();
+      Replacer.remapPlanetDefaults();
       ComboNet.rebuildLoading();
     });
 
@@ -186,9 +196,14 @@ public class Main extends Mod {
     // 客户端在这之后才把蓝图库从磁盘读进来（assets.load(schematics)），再兜一次键；
     // 顺带把内置发射蓝图里的核心实例再对齐一遍（幂等）。
     Events.on(ClientLoadEvent.class, e -> {
+      // 【必须在最前面】客户端的 assets.load(schematics) 跑在 Mod.init() 之前，
+      // 那时组合连接器/节点还没建出来 —— 含它们的老蓝图会被当成未知方块丢掉。
+      // 现在内容齐了，先重读一遍蓝图库，再做键/引用的对齐。
+      Replacer.reloadSchematics();
       Replacer.remapBuiltinLoadouts();
       Replacer.remapLoadoutKeys();
       Replacer.remapSectorInfos();
+      Replacer.remapPlanetDefaults();
     });
 
     // 组合仓库并仓（机制本体在 CombinedStorageBlock 里）：没连核心时像其它组合建筑一样
@@ -337,7 +352,10 @@ public class Main extends Mod {
       getWhiteList();
       processModBlocks();
       processWalls();
+      // 造价表必须在 content.load() 之后现造（Items.* 是 load() 阶段才赋值的静态字段）
+      initRequirementTables();
       createLinkBlocks();
+      createLiquidBlocks();
       for (var entry : Replacer.replaced) {
         postInit(entry.value);
       }
@@ -350,6 +368,18 @@ public class Main extends Mod {
       Replacer.remapLoadoutKeys();
       // 发射界面拿的是 from.info.bestCoreType（Planet.load() 阶段按名字反查出来的旧核心实例）
       Replacer.remapSectorInfos();
+      // 以及 from.planet.defaultCore（内容装配阶段写死的旧核心实例）——
+      // Erekir 的 allowLaunchSchematics=false，发射时用的就是这个字段
+      Replacer.remapPlanetDefaults();
+      // 数据兜底：方块造价表 / 科技树节点里绝不能留 null 的 ItemStack（原版 PlacementFragment
+      // 和 ResearchDialog.canSpend 都是无检查取值，一碰就崩）
+      sanitizeContent();
+      // 客户端：进主界面后再扫一遍（别的模组可能到这一步才动过树），并给科技树挂个守护
+      Events.on(ClientLoadEvent.class, e -> {
+        sanitizeContent();
+        guardResearchDialog();
+        refreshResearchTree();
+      });
     } catch (Throwable t) {
       Log.err("[combine] content setup failed", t);
     }
@@ -362,6 +392,11 @@ public class Main extends Mod {
 
   void getWhiteList() {
     LoadedMod mod = Vars.mods.getMod("combine");
+    if (mod == null) {
+      // 模组未经过 mods.load() 的环境（测试 harness / 异常加载）下没有 whitelist.json 可读，
+      // 直接跳过；否则下面 mod.root 会 NPE，并被 setupContent 的 catch 吞掉导致整个装配中止。
+      return;
+    }
     Fi metaFile = null;
     if (mod.root.child(fileName).exists()) {
       metaFile = mod.root.child(fileName);
@@ -380,44 +415,358 @@ public class Main extends Mod {
     }
   }
 
+  // ===== 组合连接器 / 组合节点 / 液体卸载器：双星球显示 + 分星球造价 =====
+  // Serpulo 用铜/铅/硅；Erekir 没有这些资源，必须用铍/钨/氧化物，否则埃里克尔战役里造不出来。
+  // Block.requirements 本身不分星球，只有一份 —— 用 WorldLoadEvent 按当前星球整体换表
+  // （PlacementFragment / ConstructBlock 都是每帧现读 block.requirements，换表即生效）。
+  //
+  // 【不能写成 static final】v8 把 Items.copper 这类静态字段改成了在 content.load()
+  // （Items.load()）里赋值，而模组主类的静态初始化发生在更早的 mods.load()：
+  // 那时候 Items.* 全是 null，ItemStack.with(...) 造出来的每一项 item 都是 null。
+  // 真机实测的后果（安卓崩溃堆栈就是这条链）：
+  //   1) Block.requirements() 内部 Arrays.sort(i -> i.item.id) 直接 NPE ——
+  //      方块剩下的 init()/postInit()/贴图全被跳过，建造菜单里是个残废方块；
+  //   2) TechNode.setupRequirements() 读 requirements[i].item.name 又 NPE ——
+  //      科技树节点根本建不出来，"装在两个科技树上"静默失败；
+  //   3) 残留的 null 造价数据留在 block.requirements / TechNode 里，原版
+  //      PlacementFragment（建造菜单）和 ResearchDialog.canSpend（科技树）都是无检查取值：
+  //      ItemModule.has(stack.item) / finishedRequirements[i].amount → 一打开就崩。
+  // 所以造价一律在 content.load() 之后（Mod.init）现造；顺带把 null 项丢掉，
+  // 宁可少一项造价，也绝不让 null 进游戏数据。
+  static ItemStack[] connReqSerpulo, connReqErekir;
+  static ItemStack[] nodeReqSerpulo, nodeReqErekir;
+  static ItemStack[] unloaderReqSerpulo, unloaderReqErekir;
+
+  /** 造价表：参数是 (Item, 数量) 对。item 为 null（Items 还没 load）的项直接丢掉。 */
+  static ItemStack[] req(Object... pairs) {
+    Seq<ItemStack> out = new Seq<>();
+    for (int i = 0; i + 1 < pairs.length; i += 2) {
+      Object itemObj = pairs[i];
+      int amount = (Integer) pairs[i + 1];
+      if (!(itemObj instanceof Item item) || item == null) {
+        Log.warn("[combine] 造价表里有 null 项（Items 还没 load？），已丢弃 amount=@", amount);
+        continue;
+      }
+      out.add(new ItemStack(item, amount));
+    }
+    return out.toArray(ItemStack.class);
+  }
+
+  /** 造价表必须在 content.load() 之后（setupContent 里）建，幂等。 */
+  static void initRequirementTables() {
+    if (connReqSerpulo != null)
+      return;
+    connReqSerpulo = req(Items.copper, 40, Items.lead, 30);
+    connReqErekir = req(Items.beryllium, 40, Items.tungsten, 20);
+    nodeReqSerpulo = req(Items.copper, 80, Items.lead, 80, Items.silicon, 30);
+    nodeReqErekir = req(Items.beryllium, 80, Items.tungsten, 40, Items.oxide, 20);
+    // 液体卸载器：塞普罗用铜/铅/钢化玻璃（原版液体建筑的材料体系），埃里克尔用铍/钨
+    unloaderReqSerpulo = req(Items.copper, 30, Items.lead, 25, Items.metaglass, 10);
+    unloaderReqErekir = req(Items.beryllium, 30, Items.tungsten, 15);
+    Log.info("[combine] 造价表: 塞普罗 连接器@项/节点@项/卸载器@项，埃里克尔 连接器@项/节点@项/卸载器@项",
+        connReqSerpulo.length, nodeReqSerpulo.length, unloaderReqSerpulo.length,
+        connReqErekir.length, nodeReqErekir.length, unloaderReqErekir.length);
+  }
+
+  /** 当前星球是埃里克尔就用埃里克尔造价，否则（塞普罗/自定义图）用塞普罗造价 */
+  static void applyPlanetRequirements() {
+    if (comboConnector == null || comboNode == null || connReqSerpulo == null)
+      return;
+    boolean erekir = Vars.state.getPlanet() == Planets.erekir;
+    comboConnector.requirements = erekir ? connReqErekir : connReqSerpulo;
+    comboNode.requirements = erekir ? nodeReqErekir : nodeReqSerpulo;
+    if (liquidUnloader != null)
+      liquidUnloader.requirements = erekir ? unloaderReqErekir : unloaderReqSerpulo;
+  }
+
   void createLinkBlocks() {
     if (comboConnector != null)
       return;
 
+    // 【防 NPE 崩溃】v8 里 Mod.init() 在 content.load() 全部跑完之后才调用（ClientLauncher：
+    // createModContent -> content.init()/load() -> assets 加载完 -> eachClass(Mod::init)），
+    // 所以这里注册的方块永远吃不到游戏的自动 loadIcon —— 图标全靠下面的手动调用。
+    // 进建造菜单列表的方块只要 uiIcon 为 null，PlacementFragment 重建时
+    // new TextureRegionDrawable(null) 就直接崩游戏。
+    // 因此：每个方块单独 try/catch，任何一步抛异常都必须在 finally 里把图标补上，
+    // 绝不能留下"已注册 + 无图标"的方块。
     comboConnector = new ComboConnector("connection");
-    comboConnector.requirements(Category.distribution, BuildVisibility.shown,
-        mindustry.type.ItemStack.with(Items.copper, 40, Items.lead, 30));
-    comboConnector.localizedName = "组合连接器";
-    comboConnector.description = "连接两个组合体。连接器必须连续相邻地铺在两个组合体之间，才能共享物品、液体和电力。";
-    comboConnector.health = 90;
-    comboConnector.size = 1;
-    comboConnector.alwaysUnlocked = true;
-    comboConnector.init();
-    comboConnector.postInit();
-    if (visuals()) {
-      comboConnector.load();
-      comboConnector.loadIcon();
+    try {
+      comboConnector.requirements(Category.distribution, BuildVisibility.shown, connReqSerpulo);
+      // 科技树挂在塞普罗（coreShard）上会把 shownPlanets 收成 {serpulo}（Planet.load 时
+      // addPlanet 递归写入），埃里克尔就看不到了 —— 这里显式补回两个星球
+      comboConnector.shownPlanets.add(Planets.serpulo);
+      comboConnector.shownPlanets.add(Planets.erekir);
+      comboConnector.localizedName = "组合连接器";
+      comboConnector.description = "连接两个组合体。连接器必须连续相邻地铺在两个组合体之间，才能共享物品、液体和电力。";
+      comboConnector.health = 90;
+      comboConnector.size = 1;
+      comboConnector.init();
+      comboConnector.postInit();
+    } catch (Throwable t) {
+      Log.err("[combine] connection 装配失败（已兜底，不会带崩建造菜单）", t);
+    } finally {
+      ensureIcons(comboConnector);
     }
 
     comboNode = new ComboNode("node");
-    comboNode.requirements(Category.distribution, BuildVisibility.shown,
-        mindustry.type.ItemStack.with(Items.copper, 80, Items.lead, 80, Items.silicon, 30));
-    comboNode.localizedName = "组合节点";
-    comboNode.description = "像电力节点一样在范围内连接组合体，共享物品、液体、电力和热量。";
-    comboNode.health = 120;
-    comboNode.size = 1;
-    comboNode.alwaysUnlocked = true;
-    comboNode.maxNodes = 6;
-    comboNode.laserRange = 18f;
-    comboNode.init();
-    comboNode.postInit();
-    if (visuals()) {
-      comboNode.load();
-      comboNode.loadIcon();
+    try {
+      comboNode.requirements(Category.distribution, BuildVisibility.shown, nodeReqSerpulo);
+      comboNode.shownPlanets.add(Planets.serpulo);
+      comboNode.shownPlanets.add(Planets.erekir);
+      comboNode.localizedName = "组合节点";
+      comboNode.description = "像电力节点一样在范围内连接组合体，共享物品、液体、电力和热量。";
+      comboNode.health = 120;
+      comboNode.size = 1;
+      comboNode.maxNodes = 6;
+      comboNode.laserRange = 18f;
+      comboNode.init();
+      comboNode.postInit();
+    } catch (Throwable t) {
+      Log.err("[combine] node 装配失败（已兜底，不会带崩建造菜单）", t);
+    } finally {
+      ensureIcons(comboNode);
     }
 
-    addTech(mindustry.content.Blocks.coreShard, comboConnector);
-    addTech(comboConnector, comboNode);
+    boolean onTree = false;
+    try {
+      // 两棵科技树分别挂节点，研究材料分星球：塞普罗树用铜/铅/硅，埃里克尔树用铍/钨/氧化物。
+      // （之前 addTech(child.requirements) 两棵树都给塞普罗材料 —— 埃里克尔根本凑不齐，
+      //  节点等于废的；这是"放到两个科技树上"的正确挂法。）
+      // 显式接住返回的节点引用：TechNode 构造会把 content.techNode 改写成最新一个，
+      // 第二次 addTech(comboConnector, ...) 挂在哪棵树上完全取决于引用顺序，容易挂错。
+      TechNode serpuloConn = new TechNode(mindustry.content.Blocks.coreShard.techNode, comboConnector,
+          connReqSerpulo);
+      TechNode erekirConn = new TechNode(mindustry.content.Blocks.coreBastion.techNode, comboConnector,
+          connReqErekir);
+      TechNode serpuloNode = new TechNode(serpuloConn, comboNode, nodeReqSerpulo);
+      TechNode erekirNode = new TechNode(erekirConn, comboNode, nodeReqErekir);
+      onTree = serpuloNode != null && erekirNode != null
+          && TechTree.all.contains(serpuloNode) && TechTree.all.contains(erekirNode);
+
+      // 分星球造价：每次世界加载（含战役切图/读档/联机进房）按当前星球换 requirements
+      applyPlanetRequirements();
+      Events.on(WorldLoadEvent.class, e -> {
+        applyPlanetRequirements();
+        sanitizeContent();
+      });
+    } catch (Throwable t) {
+      // 科技树/事件注册失败不影响方块本体可用性（兜底为 alwaysUnlocked 的直接可用）
+      Log.err("[combine] 科技树/事件注册失败", t);
+    }
+    // 上了科技树就以研究解锁（两棵树都能研究到）；节点没挂上才兜底成"直接可用"，
+    // 免得玩家在战役里彻底造不出来。
+    comboConnector.alwaysUnlocked = !onTree;
+    comboNode.alwaysUnlocked = !onTree;
+  }
+
+  void createLiquidBlocks() {
+    if (liquidUnloader != null)
+      return;
+
+    liquidUnloader = new LiquidUnloader("liquid-unloader");
+    try {
+      liquidUnloader.requirements(Category.liquid, BuildVisibility.shown, unloaderReqSerpulo);
+      // 与组合节点同款双星球显示（不挂科技树，shownPlanets 显式声明两个星球）
+      liquidUnloader.shownPlanets.add(Planets.serpulo);
+      liquidUnloader.shownPlanets.add(Planets.erekir);
+      liquidUnloader.localizedName = "液体卸载器";
+      liquidUnloader.description = "从相邻建筑中抽取选定的液体，再倾倒给下游。点选配置选择液体。";
+      liquidUnloader.health = 80;
+      liquidUnloader.size = 1;
+      liquidUnloader.init();
+      liquidUnloader.postInit();
+    } catch (Throwable t) {
+      Log.err("[combine] liquid-unloader 装配失败（已兜底，不会带崩建造菜单）", t);
+    } finally {
+      ensureIcons(liquidUnloader);
+    }
+    boolean onTree = false;
+    try {
+      // 同样两树分挂、研究材料分星球（塞普罗 铜/铅/钢化玻璃；埃里克尔 铍/钨）
+      TechNode serpulo = new TechNode(mindustry.content.Blocks.coreShard.techNode, liquidUnloader,
+          unloaderReqSerpulo);
+      TechNode erekir = new TechNode(mindustry.content.Blocks.coreBastion.techNode, liquidUnloader,
+          unloaderReqErekir);
+      onTree = serpulo != null && erekir != null
+          && TechTree.all.contains(serpulo) && TechTree.all.contains(erekir);
+    } catch (Throwable t) {
+      Log.err("[combine] liquid-unloader 科技树注册失败", t);
+    }
+    liquidUnloader.alwaysUnlocked = !onTree;
+  }
+
+  /**
+   * 内容数据兜底：把"带 null 的 ItemStack 数组"从游戏数据里清掉。
+   *
+   * 为什么必须有：原版这两个地方都是无检查取值，模组改不了它们（都是原版类）——
+   *   - PlacementFragment（建造菜单）：ItemModule.has(stack.item) → 造价表里 item=null 就 NPE；
+   *   - ResearchDialog$View.canSpend（科技树）：finishedRequirements[i].amount / requirements[i].amount
+   *     → 数组里出现 null 元素就 NPE（用户报的"打开科技树崩溃"就是这条）。
+   * 坏数据的典型来源：别的模组在**节点已经进 TechTree.all 之后**再调 TechNode.setupRequirements()
+   * 重设造价（按 JSON 解析科技树的模组都这么干），只要有一项找不到对应物品，
+   * setupRequirements 就会在填 finishedRequirements 的中途抛异常：节点留在树里、
+   * finishedRequirements 全是 null，之后谁开科技树谁崩。本模组自己踩过的坑则是
+   * 造价表在 content.load() 之前就构造（Items.* 那时还是 null），同样留下 null 造价。
+   * 幂等、只扫数组，成本低；装完之后方块/节点都只剩干净数据。
+   */
+  static void sanitizeContent() {
+    try {
+      for (mindustry.world.Block b : Vars.content.blocks()) {
+        if (b == null || b.requirements == null)
+          continue;
+        ItemStack[] req = b.requirements;
+        boolean bad = false;
+        for (ItemStack s : req)
+          if (s == null || s.item == null) { bad = true; break; }
+        if (!bad)
+          continue;
+        ItemStack[] fixed = filterStacks(req);
+        b.requirements = fixed;
+        Log.warn("[combine] 方块 @ 的造价表里有 null 项，已清掉（@ 项 -> @ 项）",
+            b.name, req.length, fixed.length);
+      }
+    } catch (Throwable t) {
+      Log.err("[combine] 方块造价表体检失败", t);
+    }
+    sanitizeTechNodes();
+  }
+
+  /** 去掉数组里的 null 元素与 item=null 的项（保留顺序）。 */
+  static ItemStack[] filterStacks(ItemStack[] in) {
+    Seq<ItemStack> clean = new Seq<>();
+    if (in != null)
+      for (ItemStack s : in)
+        if (s != null && s.item != null)
+          clean.add(s);
+    return clean.toArray(ItemStack.class);
+  }
+
+  /**
+   * 科技树节点数据兜底：requirements / finishedRequirements 为 null、长度不一致、
+   * 含 null 元素或 item=null 的节点，用非空项重建（setupRequirements 会同步重建
+   * finishedRequirements）。幂等，每次世界加载/进客户端后跑一次，成本低。
+   */
+  static void sanitizeTechNodes() {
+    try {
+      for (TechNode n : TechTree.all) {
+        if (n == null || n.content == null)
+          continue;
+        ItemStack[] req = n.requirements;
+        ItemStack[] fin = n.finishedRequirements;
+        boolean bad = req == null || fin == null || fin.length != req.length;
+        if (!bad) {
+          for (ItemStack s : req)
+            if (s == null || s.item == null) { bad = true; break; }
+        }
+        if (!bad) {
+          for (ItemStack s : fin)
+            if (s == null || s.item == null) { bad = true; break; }
+        }
+        if (!bad)
+          continue;
+        ItemStack[] fixed = filterStacks(req);
+        n.setupRequirements(fixed.length == 0 ? new ItemStack[0] : ItemStack.copy(fixed));
+        Log.warn("[combine] 科技树节点 @ 的造价数据损坏，已重建 @ 项", n.content.name, fixed.length);
+      }
+    } catch (Throwable t) {
+      Log.err("[combine] sanitizeTechNodes 失败", t);
+    }
+  }
+
+  /**
+   * 科技树开着的时候再兜一层：原版 canSpend 是每帧在 update 里跑的，
+   * 只要有人（别的模组）在进游戏之后又动了树，这里能在下一帧之前把数据补回去。
+   * 节流成 1 秒一次，扫一遍数组而已。
+   */
+  static float lastTreeCheck = -10f;
+
+  static void guardResearchDialog() {
+    if (Vars.headless || Vars.ui == null || Vars.ui.research == null)
+      return;
+    try {
+      Vars.ui.research.update(() -> {
+        if (!Vars.ui.research.isShown())
+          return;
+        if (Time.time - lastTreeCheck < 60f)
+          return;
+        lastTreeCheck = Time.time;
+        sanitizeTechNodes();
+      });
+    } catch (Throwable t) {
+      Log.err("[combine] 科技树守护挂钩失败", t);
+    }
+  }
+
+  /**
+   * 刷新科技树界面的节点缓存。
+   *
+   * ResearchDialog 是在 UI 构造时（ClientLauncher: add(ui = new UI())，早于
+   * mods.eachClass(Mod::init)）就把"当前那棵树"的节点缓存进 view 的（TechTreeNode 递归建一遍），
+   * 之后打开界面只是照缓存画。java 模组的 Mod.init() 在 UI 构造之后才跑，
+   * 所以这里挂上去的节点，界面第一次打开（正好是塞普罗树）是看不到的 ——
+   * 玩家手动切一次树（点标题）才会重新抓。实测 X37 客户端：初始缓存 223 个节点，
+   * 三个新节点一个都没有；切走再切回来就都有了。
+   * 这里在客户端加载完成后检查一次，缺了就切到别的树再切回来（switchTree 在
+   * lastNode == node 时会直接 return，所以必须绕一圈）。
+   */
+  static void refreshResearchTree() {
+    if (Vars.headless || Vars.ui == null || Vars.ui.research == null)
+      return;
+    try {
+      TechNode cur = Vars.ui.research.lastNode;
+      if (cur == null)
+        return;
+      // 注意：要查**界面缓存的那份节点表**（ResearchDialog.nodes），不是 TechTree 的数据 ——
+      // 数据里早就有我们的节点了，是界面那份快照没有。
+      boolean missing = !dialogTreeHas(comboConnector) || !dialogTreeHas(comboNode)
+          || !dialogTreeHas(liquidUnloader);
+      if (!missing)
+        return;
+      TechNode other = null;
+      for (TechNode r : TechTree.roots)
+        if (r != cur) {
+          other = r;
+          break;
+        }
+      if (other == null)
+        return;
+      Vars.ui.research.switchTree(other);
+      Vars.ui.research.switchTree(cur);
+      Log.info("[combine] 科技树界面缓存已刷新（新节点挂载晚于 UI 构造）");
+    } catch (Throwable t) {
+      Log.err("[combine] 刷新科技树界面缓存失败（不影响其它功能）", t);
+    }
+  }
+
+  /** 科技树界面当前缓存的那份节点表里有没有这个方块。 */
+  static boolean dialogTreeHas(Block b) {
+    if (b == null)
+      return true;
+    for (mindustry.ui.dialogs.ResearchDialog.TechTreeNode n : Vars.ui.research.nodes)
+      if (n != null && n.node != null && n.node.content == b)
+        return true;
+    return false;
+  }
+
+  /**
+   * 已注册方块的图标兜底：v8 客户端不会替 init() 里注册的方块调 load/loadIcon，
+   * 漏掉任何一个 + alwaysUnlocked 就会在 PlacementFragment 重建时 NPE。
+   * 这里逐步容错：哪步失败只记日志，目标是"绝不让 uiIcon/fullIcon 为 null 的方块进注册表"。
+   */
+  static void ensureIcons(mindustry.world.Block b) {
+    if (b == null || !visuals())
+      return;
+    try {
+      b.load();
+    } catch (Throwable t) {
+      Log.err("[combine] " + b.name + " load() 失败（图标兜底继续）", t);
+    }
+    try {
+      b.loadIcon();
+    } catch (Throwable t) {
+      Log.err("[combine] " + b.name + " loadIcon() 失败", t);
+    }
   }
 
   void addTech(mindustry.world.Block parent, mindustry.world.Block child) {

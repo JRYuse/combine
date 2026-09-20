@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 跑**真客户端**（离屏 Xvfb + Mesa 软渲染），自动截图。UI / 面板 / 绘制这类改动必须这么验。
 #
-#   verify/run-client.sh <mx|vanilla|jar路径> <数据目录> [list|coop]
+#   verify/run-client.sh <mx|vanilla|jar路径> <数据目录> [list|coop|gen]
 #     list → 开设置→点进"组合工厂"页→截图（看列表/按钮布局）
 #     coop → 加载地图、放两台扩展建筑、开 CoopPanel、往池子里加东西→截图（看面板是否实时刷新）
+#     gen  → 核反应堆 + 一台"容量 10 万"的发电机：燃料条按核容量显示 + 满效率（看发电效率口径）
 #
 # 前提（这台 aarch64 proot 上已经装好，换机器要重来一遍，见 native/build-sdl-native.sh）：
 #   pacman -S xorg-server-xvfb mesa libxi libxss glu
