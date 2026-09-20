@@ -272,7 +272,7 @@ public class CoopCombo {
   public static void saveBlacklist() {
     StringBuilder sb = new StringBuilder();
     for (String s : blacklist) {
-      if (!sb.isEmpty())
+      if (sb.length() > 0)
         sb.append('|');
       sb.append(s);
     }
