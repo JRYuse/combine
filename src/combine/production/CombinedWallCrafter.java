@@ -27,6 +27,7 @@ import mindustry.world.Block;
 import mindustry.world.Tile;
 import mindustry.world.blocks.production.WallCrafter;
 import mindustry.world.modules.ItemModule;
+import mindustry.world.modules.LiquidModule;
 
 import static mindustry.Vars.*;
 
@@ -105,7 +106,7 @@ public class CombinedWallCrafter extends WallCrafter {
         return eff;
     }
 
-    public class CombinedWallCrafterBuild extends WallCrafterBuild {
+    public class CombinedWallCrafterBuild extends WallCrafterBuild implements combine.saves.ComboSaved {
         public CombinedWallCrafterBuild comboLeader;
         public Seq<CombinedWallCrafterBuild> comboGroup = new Seq<>();
         public boolean comboDirty = true;
@@ -553,50 +554,74 @@ public class CombinedWallCrafter extends WallCrafter {
         }
 
         // -------------------- 序列化 --------------------
+        // 地图区里只写"原版挖墙钻那一份字节"（WallCrafterBuild 就是 Building），
+        // 模组自己的字段（组长、time）挪到自定义存档块 ComboSaveState —— 详见 ComboSaved。
         @Override
         public byte version() {
-            return 10;
+            return combine.saves.ComboSaveState.vanillaVersion(block);
         }
 
         @Override
         public void write(Writes write) {
-            CombinedWallCrafterBuild trueLeader = this;
-            if (comboGroup != null && comboGroup.size > 0)
-                for (CombinedWallCrafterBuild b : comboGroup)
-                    if (b != null && b.isValid() && b.pos() < trueLeader.pos())
-                        trueLeader = b;
-            ItemModule savedItems = items;
-            if (this != trueLeader && items != null)
-                items = new ItemModule();
             super.write(write);
+        }
+
+        // 存档先调 writeBase 写模块数据、后调 write —— "只有组长写真实模块"必须挂在 writeBase 上
+        // （写在 write() 里来不及），否则每个成员各写一份整池，读档合并后数量 ×N。
+        @Override
+        public void writeBase(Writes write) {
+            ItemModule savedItems = items;
+            LiquidModule savedLiquids = liquids;
+            if (combine.saves.ComboSaveState.isFollower(this, comboGroup)) {
+                if (items != null)
+                    items = new ItemModule();
+                if (liquids != null)
+                    liquids = new LiquidModule();
+            }
+            super.writeBase(write);
             items = savedItems;
-            write.bool(comboLeader != null);
-            if (comboLeader != null)
-                write.i(comboLeader.pos());
+            liquids = savedLiquids;
+        }
+
+        @Override
+        public void writeCombo(Writes write) {
+            Building leader = combine.saves.ComboSaveState.trueLeader(this, comboGroup);
+            write.bool(leader != this);
+            if (leader != this)
+                write.i(leader.pos());
             write.f(time);
         }
 
         @Override
         public void read(Reads read, byte revision) {
             super.read(read, revision);
-            boolean hasLeader = false;
-            int leaderPos = -1;
             if (revision >= 10) {
-                hasLeader = read.bool();
-                if (hasLeader)
-                    leaderPos = read.i();
+                applyLeader(read, true); // 旧档（≤2.6）：模组字段直接写在地图区里
+                return;
             }
+            comboDirty = true;
+        }
+
+        @Override
+        public void readCombo(Reads read, byte revision) {
+            // 新格式里"非组长"在存档里写的就是空模块，读档时整组已经被并成一份，
+            // 这里不能再清空（清了就把并好的池子丢掉）。
+            applyLeader(read, false);
+        }
+
+        void applyLeader(Reads read, boolean clearModules) {
+            boolean hasLeader = read.bool();
+            int leaderPos = hasLeader ? read.i() : -1;
             comboDirty = true;
             if (hasLeader && leaderPos != pos()) {
                 pendingLeaderPos = leaderPos;
-                if (items != null)
+                if (clearModules && items != null)
                     items = new ItemModule();
             } else {
                 pendingLeaderPos = -1;
                 comboLeader = null;
             }
-            if (revision >= 10)
-                time = read.f();
+            time = read.f();
         }
     }
 }

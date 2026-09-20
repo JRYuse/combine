@@ -124,6 +124,8 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 | `combine.dbg.LaunchLoadoutKeyTest` | 任意 | 发射蓝图与核心的对应：`Planet.defaultCore` 指向组合核心；serpulo/erekir 发射不会退回 core-shard 蓝图（Erekir 不该要铜/铅） |
 | `combine.dbg.BlueprintReloadTest` | 任意（先 `-Dbr.phase=write` 再 `-Dbr.phase=read`） | 蓝图里的组合连接器：按客户端顺序（读蓝图早于模组建方块）会被丢掉，模组重读蓝图库后恢复 |
 | `combine.dbg.LoadDedupeWindowTest` | 任意 | 读档头几帧再合并"同一份池子的副本"必须**去重**（不翻倍）；窗口结束后真库存照常相加 |
+| `combine.dbg.NoModCompatTest` | 任意（两阶段：先带模组 `-Dmode=write`，再用**不带模组**的数据目录 `-Dmode=read`） | 关掉模组后存档还能读：地图区里只写原版字节，组合建筑回落到原版建筑（模组自己加的方块回落成空气），物品总量一分不差 |
+| `combine.dbg.ComboChunkSaveTest` | 任意 | 自定义存档块真的在搬运模组字段：发电机选中的燃料/炮塔选中的弹药/组合墙 breakTimer 存读档后还在，组合体仍共用一个池子、物品不翻倍 |
 | `combine.dbg.HalfBuiltBreakTest` | 任意 | 造到一半的建筑要能拆：挂座认领着的那一格被玩家下拆除指令后必须松手（不能把拆除又 construct 回去） |
 
 ## 复现排版问题

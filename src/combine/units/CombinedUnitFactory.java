@@ -94,7 +94,7 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
         buildType = CombinedUnitFactoryBuild::new;
     }
 
-    public class CombinedUnitFactoryBuild extends UnitFactoryBuild implements IUnitCombo {
+    public class CombinedUnitFactoryBuild extends UnitFactoryBuild implements IUnitCombo, combine.saves.ComboSaved {
 
         @Override
         public boolean shouldAmbientSound() {
@@ -491,63 +491,84 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
         }
 
         // -------------------- 序列化 --------------------
-        /**
-         * FIX[序列化翻倍]: 存档先调 writeBase 写模块数据、后调 write——
-         * 在 write() 里换空模块(照抄 pump/crafter 的 trick)根本来不及,
-         * 每个成员都会把整池写一遍, 读档全额并入后数量 ×N。
-         * 正确挂点是 writeBase: 写模块前就把非组长的 items/liquids 换成空模块。
-         */
+        // 地图区里只写"原版单位工厂那一份字节"（super.write 就是 UnitFactoryBuild 自己的布局），
+        // 模组自己的字段（组长）挪到自定义存档块 ComboSaveState —— 详见 ComboSaved。
         @Override
         public byte version() {
-            return 4;
+            return combine.saves.ComboSaveState.vanillaVersion(block);
         }
 
         @Override
         public void write(Writes write) {
-            IUnitCombo trueLeader = this;
-            if (comboGroup != null && comboGroup.size > 0)
-                for (IUnitCombo b : comboGroup)
-                    if (b != null && ((Building) b).isValid()
-                            && ((Building) b).pos() < ((Building) trueLeader).pos())
-                        trueLeader = b;
+            super.write(write);
+        }
+
+        // 存档先调 writeBase 写模块数据、后调 write —— "只有组长写真实模块"必须挂在 writeBase 上
+        // （写在 write() 里来不及），否则每个成员各写一份整池，读档合并后数量 ×N。
+        @Override
+        public void writeBase(Writes write) {
             ItemModule savedItems = items;
             LiquidModule savedLiquids = liquids;
-            if (this != trueLeader) {
+            if (trueLeader() != this) {
                 if (items != null)
                     items = new ItemModule();
                 if (liquids != null)
                     liquids = new LiquidModule();
             }
-            super.write(write);
+            super.writeBase(write);
             items = savedItems;
             liquids = savedLiquids;
-            // FIX[序列化一致性]: 与组合工厂逐字一致——条件写入，读写严格对称，
-            // 无论改端 revision 识别与否都不会流错位
-            write.bool(comboLeader != null);
-            if (comboLeader != null)
-                write.i(((Building) comboLeader).pos());
+        }
+
+        // 按 pos 最小的那个当组长，和 rebuildCombo / 旧 write() 的规则一致。
+        Building trueLeader() {
+            Building leader = this;
+            if (comboGroup != null) {
+                for (IUnitCombo b : comboGroup) {
+                    if (b != null && ((Building) b).isValid() && ((Building) b).pos() < leader.pos())
+                        leader = (Building) b;
+                }
+            }
+            return leader;
+        }
+
+        @Override
+        public void writeCombo(Writes write) {
+            Building leader = trueLeader();
+            write.bool(leader != this);
+            if (leader != this)
+                write.i(leader.pos());
         }
 
         @Override
         public void read(Reads read, byte revision) {
             super.read(read, revision);
             if (revision >= 4) {
-                // FIX[序列化一致性]: 组合工厂同款——条件读取（与 write 严格对称），
-                // 自指检查防误清，else 显式清 comboLeader 强制走干净重建路径
-                boolean hasLeader = read.bool();
-                int leaderPos = -1;
-                if (hasLeader)
-                    leaderPos = read.i();
-                if (hasLeader && leaderPos != pos()) {
-                    pendingLeaderPos = leaderPos;
-                    if (items != null)
-                        items = new ItemModule();
-                    if (liquids != null)
-                        liquids = new LiquidModule();
-                } else {
-                    pendingLeaderPos = -1;
-                    comboLeader = null;
-                }
+                applyLeader(read, true); // 旧档（≤2.6）：模组字段直接写在地图区里
+                return;
+            }
+            comboDirty = true;
+        }
+
+        @Override
+        public void readCombo(Reads read, byte revision) {
+            // 新格式里"非组长"在存档里写的就是空模块，读档时整组已经被并成一份，
+            // 这里不能再清空（清了就把并好的池子丢掉）。
+            applyLeader(read, false);
+        }
+
+        void applyLeader(Reads read, boolean clearModules) {
+            boolean hasLeader = read.bool();
+            int leaderPos = hasLeader ? read.i() : -1;
+            if (hasLeader && leaderPos != pos()) {
+                pendingLeaderPos = leaderPos;
+                if (clearModules && items != null)
+                    items = new ItemModule();
+                if (clearModules && liquids != null)
+                    liquids = new LiquidModule();
+            } else {
+                pendingLeaderPos = -1;
+                comboLeader = null;
             }
             comboDirty = true;
         }

@@ -105,7 +105,7 @@ public class CombinedLaunchPad extends LaunchPad {
         stats.add(Stat.liquidCapacity, displayLiquid, StatUnit.liquidUnits);
     }
 
-    public class CombinedLaunchPadBuild extends LaunchPadBuild {
+    public class CombinedLaunchPadBuild extends LaunchPadBuild implements combine.saves.ComboSaved {
         public CombinedLaunchPadBuild comboLeader;
         public Seq<CombinedLaunchPadBuild> comboGroup = new Seq<>();
         public boolean comboDirty = true;
@@ -736,59 +736,75 @@ public class CombinedLaunchPad extends LaunchPad {
             }
         }
 
+        // -------------------- 序列化 --------------------
+        // 地图区里只写"原版发射台那一份字节"（super.write 就是 LaunchPadBuild 自己的布局），
+        // 模组自己的字段（组长）挪到自定义存档块 ComboSaveState —— 详见 ComboSaved。
         @Override
         public byte version() {
-            return 10;
+            return combine.saves.ComboSaveState.vanillaVersion(block);
         }
 
         @Override
         public void write(Writes write) {
-            CombinedLaunchPadBuild trueLeader = this;
-            if (comboGroup != null && comboGroup.size > 0) {
-                for (CombinedLaunchPadBuild b : comboGroup)
-                    if (b != null && b.isValid() && b.pos() < trueLeader.pos())
-                        trueLeader = b;
-            }
+            super.write(write);
+        }
+
+        // 存档先调 writeBase 写模块数据、后调 write —— "只有组长写真实模块"必须挂在 writeBase 上
+        // （写在 write() 里来不及），否则每个成员各写一份整池，读档合并后数量 ×N。
+        @Override
+        public void writeBase(Writes write) {
             ItemModule savedItems = items;
             LiquidModule savedLiquids = liquids;
-            if (this != trueLeader) {
+            if (combine.saves.ComboSaveState.isFollower(this, comboGroup)) {
                 if (items != null)
                     items = new ItemModule();
                 if (liquids != null)
                     liquids = new LiquidModule();
             }
-            super.write(write);
+            super.writeBase(write);
             items = savedItems;
             liquids = savedLiquids;
-            write.bool(comboLeader != null);
-            if (comboLeader != null)
-                write.i(comboLeader.pos());
+        }
+
+        @Override
+        public void writeCombo(Writes write) {
+            Building leader = combine.saves.ComboSaveState.trueLeader(this, comboGroup);
+            write.bool(leader != this);
+            if (leader != this)
+                write.i(leader.pos());
         }
 
         @Override
         public void read(Reads read, byte revision) {
             super.read(read, revision);
-            boolean hasLeader = false;
-            int leaderPos = -1;
-
             if (revision >= 10) {
-            hasLeader = read.bool();
-                        if (hasLeader)
-                leaderPos = read.i();
-
+                applyLeader(read, true); // 旧档（≤2.6）：模组字段直接写在地图区里
+                return;
             }
+            comboDirty = true;
+        }
 
+        @Override
+        public void readCombo(Reads read, byte revision) {
+            // 新格式里"非组长"在存档里写的就是空模块，读档时整组已经被并成一份，
+            // 这里不能再清空（清了就把并好的池子丢掉）。
+            applyLeader(read, false);
+        }
+
+        void applyLeader(Reads read, boolean clearModules) {
+            boolean hasLeader = read.bool();
+            int leaderPos = hasLeader ? read.i() : -1;
             comboDirty = true;
             if (hasLeader && leaderPos != pos()) {
                 pendingLeaderPos = leaderPos;
-                if (items != null)
+                if (clearModules && items != null)
                     items = new ItemModule();
-                if (liquids != null)
+                if (clearModules && liquids != null)
                     liquids = new LiquidModule();
             } else {
                 pendingLeaderPos = -1;
                 comboLeader = null;
             }
-}
+        }
     }
 }

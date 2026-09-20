@@ -471,7 +471,7 @@ public class CombinedDrill extends Block {
 
     // ==================== Building ====================
 
-    public class CombinedDrillBuild extends Building {
+    public class CombinedDrillBuild extends Building implements combine.saves.ComboSaved {
         public CombinedDrillBuild comboLeader;
         public Seq<CombinedDrillBuild> comboGroup = new Seq<>();
         public boolean comboDirty = true;
@@ -1630,36 +1630,54 @@ public class CombinedDrill extends Block {
         }
 
         // ---- 序列化 ----
+        // 地图区里只写"原版那一台钻头"的字节：Drill/BurstDrill 是 base + progress + warmup，
+        // BeamDrill 是 base + time + warmup。模组自己的字段（组长、timeDrilled、dominantItem…）
+        // 全部挪到自定义存档块 ComboSaveState —— 详见 ComboSaved。
         @Override
         public byte version() {
-            return 10;
+            return combine.saves.ComboSaveState.vanillaVersion(block);
         }
 
         @Override
         public void write(Writes write) {
-            CombinedDrillBuild trueLeader = this;
-            if (comboGroup != null && comboGroup.size > 0) {
-                for (CombinedDrillBuild b : comboGroup)
-                    if (b != null && b.isValid() && b.pos() < trueLeader.pos())
-                        trueLeader = b;
+            CombinedDrill cb = (CombinedDrill) block;
+            if (cb.mode == Mode.beam) {
+                write.f(time);
+                write.f(warmup);
+            } else {
+                write.f(progress);
+                write.f(warmup);
             }
+        }
+
+        // 存档先调 writeBase 写模块数据、后调 write —— "只有组长写真实模块"必须挂在 writeBase 上
+        // （写在 write() 里来不及），否则每个成员各写一份整池，读档合并后数量 ×N。
+        @Override
+        public void writeBase(Writes write) {
             ItemModule savedItems = items;
             LiquidModule savedLiquids = liquids;
-            if (this != trueLeader) {
+            if (combine.saves.ComboSaveState.isFollower(this, comboGroup)) {
                 if (items != null)
                     items = new ItemModule();
                 if (liquids != null)
                     liquids = new LiquidModule();
             }
-            super.write(write);
+            super.writeBase(write);
             items = savedItems;
             liquids = savedLiquids;
-            write.bool(comboLeader != null);
-            if (comboLeader != null)
-                write.i(comboLeader.pos());
+        }
+
+        @Override
+        public void writeCombo(Writes write) {
+            Building leader = combine.saves.ComboSaveState.trueLeader(this, comboGroup);
+            write.bool(leader != this);
+            if (leader != this)
+                write.i(leader.pos());
+            writeExtras(write);
+        }
+
+        void writeExtras(Writes write) {
             CombinedDrill cb = (CombinedDrill) block;
-            write.f(progress);
-            write.f(warmup);
             write.f(timeDrilled);
             write.f(lastDrillSpeed);
             write.i(dominantItems);
@@ -1668,7 +1686,6 @@ public class CombinedDrill extends Block {
                 write.f(smoothProgress);
                 write.f(invertTime);
             } else if (cb.mode == Mode.beam) {
-                write.f(time);
                 write.f(boostWarmup);
                 write.i(facingAmount);
                 write.s(lastItem == null ? -1 : lastItem.id);
@@ -1677,46 +1694,68 @@ public class CombinedDrill extends Block {
 
         @Override
         public void read(Reads read, byte revision) {
-            super.read(read, revision);
-            boolean hasLeader = false;
-            int leaderPos = -1;
             if (revision >= 10) {
-                hasLeader = read.bool();
-                if (hasLeader)
-                    leaderPos = read.i();
+                // 旧档（≤2.6）：模组字段直接续写在地图区里
+                super.read(read, revision);
+                boolean hasLeader = read.bool();
+                int leaderPos = hasLeader ? read.i() : -1;
+                progress = read.f();
+                warmup = read.f();
+                readExtras(read);
+                applyLeader(hasLeader, leaderPos, true);
+                return;
             }
+
+            CombinedDrill cb = (CombinedDrill) block;
+            if (cb.mode == Mode.beam) {
+                time = read.f();
+                warmup = read.f();
+            } else {
+                progress = read.f();
+                warmup = read.f();
+            }
+            comboDirty = true;
+        }
+
+        @Override
+        public void readCombo(Reads read, byte revision) {
+            boolean hasLeader = read.bool();
+            int leaderPos = hasLeader ? read.i() : -1;
+            readExtras(read);
+            // 新格式里"非组长"在存档里写的就是空模块，读档时整组已经被并成一份，
+            // 这里不能再清空（清了就把并好的池子丢掉）。
+            applyLeader(hasLeader, leaderPos, false);
+        }
+
+        void readExtras(Reads read) {
+            CombinedDrill cb = (CombinedDrill) block;
+            timeDrilled = read.f();
+            lastDrillSpeed = read.f();
+            dominantItems = read.i();
+            int domId = read.s();
+            dominantItem = domId == -1 ? null : content.item(domId);
+            if (cb.mode == Mode.burst) {
+                smoothProgress = read.f();
+                invertTime = read.f();
+            } else if (cb.mode == Mode.beam) {
+                boostWarmup = read.f();
+                facingAmount = read.i();
+                int lastId = read.s();
+                lastItem = lastId == -1 ? null : content.item(lastId);
+            }
+        }
+
+        void applyLeader(boolean hasLeader, int leaderPos, boolean clearModules) {
             comboDirty = true;
             if (hasLeader && leaderPos != pos()) {
                 pendingLeaderPos = leaderPos;
-                if (items != null)
+                if (clearModules && items != null)
                     items = new ItemModule();
-                if (liquids != null)
+                if (clearModules && liquids != null)
                     liquids = new LiquidModule();
             } else {
                 pendingLeaderPos = -1;
                 comboLeader = null;
-            }
-            if (revision >= 10) {
-                progress = read.f();
-                warmup = read.f();
-                timeDrilled = read.f();
-                lastDrillSpeed = read.f();
-                dominantItems = read.i();
-                int domId = read.s();
-                dominantItem = domId == -1 ? null : content.item(domId);
-            }
-            if (revision >= 10) {
-                CombinedDrill cb = (CombinedDrill) block;
-                if (cb.mode == Mode.burst) {
-                    smoothProgress = read.f();
-                    invertTime = read.f();
-                } else if (cb.mode == Mode.beam) {
-                    time = read.f();
-                    boostWarmup = read.f();
-                    facingAmount = read.i();
-                    int lastId = read.s();
-                    lastItem = lastId == -1 ? null : content.item(lastId);
-                }
             }
         }
     }

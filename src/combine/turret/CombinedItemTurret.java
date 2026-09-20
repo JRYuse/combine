@@ -241,7 +241,7 @@ public class CombinedItemTurret extends ItemTurret {
     }
   }
 
-  public class CombinedItemTurretBuild extends ItemTurretBuild {
+  public class CombinedItemTurretBuild extends ItemTurretBuild implements combine.saves.ComboSaved {
 
     /** perItemCap() 的每-tick 缓存（组总弹容），避免收弹路径每次都遍历整组。 */
     public long comboAmmoCapTick = Long.MIN_VALUE;
@@ -987,14 +987,20 @@ public class CombinedItemTurret extends ItemTurret {
       return selected;
     }
 
+    // 地图区里只写"原版物品炮台那一份字节"（super.write = ItemTurretBuild 的弹仓格式），
+    // 模组自己的字段（选中的弹药 + 精确弹量）挪到自定义存档块 ComboSaveState —— 详见 ComboSaved。
     @Override
     public byte version() {
-      return 10;
+      return combine.saves.ComboSaveState.vanillaVersion(block);
     }
 
     @Override
     public void write(Writes write) {
       super.write(write);
+    }
+
+    @Override
+    public void writeCombo(Writes write) {
       write.s(selected == null ? -1 : selected.id);
       write.i(ammo.size);
       for (Turret.AmmoEntry e : ammo) {
@@ -1009,41 +1015,42 @@ public class CombinedItemTurret extends ItemTurret {
     @Override
     public void read(Reads read, byte revision) {
       super.read(read, revision);
-
+      // 旧档（≤2.6）：模组字段直接续写在地图区里
       if (revision >= 10) {
-        if (revision >= 10) {
-          short id = read.s();
-          selected = id == -1 ? null : content.item(id);
-        }
-        if (revision >= 10) {
-          int entries = read.i();
-          ammo.clear();
-          totalAmmo = 0;
-          for (int i = 0; i < entries; i++) {
-            Item item = content.item(read.i());
-            int amount = read.i();
-            if (item == null || amount <= 0)
-              continue;
-            ammo.add(AmmoEntries.create((ItemTurret) block, item, amount));
-            totalAmmo += amount;
-          }
-          if (selected != null && !acceptsAmmo(selected))
-            selected = null;
-          if (selected == null) {
-            for (Turret.AmmoEntry e : ammo) {
-              if (e == null || ((ItemTurret.ItemEntry) e).item == null || e.amount <= 0)
-                continue;
-              Item it = ((ItemTurret.ItemEntry) e).item;
-              if (acceptsAmmo(it)) {
-                selected = it;
-                break;
-              }
-            }
-          }
-        }
-
+        readCombo(read, revision);
+        return;
       }
+      comboDirty = true;
+    }
 
+    @Override
+    public void readCombo(Reads read, byte revision) {
+      short id = read.s();
+      selected = id == -1 ? null : content.item(id);
+      int entries = read.i();
+      ammo.clear();
+      totalAmmo = 0;
+      for (int i = 0; i < entries; i++) {
+        Item item = content.item(read.i());
+        int amount = read.i();
+        if (item == null || amount <= 0)
+          continue;
+        ammo.add(AmmoEntries.create((ItemTurret) block, item, amount));
+        totalAmmo += amount;
+      }
+      if (selected != null && !acceptsAmmo(selected))
+        selected = null;
+      if (selected == null) {
+        for (Turret.AmmoEntry e : ammo) {
+          if (e == null || ((ItemTurret.ItemEntry) e).item == null || e.amount <= 0)
+            continue;
+          Item it = ((ItemTurret.ItemEntry) e).item;
+          if (acceptsAmmo(it)) {
+            selected = it;
+            break;
+          }
+        }
+      }
       comboDirty = true;
     }
 

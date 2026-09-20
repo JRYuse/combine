@@ -305,6 +305,11 @@ public class Main extends Mod {
       Log.err("[combine] failed to patch save versions", t);
     }
 
+    // 组合建筑"模组专属字段"的自定义存档块：地图区里只写原版那份字节，
+    // 关掉模组后原版读档时这些字段整块跳过，组合建筑干净地变回原版建筑
+    // （详见 combine.saves.ComboSaved / ComboSaveState）
+    combine.saves.ComboSaveState.register();
+
     try {
       getWhiteList();
       processModBlocks();
