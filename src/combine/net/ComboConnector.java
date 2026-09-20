@@ -51,12 +51,19 @@ public class ComboConnector extends PowerBlock {
         // 贴图用模组自带 assets/sprites/blocks/connection.png
         // （模组贴图打包时统一加 "<模组名>-" 前缀，所以 region 名是 combine-connection）
         TextureRegion custom = Core.atlas.has("combine-connection") ? Core.atlas.find("combine-connection") : null;
-        linkRegion = custom != null ? custom : Core.atlas.find("power-node");
+        // 只有模组贴图真实存在时才用 "combine-connection" 这个 region 名；
+        // 否则 fullOverride 必须保持 "power-node" —— 写成不存在的名字会让建造菜单画 error 贴图（实测 v160.4 客户端复现）
+        if(custom != null && custom.found()){
+            linkRegion = custom;
+            fullOverride = "combine-connection";
+        }else{
+            linkRegion = Core.atlas.find("power-node");
+            fullOverride = "power-node";
+        }
         // region 必须设：建造过程中的 ConstructBuild 画的是目标方块的 region
         // （Block.icons() 用 region，没设就会退回用方块名找 "combo-connector" → 找不到 → error 贴图）
         region = linkRegion;
         resetGeneratedIcons();
-        if(linkRegion != null && linkRegion.found()) fullOverride = "combine-connection"; // 图标也用新贴图
         if(fullIcon == null || !fullIcon.found()) fullIcon = linkRegion;
         if(uiIcon == null || !uiIcon.found()) uiIcon = linkRegion;
     }

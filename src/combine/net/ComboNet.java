@@ -1060,6 +1060,14 @@ public class ComboNet {
         if(node == null || state == null || node.power == null) return;
         beginHeatFrame();
 
+        // 节点互连后，同一条链上的每个节点看到的组完全一样 —— 热量分配必须由
+        // 链上唯一"负责人"（互连/贴邻节点簇里 pos 最小者）做一次，否则同一批
+        // 产热组的存量热被每个节点各扣一遍、需热组各领一份（越领越多/速耗翻倍）。
+        if(!isHeatAuthority(node)){
+            node.heat = 0f;
+            return;
+        }
+
         Seq<Building> groups = linkedHeatGroups(node);
         int n = groups.size;
         if(n == 0){
@@ -1093,13 +1101,48 @@ public class ComboNet {
         }
     }
 
+    /**
+     * 这条节点是不是自己所在"节点簇"的热量负责人。
+     * 节点簇 = 经节点互连连线、贴邻、或同贴一个连接器而连在一起的全部节点 —
+     * 簇内 pos 最小的节点负责给整个网络做热量分配。
+     */
+    private static boolean isHeatAuthority(ComboNode.ComboNodeBuild node){
+        ObjectSet<Building> seen = new ObjectSet<>();
+        Queue<Building> q = new Queue<>();
+        q.addLast(node);
+        seen.add(node);
+        while(!q.isEmpty()){
+            Building v = q.removeFirst();
+            Seq<Building> nbs = new Seq<>();
+            if(v instanceof ComboConnector.ComboConnectorBuild c){
+                if(c.proximity != null) for(Building nb : c.proximity) nbs.add(nb);
+            }else if(v instanceof ComboNode.ComboNodeBuild n){
+                for(int i = 0; i < n.links.size; i++){
+                    Building l = world.build(n.links.get(i));
+                    if(l != null && l.isValid()) nbs.add(l);
+                }
+                if(n.proximity != null) for(Building nb : n.proximity) nbs.add(nb);
+            }
+            for(int i = 0; i < nbs.size; i++){
+                Building nb = nbs.get(i);
+                if(nb instanceof ComboNode.ComboNodeBuild nn && seen.add(nn)) q.addLast(nn);
+            }
+        }
+        for(Building b : seen){
+            if(b instanceof ComboNode.ComboNodeBuild nb && nb != node && nb.pos() < node.pos()) return false;
+        }
+        return true;
+    }
+
     private static Seq<Building> linkedHeatGroups(ComboNode.ComboNodeBuild node){
+        // 直接走网络分量：节点互连后链上所有组都是同一个"组合网络"，
+        // 产热/需热要和物品/液体池按同一套连通性通算。
         Seq<Building> out = new Seq<>();
         ObjectSet<Building> seen = new ObjectSet<>();
-        for(int i = 0; i < node.links.size; i++){
-            Building link = world.build(node.links.get(i));
-            if(link == null || !link.isValid() || !ComboReflect.isComboBuild(link)) continue;
-            Building leader = ComboReflect.leader(link);
+        for(Building m : componentMembers(node)){
+            if(m == null || !m.isValid() || m instanceof ComboNode.ComboNodeBuild) continue;
+            if(!ComboReflect.isComboBuild(m)) continue;
+            Building leader = ComboReflect.leader(m);
             if(leader != null && seen.add(leader)) out.add(leader);
         }
         return out;

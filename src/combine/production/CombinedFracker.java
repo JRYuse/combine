@@ -1,6 +1,7 @@
 package combine.production;
 import combine.net.ComboNet;
 import combine.util.ComboUi;
+import combine.util.ComboReflect;
 import arc.Core;
 import arc.graphics.Color;
 import arc.graphics.g2d.TextureRegion;
@@ -113,23 +114,14 @@ public class CombinedFracker extends Fracker {
             Seq<CombinedFrackerBuild> oldGroup = comboGroup != null ? new Seq<>(comboGroup) : new Seq<>();
             comboGroup = new Seq<>();
             comboGroup.add(this);
-            IntSet visited = new IntSet();
-            Queue<CombinedFrackerBuild> queue = new Queue<>();
-            queue.add(this);
-            visited.add(pos());
-            while (!queue.isEmpty()) {
-                CombinedFrackerBuild cur = queue.removeFirst();
-                for (Building b : cur.proximity) {
-                    if (b instanceof CombinedFrackerBuild o && o.team == team && o.isValid()
-                            && !visited.contains(o.pos())) {
-                        CombinedFracker cb = (CombinedFracker) cur.block, ob = (CombinedFracker) o.block;
-                        if (cur.block == o.block || cb.allowCrossTypeCombo || ob.allowCrossTypeCombo) {
-                            visited.add(o.pos());
-                            queue.addLast(o);
-                            comboGroup.add(o);
-                        }
-                    }
-                }
+            // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
+            for (Building b : ComboReflect.linkedReachable(this,
+                    o -> o instanceof CombinedFrackerBuild other && other.team == team && other.isValid(),
+                    (cur, o) -> cur.block == o.block
+                    || ((CombinedFracker) cur.block).allowCrossTypeCombo
+                    || ((CombinedFracker) o.block).allowCrossTypeCombo)) {
+                if (b != this)
+                    comboGroup.add((CombinedFrackerBuild) b);
             }
             CombinedFrackerBuild newLeader = this;
             for (CombinedFrackerBuild b : comboGroup)

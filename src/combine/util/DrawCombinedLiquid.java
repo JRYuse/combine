@@ -1,6 +1,5 @@
 package combine.util;
 import combine.net.ComboNet;
-import combine.production.CombinedCrafter;
 import arc.Core;
 import arc.graphics.g2d.TextureRegion;
 import mindustry.gen.Building;
@@ -39,8 +38,12 @@ public class DrawCombinedLiquid extends DrawBlock {
 
   @Override
   public void load(Block block) {
-    if (!(block instanceof CombinedCrafter))
-      throw new RuntimeException(block + "must be CombinedCrafter");
+    // FIX[content.load 崩溃]：draw() 早已放宽为"任何带液体的组合体都能画"
+    // （钻头/泵/发电机等，用 effectiveLiquidCap 取组容量），但 load() 里还留着
+    // "必须是 CombinedCrafter" 的旧检查 —— CombinedGenerator（蒸汽发电机）等
+    // 一走到这里就抛 RuntimeException。任何让组合方块先于 content.load() 存在的环境
+    // （服务端时序、第三方客户端、测试 harness）都会因此中断整个内容加载。
+    // 这里与 draw() 对齐：只保留 hasLiquids 检查。
     if (!block.hasLiquids) {
       throw new RuntimeException(
           "Block '" + block + "' has a DrawLiquidRegion, but hasLiquids is false! Make sure it is true.");

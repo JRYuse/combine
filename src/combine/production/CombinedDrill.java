@@ -518,23 +518,14 @@ public class CombinedDrill extends Block {
             Seq<CombinedDrillBuild> oldGroup = comboGroup != null ? new Seq<>(comboGroup) : new Seq<>();
             comboGroup = new Seq<>();
             comboGroup.add(this);
-            IntSet visited = new IntSet();
-            Queue<CombinedDrillBuild> queue = new Queue<>();
-            queue.add(this);
-            visited.add(pos());
-            while (!queue.isEmpty()) {
-                CombinedDrillBuild current = queue.removeFirst();
-                for (Building b : current.proximity) {
-                    if (b instanceof CombinedDrillBuild other && other.team == team && other.isValid()
-                            && !visited.contains(other.pos())) {
-                        CombinedDrill cb = (CombinedDrill) current.block, ob = (CombinedDrill) other.block;
-                        if (current.block == other.block || cb.allowCrossTypeCombo || ob.allowCrossTypeCombo) {
-                            visited.add(other.pos());
-                            queue.addLast(other);
-                            comboGroup.add(other);
-                        }
-                    }
-                }
+            // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
+            for (Building b : ComboReflect.linkedReachable(this,
+                    o -> o instanceof CombinedDrillBuild other && other.team == team && other.isValid(),
+                    (cur, o) -> cur.block == o.block
+                    || ((CombinedDrill) cur.block).allowCrossTypeCombo
+                    || ((CombinedDrill) o.block).allowCrossTypeCombo)) {
+                if (b != this)
+                    comboGroup.add((CombinedDrillBuild) b);
             }
             CombinedDrillBuild newLeader = this;
             for (CombinedDrillBuild b : comboGroup)
@@ -579,30 +570,35 @@ public class CombinedDrill extends Block {
         }
 
         public void splitAssets(Seq<CombinedDrillBuild> oldGroup, Seq<CombinedDrillBuild> newGroup) {
-            CombinedDrillBuild oldLeader = null;
+            // FIX[双重拆分]: 网络层(ComboNet)可能已把池子按组件拆过一轮、给部分成员发过新模块。
+            // 那些份额先并回主池（新组长持有的模块），再由本地逻辑按容量统一重分，
+            // 否则两轮拆分各分各的，总额对不上账（物资凭空丢/复制）。
+            CombinedDrillBuild newLeader = null;
+            for (CombinedDrillBuild b : newGroup)
+                if (b.isValid() && (newLeader == null || b.pos() < newLeader.pos()))
+                    newLeader = b;
+            if (newLeader == null)
+                newLeader = this;
+            ItemModule poolItems = newLeader.items;
+            LiquidModule poolLiquids = newLeader.liquids;
             for (CombinedDrillBuild b : oldGroup) {
-                if (!b.isValid())
-                    continue;
-                for (CombinedDrillBuild other : oldGroup) {
-                    if (other != b && other.isValid() && (other.items == b.items || other.liquids == b.liquids)) {
-                        oldLeader = b;
-                        break;
+                if (!b.isValid()) continue;
+                if (poolItems != null && b.items != null && b.items != poolItems) {
+                    for (Item item : content.items()) {
+                        int amt = b.items.get(item);
+                        if (amt > 0) { poolItems.add(item, amt); b.items.remove(item, amt); }
                     }
                 }
-                if (oldLeader != null)
-                    break;
-            }
-            if (oldLeader == null) {
-                for (CombinedDrillBuild b : oldGroup)
-                    if (b.isValid()) {
-                        oldLeader = b;
-                        break;
+                if (poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
+                    for (Liquid liquid : content.liquids()) {
+                        float amt = b.liquids.get(liquid);
+                        if (amt > 0.001f) { poolLiquids.add(liquid, amt); b.liquids.remove(liquid, amt); }
                     }
+                }
             }
-            if (oldLeader == null)
-                oldLeader = this;
-            ItemModule oldItems = oldLeader.items;
-            LiquidModule oldLiquids = oldLeader.liquids;
+            CombinedDrillBuild oldLeader = newLeader;
+            ItemModule oldItems = poolItems;
+            LiquidModule oldLiquids = poolLiquids;
             Seq<CombinedDrillBuild> kicked = new Seq<>();
             for (CombinedDrillBuild b : oldGroup)
                 if (b.isValid() && !newGroup.contains(b))

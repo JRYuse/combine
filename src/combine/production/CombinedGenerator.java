@@ -443,27 +443,14 @@ public class CombinedGenerator extends ConsumeGenerator {
       comboGroup = new Seq<>();
       comboGroup.add(this);
 
-      IntSet visited = new IntSet();
-      Queue<CombinedGeneratorBuild> queue = new Queue<>();
-      queue.add(this);
-      visited.add(pos());
-
-      while (!queue.isEmpty()) {
-        CombinedGeneratorBuild current = queue.removeFirst();
-        for (Building b : current.proximity) {
-          if (b instanceof CombinedGeneratorBuild other && other.team == team && other.isValid()
-              && !visited.contains(other.pos())) {
-            CombinedGenerator cb = (CombinedGenerator) current.block;
-            CombinedGenerator ob = (CombinedGenerator) other.block;
-            boolean canCombo = (current.block == other.block)
-                || cb.allowCrossTypeCombo || ob.allowCrossTypeCombo;
-            if (canCombo) {
-              visited.add(other.pos());
-              queue.addLast(other);
-              comboGroup.add(other);
-            }
-          }
-        }
+      // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
+      for (Building b : ComboReflect.linkedReachable(this,
+          o -> o instanceof CombinedGeneratorBuild other && other.team == team && other.isValid(),
+          (cur, o) -> cur.block == o.block
+              || ((CombinedGenerator) cur.block).allowCrossTypeCombo
+              || ((CombinedGenerator) o.block).allowCrossTypeCombo)) {
+        if (b != this)
+          comboGroup.add((CombinedGeneratorBuild) b);
       }
 
       CombinedGeneratorBuild newLeader = this;
@@ -561,32 +548,35 @@ public class CombinedGenerator extends ConsumeGenerator {
     }
 
     public void splitAssets(Seq<CombinedGeneratorBuild> oldGroup, Seq<CombinedGeneratorBuild> newGroup) {
-      CombinedGeneratorBuild oldLeader = null;
+      // FIX[双重拆分]: 网络层(ComboNet)可能已把池子按组件拆过一轮、给部分成员发过新模块。
+      // 那些份额先并回主池（新组长持有的模块），再由本地逻辑按容量统一重分，
+      // 否则两轮拆分各分各的，总额对不上账（物资凭空丢/复制）。
+      CombinedGeneratorBuild newLeader = null;
+      for (CombinedGeneratorBuild b : newGroup)
+          if (b.isValid() && (newLeader == null || b.pos() < newLeader.pos()))
+              newLeader = b;
+      if (newLeader == null)
+          newLeader = this;
+      ItemModule poolItems = newLeader.items;
+      LiquidModule poolLiquids = newLeader.liquids;
       for (CombinedGeneratorBuild b : oldGroup) {
-        if (!b.isValid())
-          continue;
-        for (CombinedGeneratorBuild other : oldGroup) {
-          if (other != b && other.isValid() && (other.items == b.items || other.liquids == b.liquids)) {
-            oldLeader = b;
-            break;
+          if (!b.isValid()) continue;
+          if (poolItems != null && b.items != null && b.items != poolItems) {
+              for (Item item : content.items()) {
+                  int amt = b.items.get(item);
+                  if (amt > 0) { poolItems.add(item, amt); b.items.remove(item, amt); }
+              }
           }
-        }
-        if (oldLeader != null)
-          break;
-      }
-      if (oldLeader == null) {
-        for (CombinedGeneratorBuild b : oldGroup) {
-          if (b.isValid()) {
-            oldLeader = b;
-            break;
+          if (poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
+              for (Liquid liquid : content.liquids()) {
+                  float amt = b.liquids.get(liquid);
+                  if (amt > 0.001f) { poolLiquids.add(liquid, amt); b.liquids.remove(liquid, amt); }
+              }
           }
-        }
       }
-      if (oldLeader == null)
-        oldLeader = this;
-
-      ItemModule oldItems = oldLeader.items;
-      LiquidModule oldLiquids = oldLeader.liquids;
+      CombinedGeneratorBuild oldLeader = newLeader;
+      ItemModule oldItems = poolItems;
+      LiquidModule oldLiquids = poolLiquids;
 
       Seq<CombinedGeneratorBuild> kicked = new Seq<>();
       for (CombinedGeneratorBuild b : oldGroup) {

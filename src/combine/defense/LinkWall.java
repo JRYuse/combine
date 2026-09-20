@@ -191,6 +191,25 @@ public class LinkWall extends Wall {
       Seq<LinkWallBuild> found = new Seq<>();
       // 不组合的队伍：自己就是一组（组员只有自己 → 伤害/治疗/门开关都退回原版单格行为）
       groupAllowedLast = groupAllowed();
+      // 本墙的"本地连通块"（只沿墙邻格走，不过节点/连接器）：节点扫描用。
+      // 不能用重建前的旧 group —— 断开节点后旧 group 里还列着对面半组，扫描会把
+      // 已断开的节点再拉回来（断链拆组场景实测）。本地块是实时从地形算出来的，没这个问题。
+      ObjectSet<LinkWallBuild> localGroup = new ObjectSet<>();
+      {
+        Queue<LinkWallBuild> lq = new Queue<>();
+        lq.addLast(this);
+        localGroup.add(this);
+        while (!lq.isEmpty()) {
+          LinkWallBuild cur = lq.removeFirst();
+          for (Point2 edge : Edges.getEdges(cur.block.size)) {
+            Tile t = Vars.world.tile(cur.tile.x + edge.x, cur.tile.y + edge.y);
+            if (t == null || !(t.build instanceof LinkWallBuild w) || w.dead()
+                || !(w.block instanceof LinkWall) || !localGroup.add(w))
+              continue;
+            lq.addLast(w);
+          }
+        }
+      }
       if (!groupAllowedLast) {
         links = found;
         found.add(this);
@@ -206,11 +225,22 @@ public class LinkWall extends Wall {
       queue.addLast(this);
       visited.add(this);
       // 组合节点是**跨距离**的：节点不在墙的邻格里，墙自己发现不了"有人连我"。
-      // 到节点登记表里找"links 里直接写了本墙"的节点，从它们出发走一遍。
+      // 到节点登记表里找"links 里直接写了本地块任一成员"的节点，从它们出发走一遍。
+      // 必须按"本地块"扫描而不是只扫自己：节点直链的可能是块里隔壁那格（直链 B，A/C 与 B
+      // 相邻）——只扫"links 里有没有我"会让 A、C 失去跨节点合并的机会（墙链场景实测漏组）。
+      // 完整性：被节点直链的墙在连线时自己那块也会被标脏重建，两侧各自都能把整链拉全。
       try {
         for (Building nb : CoopCombo.trackedNodesCopy()) {
-          if (nb instanceof ComboNodeBuild node && node.links != null && node.links.contains(pos()))
-            walkLinkers(node, seenLinkers, visited, queue);
+          if (!(nb instanceof ComboNodeBuild node) || node.links == null)
+            continue;
+          for (LinkWallBuild member : localGroup) {
+            if (member.dead())
+              continue;
+            if (node.links.contains(member.pos())) {
+              walkLinkers(node, seenLinkers, visited, queue);
+              break;
+            }
+          }
         }
       } catch (Throwable ignored) {
       }
@@ -224,8 +254,11 @@ public class LinkWall extends Wall {
           if (t.build instanceof LinkWallBuild b) {
             if (!b.dead() && b.block instanceof LinkWall && visited.add(b))
               queue.addLast(b);
-          } else if (isLinker(t.build)) {
-            // 组合连接器/节点：穿过它，把它能到的墙也并进这一组
+          } else if (t.build instanceof ComboConnectorBuild) {
+            // 组合连接器：贴脸即连接，穿过它把邻墙并进这一组。
+            // 组合节点不走这里 —— 节点的连接以 links 名单为准，贴墙的墙不被拉进
+            // （否则墙一挨着节点就静默并入节点连的远处组，fuzz 实测多组员）。
+            // 节点直链的墙由上面的节点扫描（links ∩ 本地块）发现。
             walkLinkers(t.build, seenLinkers, visited, queue);
           }
         }
@@ -255,8 +288,10 @@ public class LinkWall extends Wall {
       linkers.addLast(start);
       while (!linkers.isEmpty()) {
         Building cur = linkers.removeFirst();
-        // 1) 这个连接件（连接器）旁边贴着的墙
-        if (cur.proximity != null) {
+        // 1) 这个连接件旁边贴着的墙 —— 只有连接器吃"贴脸入组"（它本来就是靠邻接工作的，
+        //    没有连接表）。组合节点以自己的 links 名单为准：贴墙但没被连线的墙不入组，
+        //    否则节点旁边没连的墙会被静默并进远处的组（fuzz 实测：组里多出邻格墙）。
+        if (cur instanceof ComboConnectorBuild && cur.proximity != null) {
           for (Building nb : cur.proximity) {
             if (nb instanceof LinkWallBuild w && !w.dead() && w.block instanceof LinkWall && visited.add(w))
               queue.addLast(w);
@@ -335,8 +370,9 @@ public class LinkWall extends Wall {
           markGroupDirty();
         }
       }
-      if (linksDirty && !dead())
+      if (linksDirty && !dead()) {
         rebuildLinks();
+      }
       // 队伍里玩家来了/走了（PvP 换边、联机加入等）→ 判定变了就重算一次：
       // 该组合的重新连起来，不该组合的拆回单格
       if (!linksDirty && !dead() && groupAllowedLast != groupAllowed())

@@ -6,6 +6,10 @@ import combine.production.CombinedGenerator;
 import combine.storage.CombinedStorageBlock;
 import combine.units.IUnitCombo;
 import arc.struct.Seq;
+import arc.struct.ObjectSet;
+import arc.struct.Queue;
+import combine.net.ComboConnector.ComboConnectorBuild;
+import combine.net.ComboNode.ComboNodeBuild;
 import mindustry.gen.Building;
 import mindustry.type.Item;
 import mindustry.type.Liquid;
@@ -54,7 +58,119 @@ public class ComboReflect {
                 g.markGroupDirty();
             }catch(Throwable ignored){
             }
+            return;
         }
+        // 普通 Combined* 组合建筑：把当前这一组全部标脏，updateTile 里各自 rebuildCombo，
+        // 重建时 linkedReachable() 会穿过组合节点/连接器 —— 连线变了分组跟着变
+        //（节点连上/断开都要叫这里，见 ComboNode 的配置与移除逻辑）。
+        if(isComboBuild(b) && !(b.block instanceof CombinedStorageBlock)
+            && (b instanceof IUnitCombo || hasField(b, "comboDirty"))){
+            for(Building m : group(b)){
+                if(m.isValid()) setDirty(m, true);
+            }
+        }
+    }
+
+    /**
+     * 从 start 出发做 BFS：沿 proximity 相邻成员 + 组合连接件（组合节点/组合连接器）
+     * 收集所有同队的组合成员（含 start）。
+     *
+     * memberTest：候选建筑是否属于本组合家族（调用方写 instanceof + 同队 + isValid）。
+     * edgeAllowed：current（已入组）与 candidate 之间是否允许组合（同型/跨型开关），
+     * 穿过连接件时以"从哪个成员踏上连接件"作为 current —— 即连接件两端等价于相邻。
+     *
+     * 这是 LinkWall.walkLinkers 的通用版：墙自己早就这么走（生命共享等整组功能
+     * 跟着连线走），这里把同一语义带给所有 Combined* 建筑 —— 用户要的
+     * "用组合节点连上 = 效果相当于直接组合"。
+     */
+    public static Seq<Building> linkedReachable(Building start,
+                                                java.util.function.Predicate<Building> memberTest,
+                                                java.util.function.BiPredicate<Building, Building> edgeAllowed){
+        Seq<Building> found = new Seq<>();
+        if(start == null || start.dead()) return found;
+        ObjectSet<Building> visited = new ObjectSet<>();
+        Queue<Building> queue = new Queue<>();
+        ObjectSet<Building> seenLinkers = new ObjectSet<>();
+        queue.addLast(start);
+        visited.add(start);
+        // 跨距离的组合节点：links 里直接写了 start 的节点也是跳板（节点不在邻格里，发现不了"有人连我"）
+        try{
+            for(Building nb : CoopCombo.trackedNodesCopy()){
+                if(nb instanceof ComboNodeBuild node && node.links != null && node.links.contains(start.pos()))
+                    walkLinkers(node, memberTest, edgeAllowed, seenLinkers, visited, queue, start);
+            }
+        }catch(Throwable ignored){
+        }
+        while(!queue.isEmpty()){
+            Building cur = queue.removeFirst();
+            found.add(cur);
+            if(cur.proximity != null){
+                for(Building nb : cur.proximity){
+                    if(nb == null || !nb.isValid()) continue;
+                    if(isLinker(nb)){
+                        // 相邻的连接件：穿过它，把它够到的成员也并进来
+                        walkLinkers(nb, memberTest, edgeAllowed, seenLinkers, visited, queue, cur);
+                    }else if(memberTest.test(nb) && edgeAllowed.test(cur, nb) && visited.add(nb)){
+                        // 相邻的组合成员：直接入队（原来的邻接 BFS 语义）
+                        queue.addLast(nb);
+                    }
+                }
+            }
+            try{
+                for(Building nb : CoopCombo.trackedNodesCopy()){
+                    if(nb instanceof ComboNodeBuild node && node.links != null && node.links.contains(cur.pos()))
+                        walkLinkers(node, memberTest, edgeAllowed, seenLinkers, visited, queue, cur);
+                }
+            }catch(Throwable ignored){
+            }
+        }
+        return found;
+    }
+
+    /** 穿连接件：连接器靠 proximity 接下一棒，节点靠 links 接下一棒；沿途碰到的成员按 edgeAllowed 判定后入队。 */
+    private static void walkLinkers(Building start,
+                                    java.util.function.Predicate<Building> memberTest,
+                                    java.util.function.BiPredicate<Building, Building> edgeAllowed,
+                                    ObjectSet<Building> seenLinkers, ObjectSet<Building> visited,
+                                    Queue<Building> queue, Building entry){
+        if(!seenLinkers.add(start)) return;
+        Queue<Building> linkers = new Queue<>();
+        linkers.addLast(start);
+        while(!linkers.isEmpty()){
+            Building cur = linkers.removeFirst();
+            // 1) 这个连接件旁边贴着的成员
+            if(cur.proximity != null){
+                for(Building nb : cur.proximity){
+                    if(nb == null || !nb.isValid()) continue;
+                    if(isLinker(nb)){
+                        if(seenLinkers.add(nb)) linkers.addLast(nb);
+                    }else if(memberTest.test(nb) && edgeAllowed.test(entry, nb) && visited.add(nb)){
+                        queue.addLast(nb);
+                    }
+                }
+            }
+            // 2) 顺着连接件之间的连线继续走
+            if(cur instanceof ComboConnectorBuild c){
+                for(Building nb : c.proximity){
+                    if(nb != null && nb.isValid() && isLinker(nb) && seenLinkers.add(nb))
+                        linkers.addLast(nb);
+                }
+            }else if(cur instanceof ComboNodeBuild n){
+                for(int i = 0; i < n.links.size; i++){
+                    Building nb = world.build(n.links.get(i));
+                    if(nb == null || !nb.isValid()) continue;
+                    if(isLinker(nb)){
+                        if(seenLinkers.add(nb)) linkers.addLast(nb);
+                    }else if(memberTest.test(nb) && edgeAllowed.test(entry, nb) && visited.add(nb)){
+                        queue.addLast(nb);
+                    }
+                }
+            }
+        }
+    }
+
+    private static boolean isLinker(Building b){
+        return b instanceof ComboConnectorBuild || b instanceof ComboNodeBuild;
     }
 
     /**

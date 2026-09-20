@@ -2,6 +2,7 @@ package combine.production;
 import combine.production.CombinedGenerator.CombinedGeneratorBuild;
 import combine.BlockCloner;
 import combine.net.ComboNet;
+import combine.util.ComboReflect;
 import combine.util.ComboUi;
 import arc.Core;
 import arc.graphics.Color;
@@ -566,28 +567,14 @@ public class CombinedCrafter extends GenericCrafter {
             comboGroup = new Seq<>();
             comboGroup.add(this);
 
-            IntSet visited = new IntSet();
-            Queue<CombinedCrafterBuild> queue = new Queue<>();
-            queue.add(this);
-            visited.add(pos());
-
-            while (!queue.isEmpty()) {
-                CombinedCrafterBuild current = queue.removeFirst();
-                for (Building b : current.proximity) {
-                    if (b instanceof CombinedCrafterBuild other && other.team == team && other.isValid()) {
-                        if (!visited.contains(other.pos())) {
-                            CombinedCrafter cb = (CombinedCrafter) current.block;
-                            CombinedCrafter ob = (CombinedCrafter) other.block;
-                            boolean canCombo = (current.block == other.block)
-                                    || cb.allowCrossTypeCombo || ob.allowCrossTypeCombo;
-                            if (canCombo) {
-                                visited.add(other.pos());
-                                queue.addLast(other);
-                                comboGroup.add(other);
-                            }
-                        }
-                    }
-                }
+            // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkedWall 语义）
+            for (Building b : ComboReflect.linkedReachable(this,
+                    o -> o instanceof CombinedCrafterBuild other && other.team == team && other.isValid(),
+                    (cur, o) -> cur.block == o.block
+                            || ((CombinedCrafter) cur.block).allowCrossTypeCombo
+                            || ((CombinedCrafter) o.block).allowCrossTypeCombo)) {
+                if (b != this)
+                    comboGroup.add((CombinedCrafterBuild) b);
             }
 
             CombinedCrafterBuild newLeader = this;
@@ -697,32 +684,44 @@ public class CombinedCrafter extends GenericCrafter {
         }
 
         public void splitAssets(Seq<CombinedCrafterBuild> oldGroup, Seq<CombinedCrafterBuild> newGroup) {
-            CombinedCrafterBuild oldLeader = null;
+            // FIX[双重拆分]: 网络层(ComboNet)在本帧更早的 flush 里可能已把池子按组件拆过一轮、
+            // 给部分成员发过新模块。那些模块里的份额本来就是从这口池子里分出去的 ——
+            // 先全部并回"主池"（新组长持有的模块），再由本地逻辑按成员容量统一重分；
+            // 否则两轮拆分各分各的，总额对不上账（物资凭空丢/复制）。
+            CombinedCrafterBuild newLeader = null;
+            for (CombinedCrafterBuild b : newGroup)
+                if (b.isValid() && (newLeader == null || b.pos() < newLeader.pos()))
+                    newLeader = b;
+            if (newLeader == null)
+                newLeader = this;
+            ItemModule poolItems = newLeader.items;
+            LiquidModule poolLiquids = newLeader.liquids;
             for (CombinedCrafterBuild b : oldGroup) {
                 if (!b.isValid())
                     continue;
-                for (CombinedCrafterBuild other : oldGroup) {
-                    if (other != b && other.isValid() && (other.items == b.items || other.liquids == b.liquids)) {
-                        oldLeader = b;
-                        break;
+                if (poolItems != null && b.items != null && b.items != poolItems) {
+                    for (Item item : content.items()) {
+                        int amt = b.items.get(item);
+                        if (amt > 0) {
+                            poolItems.add(item, amt);
+                            b.items.remove(item, amt);
+                        }
                     }
                 }
-                if (oldLeader != null)
-                    break;
-            }
-            if (oldLeader == null) {
-                for (CombinedCrafterBuild b : oldGroup) {
-                    if (b.isValid()) {
-                        oldLeader = b;
-                        break;
+                if (poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
+                    for (Liquid liquid : content.liquids()) {
+                        float amt = b.liquids.get(liquid);
+                        if (amt > 0.001f) {
+                            poolLiquids.add(liquid, amt);
+                            b.liquids.remove(liquid, amt);
+                        }
                     }
                 }
             }
-            if (oldLeader == null)
-                oldLeader = this;
 
-            ItemModule oldItems = oldLeader.items;
-            LiquidModule oldLiquids = oldLeader.liquids;
+            CombinedCrafterBuild oldLeader = newLeader;
+            ItemModule oldItems = poolItems;
+            LiquidModule oldLiquids = poolLiquids;
 
             Seq<CombinedCrafterBuild> kicked = new Seq<>();
             for (CombinedCrafterBuild b : oldGroup) {

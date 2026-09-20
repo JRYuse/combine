@@ -2,6 +2,7 @@ package combine.turret;
 
 import combine.net.ComboNet;
 import combine.util.ComboUi;
+import combine.util.ComboReflect;
 import java.util.LinkedHashMap;
 import arc.Core;
 import arc.graphics.Color;
@@ -419,25 +420,15 @@ public class CombinedItemTurret extends ItemTurret {
       Seq<CombinedItemTurretBuild> oldGroup = comboGroup != null ? new Seq<>(comboGroup) : new Seq<>();
       comboGroup = new Seq<>();
       comboGroup.add(this);
-      IntSet visited = new IntSet();
-      Queue<CombinedItemTurretBuild> queue = new Queue<>();
-      queue.add(this);
-      visited.add(pos());
-      while (!queue.isEmpty()) {
-        CombinedItemTurretBuild cur = queue.removeFirst();
-        CombinedItemTurret curBlock = (CombinedItemTurret) cur.block;
-        for (Building b : cur.proximity) {
-          if (!(b instanceof CombinedItemTurretBuild o) || o.team != team || !o.isValid()
-              || visited.contains(o.pos()))
-            continue;
-          CombinedItemTurret otherBlock = (CombinedItemTurret) o.block;
-          if (otherBlock != curBlock && !curBlock.allowCrossTypeCombo && !otherBlock.allowCrossTypeCombo)
-            continue;
-          visited.add(o.pos());
-          queue.addLast(o);
-          comboGroup.add(o);
-        }
-      }
+            // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
+            for (Building b : ComboReflect.linkedReachable(this,
+                    o -> o instanceof CombinedItemTurretBuild other && other.team == team && other.isValid(),
+                    (cur, o) -> cur.block == o.block
+                    || ((CombinedItemTurret) cur.block).allowCrossTypeCombo
+                    || ((CombinedItemTurret) o.block).allowCrossTypeCombo)) {
+                if (b != this)
+                    comboGroup.add((CombinedItemTurretBuild) b);
+            }
       CombinedItemTurretBuild newLeader = this;
       for (CombinedItemTurretBuild b : comboGroup)
         if (b.isValid() && b.pos() < newLeader.pos())

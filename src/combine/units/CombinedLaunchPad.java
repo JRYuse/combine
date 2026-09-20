@@ -134,23 +134,14 @@ public class CombinedLaunchPad extends LaunchPad {
             Seq<CombinedLaunchPadBuild> oldGroup = comboGroup != null ? new Seq<>(comboGroup) : new Seq<>();
             comboGroup = new Seq<>();
             comboGroup.add(this);
-            IntSet visited = new IntSet();
-            Queue<CombinedLaunchPadBuild> queue = new Queue<>();
-            queue.add(this);
-            visited.add(pos());
-            while (!queue.isEmpty()) {
-                CombinedLaunchPadBuild cur = queue.removeFirst();
-                for (Building b : cur.proximity) {
-                    if (b instanceof CombinedLaunchPadBuild o && o.team == team && o.isValid()
-                            && !visited.contains(o.pos())) {
-                        CombinedLaunchPad cb = (CombinedLaunchPad) cur.block, ob = (CombinedLaunchPad) o.block;
-                        if (cur.block == o.block || cb.allowCrossTypeCombo || ob.allowCrossTypeCombo) {
-                            visited.add(o.pos());
-                            queue.addLast(o);
-                            comboGroup.add(o);
-                        }
-                    }
-                }
+            // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
+            for (Building b : ComboReflect.linkedReachable(this,
+                    o -> o instanceof CombinedLaunchPadBuild other && other.team == team && other.isValid(),
+                    (cur, o) -> cur.block == o.block
+                    || ((CombinedLaunchPad) cur.block).allowCrossTypeCombo
+                    || ((CombinedLaunchPad) o.block).allowCrossTypeCombo)) {
+                if (b != this)
+                    comboGroup.add((CombinedLaunchPadBuild) b);
             }
             CombinedLaunchPadBuild newLeader = this;
             for (CombinedLaunchPadBuild b : comboGroup)
@@ -195,30 +186,35 @@ public class CombinedLaunchPad extends LaunchPad {
         }
 
         public void splitAssets(Seq<CombinedLaunchPadBuild> oldGroup, Seq<CombinedLaunchPadBuild> newGroup) {
-            CombinedLaunchPadBuild oldLeader = null;
+            // FIX[双重拆分]: 网络层(ComboNet)可能已把池子按组件拆过一轮、给部分成员发过新模块。
+            // 那些份额先并回主池（新组长持有的模块），再由本地逻辑按容量统一重分，
+            // 否则两轮拆分各分各的，总额对不上账（物资凭空丢/复制）。
+            CombinedLaunchPadBuild newLeader = null;
+            for (CombinedLaunchPadBuild b : newGroup)
+                if (b.isValid() && (newLeader == null || b.pos() < newLeader.pos()))
+                    newLeader = b;
+            if (newLeader == null)
+                newLeader = this;
+            ItemModule poolItems = newLeader.items;
+            LiquidModule poolLiquids = newLeader.liquids;
             for (CombinedLaunchPadBuild b : oldGroup) {
-                if (!b.isValid())
-                    continue;
-                for (CombinedLaunchPadBuild o : oldGroup) {
-                    if (o != b && o.isValid() && (o.items == b.items || o.liquids == b.liquids)) {
-                        oldLeader = b;
-                        break;
+                if (!b.isValid()) continue;
+                if (poolItems != null && b.items != null && b.items != poolItems) {
+                    for (Item item : content.items()) {
+                        int amt = b.items.get(item);
+                        if (amt > 0) { poolItems.add(item, amt); b.items.remove(item, amt); }
                     }
                 }
-                if (oldLeader != null)
-                    break;
-            }
-            if (oldLeader == null) {
-                for (CombinedLaunchPadBuild b : oldGroup)
-                    if (b.isValid()) {
-                        oldLeader = b;
-                        break;
+                if (poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
+                    for (Liquid liquid : content.liquids()) {
+                        float amt = b.liquids.get(liquid);
+                        if (amt > 0.001f) { poolLiquids.add(liquid, amt); b.liquids.remove(liquid, amt); }
                     }
+                }
             }
-            if (oldLeader == null)
-                oldLeader = this;
-            ItemModule oldItems = oldLeader.items;
-            LiquidModule oldLiquids = oldLeader.liquids;
+            CombinedLaunchPadBuild oldLeader = newLeader;
+            ItemModule oldItems = poolItems;
+            LiquidModule oldLiquids = poolLiquids;
             Seq<CombinedLaunchPadBuild> kicked = new Seq<>();
             for (CombinedLaunchPadBuild b : oldGroup)
                 if (b.isValid() && !newGroup.contains(b))

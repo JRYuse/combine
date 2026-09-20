@@ -37,7 +37,8 @@ import static mindustry.Vars.*;
  * 组合节点（不继承 PowerNode）。
  *
  * links 是节点自己的组合连接表，可以连接范围内任意 ComboReflect.isComboBuild 的建筑，
- * 包括没有 power 模块的仓库。对有 power 的连接目标，同时写入原版 PowerModule.links，
+ * 包括没有 power 模块的仓库；也能连接**另一个组合节点**（双向登记），
+ * 把覆盖范围接力延伸出去。对有 power 的连接目标，同时写入原版 PowerModule.links，
  * 以便电力也共享；物品/液体/热量由 ComboNet 处理。
  */
 public class ComboNode extends Block {
@@ -74,6 +75,12 @@ public class ComboNode extends Block {
                 if(other != null && other.power != null) other.power.links.removeValue(entity.pos());
                 // 被断开的如果是有自己分组的组合建筑（组合墙），让它重算分组
                 ComboReflect.markGroupDirty(other);
+                // 节点互连：双向登记、双向断开，两边链上的组合建筑都重算分组
+                if(other instanceof ComboNodeBuild ob){
+                    ob.links.removeValue(entity.pos());
+                    dirtyLinkedBuildings(entity);
+                    dirtyLinkedBuildings(ob);
+                }
                 // 【电力必须两端各建一张新电网】原来只给节点这边 reflow、对面用 updatePowerGraph()，
                 // 那只把"旧的那张（合并过的）电网"继续分给对面 —— 旧图的 all 里还列着这边的机器，
                 // 于是"线断了，电照样过去"（用户报的）。原版 PowerNode 就是这么两段式 reflow 的。
@@ -93,6 +100,13 @@ public class ComboNode extends Block {
                 ComboNet.markDirty();
             }else if(valid && entity.links.size < maxNodes){
                 entity.addLink(other);
+                // 节点互连：对端也登记本节点（links 双向 = 链上任一端出发遍历都完整），
+                // 两端链上的组合建筑全部标脏，下一步各自 rebuildCombo 时跨过节点链合成一组
+                if(other instanceof ComboNodeBuild ob){
+                    ob.links.addUnique(entity.pos());
+                    dirtyLinkedBuildings(entity);
+                    dirtyLinkedBuildings(ob);
+                }
                 ComboReflect.markGroupDirty(other);
             }
         });
@@ -114,12 +128,19 @@ public class ComboNode extends Block {
         // 贴图用模组自带 assets/sprites/blocks/node.png
         // （模组贴图打包时统一加 "<模组名>-" 前缀，所以 region 名是 combine-node）
         TextureRegion custom = Core.atlas.has("combine-node") ? Core.atlas.find("combine-node") : null;
-        nodeRegion = custom != null ? custom : Core.atlas.find("power-node-large", Core.atlas.find("power-node"));
+        // 只有模组贴图真实存在时才用 "combine-node" 这个 region 名；
+        // 否则 fullOverride 必须保持 "power-node-large" —— 写成不存在的名字会让建造菜单画 error 贴图（实测 v160.4 客户端复现）
+        if(custom != null && custom.found()){
+            nodeRegion = custom;
+            fullOverride = "combine-node";
+        }else{
+            nodeRegion = Core.atlas.find("power-node-large", Core.atlas.find("power-node"));
+            fullOverride = "power-node-large";
+        }
         // region 必须设：建造过程中的 ConstructBuild 画的是目标方块的 region
         // （Block.icons() 用 region，没设就会退回用方块名找 "combo-node" → 找不到 → error 贴图）
         region = nodeRegion;
         resetGeneratedIcons();
-        if(nodeRegion != null && nodeRegion.found()) fullOverride = "combine-node"; // 图标也用新贴图
         laser = Core.atlas.find("laser");
         laserEnd = Core.atlas.find("laser-end");
         if(fullIcon == null || !fullIcon.found()) fullIcon = nodeRegion;
@@ -133,10 +154,36 @@ public class ComboNode extends Block {
         stats.add(Stat.powerConnections, maxNodes, StatUnit.none);
     }
 
-    /** 能不能作为连接目标：原版替换出来的组合方块，或协作组合（js/java 子类）方块。 */
+    /**
+     * 能不能作为连接目标：原版替换出来的组合方块、协作组合（js/java 子类）方块，
+     * 或**另一个组合节点**（节点互连：一根线只占两端各一个连接位，就能把覆盖范围
+     * 接力延伸出去，避免单个节点 18 格射程不够）。
+     */
     public static boolean linkTarget(Building b){
         return b != null && b.isValid()
-            && (ComboReflect.isComboBuild(b) || CoopCombo.eligible(b.block));
+            && (b instanceof ComboNodeBuild
+                || ComboReflect.isComboBuild(b) || CoopCombo.eligible(b.block));
+    }
+
+    /**
+     * 把这个节点（穿过节点链）能连到的一切组合建筑的组全部标脏 ——
+     * 节点互连的连线变了时两边都得叫：本端建筑的组要重算，对端节点的建筑也要。
+     */
+    public static void dirtyLinkedBuildings(ComboNodeBuild node){
+        dirtyLinkedBuildings(node, new arc.struct.ObjectSet<>());
+    }
+
+    private static void dirtyLinkedBuildings(ComboNodeBuild node, arc.struct.ObjectSet<Building> seen){
+        if(node == null || !seen.add(node)) return;
+        for(int i = 0; i < node.links.size; i++){
+            Building b = world.build(node.links.get(i));
+            if(b == null || !b.isValid()) continue;
+            if(b instanceof ComboNodeBuild nb){
+                dirtyLinkedBuildings(nb, seen);
+            }else{
+                ComboReflect.markGroupDirty(b);
+            }
+        }
     }
 
     /**
@@ -342,6 +389,14 @@ public class ComboNode extends Block {
          */
         public int linkedBodyPos(Building other){
             if(other == null) return -1;
+            // 节点互连：每个节点是独立的连接个体，不做"同一片方块"合并 ——
+            // 否则点一台相邻但**没连过**的节点，会把邻居那根线认成它自己的（断错线）。
+            if(other instanceof ComboNodeBuild){
+                for(int i = 0; i < links.size; i++){
+                    if(world.build(links.get(i)) == other) return links.get(i);
+                }
+                return -1;
+            }
             for(int i = 0; i < links.size; i++){
                 Building ex = world.build(links.get(i));
                 if(ex == null || !ex.isValid()) continue;
@@ -456,6 +511,11 @@ public class ComboNode extends Block {
                     links.removeIndex(i);
                     // 节点被拆掉 → 被它接起来的组合墙要重算分组（血池拆回两段）
                     ComboReflect.markGroupDirty(other);
+                    // 节点互连：从对端节点里注销自己，对端链上的组合建筑也重算
+                    if(other instanceof ComboNodeBuild ob){
+                        ob.links.removeValue(pos());
+                        dirtyLinkedBuildings(ob);
+                    }
                     if(power != null && other.power != null){
                         power.links.removeValue(other.pos());
                         other.power.links.removeValue(pos());

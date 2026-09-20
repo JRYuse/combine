@@ -1,6 +1,7 @@
 package combine.logic;
 import combine.net.ComboNet;
 import combine.util.ComboUi;
+import combine.util.ComboReflect;
 import arc.Core;
 import arc.graphics.Color;
 import arc.graphics.g2d.TextureRegion;
@@ -108,21 +109,13 @@ public class CombinedLogicProcessor extends LogicBlock {
       comboIptTick = Long.MIN_VALUE;
       comboGroup = new Seq<>();
       comboGroup.add(this);
-      IntSet visited = new IntSet();
-      Queue<CombinedLogicProcessorBuild> queue = new Queue<>();
-      queue.add(this);
-      visited.add(pos());
-      while (!queue.isEmpty()) {
-        CombinedLogicProcessorBuild cur = queue.removeFirst();
-        for (Building b : cur.proximity) {
-          if (b instanceof CombinedLogicProcessorBuild o && o.team == team && o.isValid()
-              && !visited.contains(o.pos())) {
-            visited.add(o.pos());
-            queue.addLast(o);
-            comboGroup.add(o);
-          }
-        }
-      }
+            // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
+            for (Building b : ComboReflect.linkedReachable(this,
+                    o -> o instanceof CombinedLogicProcessorBuild other && other.team == team && other.isValid(),
+                    (cur, o) -> true)) {
+                if (b != this)
+                    comboGroup.add((CombinedLogicProcessorBuild) b);
+            }
       CombinedLogicProcessorBuild newLeader = this;
       for (CombinedLogicProcessorBuild b : comboGroup)
         if (b.isValid() && b.pos() < newLeader.pos())

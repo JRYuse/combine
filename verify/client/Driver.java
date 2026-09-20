@@ -142,6 +142,61 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::openStatusPanel, 14f);
                 Timer.schedule(() -> shot("status_panel"), 18f);
                 Timer.schedule(() -> { Log.info("[drv] status 模式结束"); Core.app.exit(); }, 22f);
+            }else if(mode.equals("tech")){
+                // 科技树：真的把 ResearchDialog 打开（用户报"打开科技树崩溃"），
+                // 顺带按原版 canSpend 的写法把整棵树解引用一遍，报出是哪个节点坏。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::techScan, 5f);
+                Timer.schedule(() -> {
+                    try{
+                        Vars.ui.research.show();
+                        Log.info("[drv] 科技树已打开");
+                    }catch(Throwable t){ Log.err("[drv] 打开科技树失败", t); }
+                }, 7f);
+                Timer.schedule(() -> shot("tech_tree"), 12f);
+                Timer.schedule(Driver::techScan, 13f);
+                Timer.schedule(() -> { Log.info("[drv] tech 模式结束（frames=@）", frames); Core.app.exit(); }, 16f);
+            }else if(mode.equals("tech2")){
+                // 进图之后再开科技树：WorldLoadEvent 上本模组会按星球换造价 + 扫一遍树，
+                // 这条路径和"主菜单直接开树"不一样，用户是在游戏里点开的。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupTechWorld, 5f);
+                Timer.schedule(Driver::techScan, 20f);
+                Timer.schedule(Driver::openTechRoots, 22f);
+                Timer.schedule(Driver::techScan, 55f);
+                Timer.schedule(() -> { Log.info("[drv] tech2 模式结束（frames=@）", frames); Core.app.exit(); }, 58f);
+            }else if(mode.equals("technode")){
+                // 只关心"三个方块在不在两棵树上、图标画得对不对"：切到塞普罗/埃里克尔树，
+                // 把镜头居中到该节点再截图（树很大，不居中的话节点在屏幕外）。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(() -> {
+                    // 三个方块的节点在"没解锁前置物品"时会显示锁图标（原版行为），
+                    // 这里把它们的材料解锁掉，让节点画出方块本身的样子，方便对图。
+                    for(Item it : new Item[]{Items.copper, Items.lead, Items.silicon, Items.metaglass,
+                        Items.beryllium, Items.tungsten, Items.oxide}){
+                        it.unlock();
+                    }
+                    Vars.ui.research.show();
+                    Timer.schedule(() -> Vars.ui.research.rebuildTree(Blocks.coreShard.techNode), 1f);
+                    Timer.schedule(() -> Driver.treeHasOurNodes("打开后（未切换）"), 2.5f);
+                    Timer.schedule(() -> centerTree("connection"), 3f);
+                    Timer.schedule(Driver::locateTechNodes, 5f);
+                    Timer.schedule(() -> shot("serpulo_connection"), 6f);
+                    Timer.schedule(() -> centerTree("liquid-unloader"), 7f);
+                    Timer.schedule(Driver::locateTechNodes, 9f);
+                    Timer.schedule(() -> shot("serpulo_unloader"), 10f);
+                    Timer.schedule(() -> Vars.ui.research.rebuildTree(Blocks.coreBastion.techNode), 11f);
+                    Timer.schedule(() -> centerTree("connection"), 13f);
+                    Timer.schedule(Driver::locateTechNodes, 15f);
+                    Timer.schedule(() -> shot("erekir_connection"), 16f);
+                    Timer.schedule(() -> centerTree("liquid-unloader"), 17f);
+                    Timer.schedule(Driver::locateTechNodes, 19f);
+                    Timer.schedule(() -> shot("erekir_unloader"), 20f);
+                    Timer.schedule(() -> { Log.info("[drv] technode 模式结束"); Core.app.exit(); }, 23f);
+                }, 6f);
             }else{
                 Timer.schedule(Driver::step1, 4f);
             }
@@ -216,6 +271,137 @@ public class Driver extends Mod{
             for(arc.scene.Element c : g.getChildren()) if(hit(c, key)) return true;
         }
         return false;
+    }
+
+    /** 载一张图并跑起来，让 WorldLoadEvent 上的处理（换星球造价 / 扫树）真的执行一遍。 */
+    static void setupTechWorld(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            Log.info("[drv] tech2 场景: 地图=@ 星球=@ 战役=@", map.name(),
+                Vars.state.getPlanet() == null ? "null" : Vars.state.getPlanet().name, Vars.state.isCampaign());
+        }catch(Throwable t){ Log.err("[drv] setupTechWorld failed", t); }
+    }
+
+    /** 真正打开科技树，并把每棵根树的页面都切一遍（rebuildTree → rebuildAll → canSpend）。 */
+    static void openTechRoots(){
+        try{
+            Vars.ui.research.show();
+            Log.info("[drv] 科技树已打开，根数=@", mindustry.content.TechTree.roots.size);
+            float t = 1f;
+            for(mindustry.content.TechTree.TechNode r : new arc.struct.Seq<>(mindustry.content.TechTree.roots)){
+                String rootName = r.content == null ? "null" : r.content.name;
+                // 一棵树一步地切、切完再截：全挤在同一帧里切的话，截图永远只拍到最后一棵。
+                // rebuildTree = switchTree + checkNodes + treeLayout（只 switchTree 不排布，节点会全叠中间）
+                Timer.schedule(() -> {
+                    try{
+                        Vars.ui.research.rebuildTree(r);
+                        Log.info("[drv] rebuildTree @ (content=@)", r.localizedName(), rootName);
+                    }catch(Throwable ex){ Log.err("[drv] rebuildTree 崩了: @", r, ex); }
+                }, t);
+                t += 1f;
+                Timer.schedule(() -> shot("tech_root_" + rootName), t);
+                t += 1f;
+            }
+        }catch(Throwable t){ Log.err("[drv] openTechRoots failed", t); }
+    }
+
+    /** 科技树体检：按原版 canSpend 的写法把每个节点解引用一遍，报出坏节点是谁。 */
+    /** 把镜头居中到当前这棵树里某个方块的节点上（树很大，不居中节点会在屏幕外）。 */
+    /** 当前界面缓存的那棵树里，有没有我们三个方块（用来验 ResearchDialog 的节点缓存新不新）。 */
+    static void treeHasOurNodes(String tag){
+        try{
+            StringBuilder sb = new StringBuilder();
+            for(String n : new String[]{"connection", "node", "liquid-unloader"}){
+                boolean found = false;
+                for(mindustry.ui.dialogs.ResearchDialog.TechTreeNode ttn : Vars.ui.research.nodes){
+                    if(ttn.node != null && ttn.node.content != null && ttn.node.content.name.equals(n)){ found = true; break; }
+                }
+                sb.append(n).append('=').append(found).append(' ');
+            }
+            Log.info("[drv] 界面树缓存（@）: 节点@ 个，其中 @", tag, Vars.ui.research.nodes.size, sb);
+        }catch(Throwable t){ Log.err("[drv] treeHasOurNodes failed", t); }
+    }
+
+    static void centerTree(String contentName){
+        try{
+            for(mindustry.ui.dialogs.ResearchDialog.TechTreeNode ttn : Vars.ui.research.nodes){
+                if(ttn.node == null || ttn.node.content == null) continue;
+                if(!ttn.node.content.name.equals(contentName)) continue;
+                Vars.ui.research.view.panX = -ttn.x;
+                Vars.ui.research.view.panY = -ttn.y + 60f;
+                Log.info("[drv] 居中 @: 树坐标 @,@ (当前树可见节点 @ 个)", contentName,
+                    (int)ttn.x, (int)ttn.y, Vars.ui.research.nodes.size);
+                return;
+            }
+            Log.err("[drv] 当前这棵树里没有 @", contentName);
+        }catch(Throwable t){ Log.err("[drv] centerTree failed", t); }
+    }
+
+    /** 把三个方块在当前这棵树里的节点位置打出来（截图按坐标裁）。 */
+    static void locateTechNodes(){
+        try{
+            for(arc.scene.Element e : Vars.ui.research.view.getChildren()){
+                if(!(e instanceof arc.scene.ui.ImageButton btn)) continue;
+                if(!(btn.userObject instanceof mindustry.content.TechTree.TechNode tn) || tn.content == null) continue;
+                String n = tn.content.name;
+                if(!(n.equals("connection") || n.equals("node") || n.equals("liquid-unloader"))) continue;
+                arc.math.geom.Vec2 v = new arc.math.geom.Vec2(btn.x + btn.getWidth() / 2f, btn.y + btn.getHeight() / 2f);
+                e.parent.localToStageCoordinates(v);
+                Log.info("[drv] 节点 @: 屏幕 x=@ y=@ (截图坐标 y'=@) 材料@项 有图标=@",
+                    n, (int)v.x, (int)v.y, (int)(Core.graphics.getHeight() - v.y),
+                    tn.requirements.length, tn.content.uiIcon != null && tn.content.uiIcon.found());
+            }
+        }catch(Throwable t){ Log.err("[drv] locateTechNodes failed", t); }
+    }
+
+    static void techScan(){
+        try{
+            int bad = 0, total = mindustry.content.TechTree.all.size;
+            for(mindustry.content.TechTree.TechNode n : mindustry.content.TechTree.all){
+                if(n == null || n.content == null){ Log.err("[drv] 坏节点: content=null"); bad++; continue; }
+                try{
+                    if(n.requirements == null || n.finishedRequirements == null
+                        || n.requirements.length != n.finishedRequirements.length){
+                        Log.err("[drv] 坏节点 @: req=@ fin=@", n.content.name,
+                            n.requirements == null ? "null" : n.requirements.length,
+                            n.finishedRequirements == null ? "null" : n.finishedRequirements.length);
+                        bad++;
+                        continue;
+                    }
+                    for(int i = 0; i < n.requirements.length; i++){
+                        // 照抄原版 canSpend 的取值顺序
+                        int finAmount = n.finishedRequirements[i].amount, reqAmount = n.requirements[i].amount;
+                        if(n.requirements[i].item == null){
+                            Log.err("[drv] 坏节点 @ 第 @ 项 item=null", n.content.name, i);
+                            bad++;
+                        }
+                    }
+                }catch(NullPointerException e){
+                    StringBuilder sb = new StringBuilder();
+                    for(int i = 0; i < n.requirements.length; i++){
+                        sb.append(i).append(':');
+                        sb.append(n.requirements[i] == null ? "null"
+                            : n.requirements[i].item == null ? "item=null" : n.requirements[i].item.name);
+                        sb.append(n.finishedRequirements[i] == null ? "|fin=null " : " ");
+                    }
+                    Log.err("[drv] canSpend 会在 @ 上崩: @", n.content.name, sb);
+                    bad++;
+                }
+            }
+            Log.info("[drv] 科技树扫描: 总节点=@ 坏节点=@", total, bad);
+            for(String bn : new String[]{"connection", "node", "liquid-unloader"}){
+                Block b = Vars.content.block(bn);
+                if(b == null){ Log.err("[drv] 找不到方块 @", bn); continue; }
+                Log.info("[drv] 方块 @: cls=@ 有 techNode=@ techNodes=@ 解锁=@ uiIcon=@ 图标可用=@",
+                    b.name, b.getClass().getName(), b.techNode != null, b.techNodes.size, b.alwaysUnlocked,
+                    b.uiIcon, b.uiIcon != null && b.uiIcon.found());
+            }
+        }catch(Throwable t){ Log.err("[drv] techScan failed", t); }
     }
 
     static void shot(String name){

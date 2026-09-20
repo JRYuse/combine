@@ -105,23 +105,13 @@ public interface IUnitCombo {
         Seq<IUnitCombo> oldGroup = gGroup() != null ? new Seq<>(gGroup()) : new Seq<>();
         gGroup(new Seq<>());
         group().add(this);
-        IntSet visited = new IntSet();
-        Queue<IUnitCombo> queue = new Queue<>();
-        queue.add(this);
-        visited.add(B(this).pos());
-        while (!queue.isEmpty()) {
-            IUnitCombo cur = queue.removeFirst();
-            for (Building b : B(cur).proximity) {
-                if (b instanceof IUnitCombo o && B(o).team == B(this).team && B(o).isValid()
-                        && !visited.contains(B(o).pos())) {
-                    // 同型总是可以; 跨型(工厂↔重构厂)看双方方块开关
-                    if (B(cur).block == B(o).block || crossAllowed(cur) || crossAllowed(o)) {
-                        visited.add(B(o).pos());
-                        queue.addLast(o);
-                        group().add(o);
-                    }
-                }
-            }
+        // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
+        for (Building b : ComboReflect.linkedReachable(B(this),
+                o -> o instanceof IUnitCombo u && B(u).team == B(this).team && B(u).isValid(),
+                (cur, o) -> B((IUnitCombo) cur).block == B((IUnitCombo) o).block
+                        || crossAllowed((IUnitCombo) cur) || crossAllowed((IUnitCombo) o))) {
+            if (b != B(this))
+                group().add((IUnitCombo) b);
         }
         IUnitCombo newLeader = this;
         for (IUnitCombo b : group())
@@ -167,31 +157,42 @@ public interface IUnitCombo {
     }
 
     default void splitAssets(Seq<IUnitCombo> oldGroup, Seq<IUnitCombo> newGroup) {
-        IUnitCombo oldLeader = null;
+        // FIX[双重拆分]: 网络层(ComboNet)可能已把池子按组件拆过一轮、给部分成员发过新模块。
+        // 那些份额先并回主池（新组长持有的模块），再由本地逻辑按容量统一重分，
+        // 否则两轮拆分各分各的，总额对不上账（物资凭空丢/复制）。
+        IUnitCombo newLeader = null;
+        for (IUnitCombo b : newGroup)
+            if (B(b).isValid() && (newLeader == null || B(b).pos() < B(newLeader).pos()))
+                newLeader = b;
+        if (newLeader == null)
+            newLeader = this;
+        ItemModule poolItems = B(newLeader).items;
+        LiquidModule poolLiquids = B(newLeader).liquids;
         for (IUnitCombo b : oldGroup) {
             if (!B(b).isValid())
                 continue;
-            for (IUnitCombo o : oldGroup) {
-                if (o != b && B(o).isValid()
-                        && (B(o).items == B(b).items || B(o).liquids == B(b).liquids)) {
-                    oldLeader = b;
-                    break;
+            if (poolItems != null && B(b).items != null && B(b).items != poolItems) {
+                for (Item item : content.items()) {
+                    int amt = B(b).items.get(item);
+                    if (amt > 0) {
+                        poolItems.add(item, amt);
+                        B(b).items.remove(item, amt);
+                    }
                 }
             }
-            if (oldLeader != null)
-                break;
-        }
-        if (oldLeader == null) {
-            for (IUnitCombo b : oldGroup)
-                if (B(b).isValid()) {
-                    oldLeader = b;
-                    break;
+            if (poolLiquids != null && B(b).liquids != null && B(b).liquids != poolLiquids) {
+                for (Liquid liquid : content.liquids()) {
+                    float amt = B(b).liquids.get(liquid);
+                    if (amt > 0.001f) {
+                        poolLiquids.add(liquid, amt);
+                        B(b).liquids.remove(liquid, amt);
+                    }
                 }
+            }
         }
-        if (oldLeader == null)
-            oldLeader = this;
-        ItemModule oldItems = B(oldLeader).items;
-        LiquidModule oldLiquids = B(oldLeader).liquids;
+        IUnitCombo oldLeader = newLeader;
+        ItemModule oldItems = poolItems;
+        LiquidModule oldLiquids = poolLiquids;
         Seq<IUnitCombo> kicked = new Seq<>();
         for (IUnitCombo b : oldGroup)
             if (B(b).isValid() && !newGroup.contains(b))

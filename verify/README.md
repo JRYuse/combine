@@ -67,7 +67,8 @@ verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑�
 
 原理：`Xvfb` 提供离屏 X，`SDL_VIDEODRIVER=offscreen` 让 SDL 走 EGL，Mesa 软渲染（llvmpipe）出画面；
 截图由 `verify/client/Driver.java`（一个驱动 mod）用 `ScreenUtils.saveScreenshot` 自己抓。
-驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn|bp|wall|rep`、`-Ddrv.out=<目录>`
+驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn|bp|wall|rep|tech|tech2|technode`、`-Ddrv.out=<目录>`
+（`tech` = 主菜单直接开科技树；`tech2` = 进图后再开、并把每棵根树的树页都切一遍截图；`technode` = 把镜头居中到组合连接器/液体卸载器节点再截图，用来核对节点在不在两棵树上、图标对不对）
 （`gen` = 核反应堆 + 一台容量 10 万的发电机，看燃料条/发电效率；`status` = 方块状态菱形 + 容器面板；
 `conn` = 两台组合工厂 + 一串组合连接器，看连接器贴图/连线与信息面板；
 `bp` = 蓝图里存组合连接器，重进游戏后还在不在；`wall` = 组合墙修满不再显示破损；
@@ -107,6 +108,7 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 | `combine.dbg.ContentTableTest` | 任意 | 手动名单不改内容表（`-Dseed=<方块名>`） |
 | `combine.dbg.NodeLinkTest` | `coop-producer`（java 测试模组） | 节点**不自动连线**；点目标=连/断、点已连目标=断开、不会误断另一边；点节点自己=全断 |
 | `combine.dbg.PowerSplitTest` | `coop-producer` | 节点/连接器断开后电力真的断开（不只是 graph 不同） |
+| `combine.dbg.TechTreeTest` | 任意 | 科技树数据体检：全树无 null 造价节点、组合连接器/节点/液体卸载器在塞普罗与埃里克尔两棵树上（研究材料分星球）；并模拟别的模组留下的坏节点，验证兜底能修好 |
 | `combine.dbg.ConnectorSaveTest` | `coop-producer` | 连接器接上两组合体后同池/同电网；存读档后依然同池、物品一份不少 |
 | `combine.dbg.TurretAmmoTest` | 任意（有炮塔+容器） | 仓库↔炮塔：每种弹药都进、弹仓按台数放大、从池里扣 |
 | `combine.dbg.TurretCoolantTest` | `liquid-maker`（java 测试模组） | 冷却液选择：空选自动取效果最好的、手选生效、没货回退 |
