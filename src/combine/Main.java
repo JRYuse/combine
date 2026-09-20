@@ -186,6 +186,10 @@ public class Main extends Mod {
     // （协作分组自己变了的时候，CoopCombo.rebuild 会同步调 ComboNet.rebuild，不靠这个顺序。）
     CoopCombo.register();
 
+    // 组合体↔电网的对账（共用一份 PowerModule 的组合建筑在原版并网/拆网里会掉队，
+    // 表现就是"读档/拆东西之后要动一下电网才来电"，见 combine.util.ComboPower）
+    combine.util.ComboPower.register();
+
     // 设置里的"建筑组合开关"界面（客户端才有 UI，服务端自动跳过）
     combine.ui.ComboBlockList.register();
     Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());

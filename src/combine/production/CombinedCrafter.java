@@ -652,6 +652,11 @@ public class CombinedCrafter extends GenericCrafter {
             }
 
             shareModules(newLeader);
+            // 组结构变了（放/拆成员、接/断组合节点）：全组过一遍电网对账
+            for (CombinedCrafterBuild b : newGroup) {
+                if (b.isValid())
+                    combine.util.ComboPower.mark(b);
+            }
 
             for (CombinedCrafterBuild oldMember : oldGroup) {
                 if (oldMember != this && oldMember.isValid() && !newGroup.contains(oldMember)) {
@@ -903,10 +908,14 @@ public class CombinedCrafter extends GenericCrafter {
                     PowerModule oldPower = b.power;
                     b.power = new PowerModule();
                     if (oldPower != null) {
-                        b.power.links.addAll(oldPower.links);
+                        // 只带走"对面确实指着本台"的连线，别把整组的线全抄过来（见 ComboPower.copyOwnLinks）
+                        combine.util.ComboPower.copyOwnLinks(oldPower, b, b.power);
                         b.power.status = oldPower.status;
                     }
                     b.updatePowerGraph();
+                    // 新建的模块如果没并进任何电网（原版的扇形拆分此时把同组共享的模块
+                    // 互相覆盖过），它就会一直待在空电网里 —— 登记一下让对账器重划
+                    combine.util.ComboPower.markAround(b);
                 }
             }
         }
@@ -998,8 +1007,11 @@ public class CombinedCrafter extends GenericCrafter {
                         }
                         member.power = leader.power;
                         member.updatePowerGraph();
+                        // 摘旧图/换模块都可能让某几台掉在原版那张没人更新的旧电网里：交给对账器收口
+                        combine.util.ComboPower.markAround(member);
                     }
                 }
+                combine.util.ComboPower.mark(leader);
             }
 
         }
@@ -1202,6 +1214,12 @@ public class CombinedCrafter extends GenericCrafter {
             comboTotalItemCap = 0;
             comboHeat = 0f;
             comboHeatCap = 0f;
+            // 拆掉组里一台，剩下的成员可能被原版的拆网扇形留在旧图上（共用模块的老问题）
+            combine.util.ComboPower.markAround(this);
+            for (CombinedCrafterBuild member : members) {
+                if (member != this && member.isValid())
+                    combine.util.ComboPower.markAround(member);
+            }
             super.onRemoved();
         }
 

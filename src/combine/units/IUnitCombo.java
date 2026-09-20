@@ -1,5 +1,6 @@
 package combine.units;
 import combine.util.ComboReflect;
+import combine.util.ComboPower;
 import arc.struct.IntSet;
 import arc.struct.ObjectSet;
 import arc.struct.Queue;
@@ -144,6 +145,10 @@ public interface IUnitCombo {
         if (oldGroup.size > newGroup.size)
             splitAssets(oldGroup, newGroup);
         shareModules(newLeader);
+        // 组结构变了：全组过一遍电网对账（共用一份 PowerModule 的成员会被原版拆网扇形漏掉）
+        for (IUnitCombo b : newGroup)
+            if (B(b).isValid())
+                ComboPower.mark(B(b));
 
         for (IUnitCombo old : oldGroup) {
             if (old != this && B(old).isValid() && !newGroup.contains(old)) {
@@ -348,8 +353,10 @@ public interface IUnitCombo {
                     }
                     B(member).power = B(leader).power;
                     B(member).updatePowerGraph();
+                    ComboPower.markAround(B(member));
                 }
             }
+            ComboPower.markAround(B(leader));
         }
     }
 
@@ -427,11 +434,13 @@ public interface IUnitCombo {
                     PowerModule oldPower = B(this).power;
                     B(this).power = new PowerModule();
                     if (oldPower != null) {
-                        B(this).power.links.addAll(oldPower.links);
+                        // 只带走"对面确实指着本台"的连线（见 ComboPower.copyOwnLinks）
+                        ComboPower.copyOwnLinks(oldPower, B(this), B(this).power);
                         B(this).power.status = oldPower.status;
                     }
-                    B(this).updatePowerGraph();
-                }
+                B(this).updatePowerGraph();
+                ComboPower.markAround(B(this));
+            }
             }
             IUnitCombo l = leader();
             if (l != null && B(l).isValid() && l != this)
@@ -506,7 +515,9 @@ public interface IUnitCombo {
                 survivors.get(i).gDirty(true);
                 survivors.get(i).gItemCap(0);
                 survivors.get(i).gLiquidCap(0f);
+                ComboPower.markAround(bb);
             }
+            ComboPower.markAround(B(this));
         }
         gLeader(null);
         gGroup(new Seq<>());

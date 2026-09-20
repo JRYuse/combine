@@ -119,6 +119,11 @@ public class ComboConnector extends PowerBlock {
 
         @Override
         public void onRemoved(){
+            // 连接器是组合体之间唯一的"导线"：拆掉它等于给电网换拓扑，
+            // 相邻的组合体会被原版的拆网扇形漏在旧图上 —— 交给对账器重划
+            if(proximity != null){
+                for(Building nb : proximity) combine.util.ComboPower.mark(nb);
+            }
             ComboNet.markDirty();
             super.onRemoved();
         }
