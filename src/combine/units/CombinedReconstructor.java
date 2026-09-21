@@ -305,6 +305,8 @@ public class CombinedReconstructor extends Reconstructor implements IUnitCombo.I
                         } else {
                             (this.payload).unit = this.upgrade((this.payload).unit.type)
                                     .create((this.payload).unit.team());
+                            // 组合重构厂产出的单位继承本建筑组合体的组标记，用于共享承伤。
+                            UnitComboDamage.tagProduced((this.payload).unit, this);
                             if ((this.payload).unit.isCommandable()) {
                                 if (this.commandPos != null) {
                                     (this.payload).unit.command().commandPosition(this.commandPos);

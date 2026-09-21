@@ -123,6 +123,15 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::setupBlueprintScene, 5f);
                 Timer.schedule(() -> shot("blueprint_dialog"), 25f);
                 Timer.schedule(() -> { Log.info("[drv] bp 模式结束"); Core.app.exit(); }, 30f);
+            }else if(mode.equals("rebuild")){
+                // 用户报："核心单位修废墟/重建不会立刻全做完，只做几个；批量改传送带方向也一样"。
+                // 真客户端走一遍原版 B 键框选（InputHandler.rebuildArea）+ 拖一排原地转向计划。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupRebuildScene, 5f);
+                Timer.schedule(Driver::rebuildGo, 12f);
+                Timer.schedule(Driver::rebuildStep, 14f, 0.5f);
+                Timer.schedule(() -> { Log.info("[drv] rebuild 模式超时结束"); Core.app.exit(); }, 200f);
             }else if(mode.equals("rep")){
                 // 用户复现存档（stainedMountains）：读档 → 存档 → 再读档，看物品会不会变多。
                 // 这些模组（ve 建 GL shader、饱和火力要 Java 25）在 headless 里跑不起来，所以用真客户端。
@@ -149,6 +158,34 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::openStatusPanel, 14f);
                 Timer.schedule(() -> shot("status_panel"), 18f);
                 Timer.schedule(() -> { Log.info("[drv] status 模式结束"); Core.app.exit(); }, 22f);
+            }else if(mode.equals("mega")){
+                // 用户报：mace + oct 组合成"巨兽"后 ①不绘制单位身体 ②力墙 bar 超上限。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupMegaScene, 5f);
+                Timer.schedule(() -> shot("mega_before"), 10f);
+                Timer.schedule(Driver::megaMerge, 14f);
+                Timer.schedule(Driver::megaDumpStep, 20f);
+                Timer.schedule(() -> shot("mega_after"), 22f);
+                Timer.schedule(Driver::megaTakeControl, 26f);
+                Timer.schedule(() -> shot("mega_hud"), 30f);
+                Timer.schedule(Driver::megaOpenPanel, 34f);
+                Timer.schedule(() -> shot("mega_panel"), 38f);
+                Timer.schedule(() -> { Log.info("[drv] mega 模式结束 frames=@", frames); Core.app.exit(); }, 44f);
+            }else if(mode.equals("pool")){
+                // 用户报："组合建筑物品面板…清空所有物资""组合工厂物资满后有时也会莫名其妙清空物品"。
+                // 场景：4 台并排的组合发电机（共享一口池子）灌满燃料 → 开信息面板截图 →
+                // 拆掉其中一台成员（原来会把超出新容量的那份真删掉）→ 再看面板/池子。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupPoolScene, 5f);
+                Timer.schedule(Driver::poolFill, 10f);
+                Timer.schedule(Driver::poolOpenPanel, 14f);
+                Timer.schedule(() -> shot("pool_panel_full"), 18f);
+                Timer.schedule(Driver::poolBreakOne, 22f);
+                Timer.schedule(Driver::poolOpenPanel, 26f);
+                Timer.schedule(() -> shot("pool_panel_after"), 30f);
+                Timer.schedule(() -> { Log.info("[drv] pool 模式结束 frames=@", frames); Core.app.exit(); }, 36f);
             }else if(mode.equals("tech")){
                 // 科技树：真的把 ResearchDialog 打开（用户报"打开科技树崩溃"），
                 // 顺带按原版 canSpend 的写法把整棵树解引用一遍，报出是哪个节点坏。
@@ -211,6 +248,347 @@ public class Driver extends Mod{
     }
 
     static final String mode = System.getProperty("drv.mode", "list");
+
+    // ---------------- 组合巨兽（mace + oct 融合） ----------------
+    static Unit megaUnit, maceUnit, octUnit, octUnit2;
+    static int megaPhase = 0, megaFrames = -1;
+
+    static Object combineCall(String cls, String method, Class<?>[] sig, Object... args){
+        try{
+            Class<?> c = Class.forName(cls, true, ml);
+            java.lang.reflect.Method m = sig == null ? null : c.getMethod(method, sig);
+            if(m == null) m = c.getMethod(method);
+            m.setAccessible(true);
+            return m.invoke(null, args);
+        }catch(Throwable t){ Log.err("[drv] 调用 @.@ 失败", cls, method, t); return null; }
+    }
+
+    static void setupMegaScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<130;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            // 找一块陆地（别让 mace 落水里淹死）
+            int ox = -1, oy = -1;
+            outer:
+            for(int y=45;y<125;y++){
+                for(int x=35;x<190;x++){
+                    boolean ok = true;
+                    for(int dy=-1;dy<=1 && ok;dy++) for(int dx=-2;dx<=2;dx++){
+                        Tile t = Vars.world.tile(x+dx, y+dy);
+                        if(t == null || t.floor() == null || t.floor().isLiquid || t.block() != Blocks.air){ ok = false; break; }
+                    }
+                    if(ok){ ox = x; oy = y; break outer; }
+                }
+            }
+            if(ox < 0){ Log.err("[drv] mega 没找到陆地"); return; }
+
+            // 队伍得有核心，不然游戏会把队伍当成已出局、清掉单位
+            Building core = placeBL(Blocks.coreShard, ox + 20, oy + 12);
+            if(core != null && core.items != null) for(Item it : Vars.content.items()) core.items.set(it, 5000);
+            megaOx = ox; megaOy = oy;
+            Core.camera.position.set(ox * 8f, oy * 8f);
+            Timer.schedule(Driver::megaSpawn, 2f);
+            Timer.schedule(Driver::megaMerge, 5f);
+        }catch(Throwable t){ Log.err("[drv] setupMegaScene failed", t); }
+    }
+
+    static int megaOx = -1, megaOy = -1;
+
+    static void megaSpawn(){
+        try{
+            float cx = megaOx * 8f, cy = megaOy * 8f;
+            maceUnit = UnitTypes.mace.create(Team.sharded);
+            maceUnit.set(cx - 20f, cy);
+            maceUnit.add();
+            octUnit = UnitTypes.oct.create(Team.sharded);
+            octUnit.set(cx + 30f, cy);
+            octUnit.add();
+            // 第二台带力场的成员：力场必须合并成一份，否则"力墙条"用单个成员的上限去除全组盾量（超 100%）
+            octUnit2 = UnitTypes.oct.create(Team.sharded);
+            octUnit2.set(cx + 70f, cy + 20f);
+            octUnit2.add();
+            Core.camera.position.set(cx, cy);
+            Log.info("[drv] mega 场景: 陆地=@,@ mace=@(@, @) oct=@(@, @) Groups.unit=@ frames=@", megaOx, megaOy,
+                maceUnit.type.name, (int)maceUnit.x, (int)maceUnit.y, octUnit.type.name, (int)octUnit.x, (int)octUnit.y,
+                Groups.unit.size(), frames);
+        }catch(Throwable t){ Log.err("[drv] megaSpawn failed", t); }
+    }
+
+    static void megaDumpStep(){
+        megaDump("融合后");
+        arc.math.geom.Vec2 sp = Core.camera.project(megaUnit == null ? 0 : megaUnit.x, megaUnit == null ? 0 : megaUnit.y);
+        Log.info("[drv] 屏幕坐标=@,@ 相机=@,@ frames=@ 力墙条: @", (int)sp.x, (int)sp.y,
+            (int)Core.camera.position.x, (int)Core.camera.position.y, frames, shieldBar());
+    }
+
+    static void megaTakeControl(){
+        if(megaUnit != null) Vars.player.unit(megaUnit);
+        if(megaUnit != null) Core.camera.position.set(megaUnit.x, megaUnit.y);
+        installCameraLock();
+        Log.info("[drv] 玩家单位=@ frames=@", Vars.player.unit() == null ? "null" : Vars.player.unit().type.name, frames);
+    }
+
+    /** 力墙条比例 = 盾量 / 力场上限（原版 HUD 与信息面板都用这个数）。 */
+    // ---------------- 组合发电机共享池（物品面板 + 满池拆一台） ----------------
+    static arc.struct.Seq<Building> poolScene = new arc.struct.Seq<>();
+    static Building poolMain;
+
+    static int worldItems(){
+        java.util.IdentityHashMap<mindustry.world.modules.ItemModule, Boolean> seen = new java.util.IdentityHashMap<>();
+        int total = 0;
+        for(Tile t : Vars.world.tiles){
+            if(t == null || t.build == null || t.build.items == null) continue;
+            if(seen.put(t.build.items, Boolean.TRUE) != null) continue;
+            total += t.build.items.total();
+        }
+        return total;
+    }
+
+    static String poolInfo(String tag){
+        if(poolMain == null || !poolMain.isValid()) return tag + ": 主建筑没了";
+        StringBuilder sb = new StringBuilder();
+        sb.append(tag).append(": ").append(poolMain.block.name).append("@" ).append(poolMain.tileX()).append(',').append(poolMain.tileY())
+          .append(" 组容量=").append(poolMain.getMaximumAccepted(Items.copper))
+          .append(" 池总量=").append(poolMain.items == null ? -1 : poolMain.items.total())
+          .append(" 煤=").append(poolMain.items == null ? -1 : poolMain.items.get(Items.coal))
+          .append(" 同池台数=").append(poolGroupCount())
+          .append(" 世界物品总量=").append(worldItems());
+        return sb.toString();
+    }
+
+    static int poolGroupCount(){
+        java.util.IdentityHashMap<Building, Boolean> seen = new java.util.IdentityHashMap<>();
+        for(Tile t : Vars.world.tiles){
+            if(t == null || t.build == null || t.build.items != poolMain.items) continue;
+            seen.put(t.build, Boolean.TRUE);
+        }
+        return seen.size();
+    }
+
+    static void setupPoolScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<120;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            // 找一块 6x4 的空地
+            int ox = -1, oy = -1;
+            outer:
+            for(int y=45;y<110;y++){
+                for(int x=35;x<180;x++){
+                    boolean ok = true;
+                    for(int dy=0;dy<3 && ok;dy++) for(int dx=0;dx<5;dx++){
+                        Tile t = Vars.world.tile(x+dx, y+dy);
+                        if(t == null || t.floor() == null || t.floor().isDeep() || t.block() != Blocks.air){ ok = false; break; }
+                    }
+                    if(ok){ ox = x; oy = y; break outer; }
+                }
+            }
+            if(ox < 0){ Log.err("[drv] pool 没找到空地"); return; }
+
+            Block gen = null;
+            for(Block b : Vars.content.blocks())
+                if(b.getClass().getName().equals("combine.production.CombinedGenerator") && b.size == 1 && b.hasItems){ gen = b; break; }
+            if(gen == null){ Log.err("[drv] pool 没找到组合发电机"); return; }
+            Log.info("[drv] pool 场景: 方块=@(@) 原点=@,@", gen.name, gen.getClass().getSimpleName(), ox, oy);
+            for(int i = 0; i < 4; i++){
+                Building b = placeBL(gen, ox + i, oy);
+                if(b != null) poolScene.add(b);
+            }
+            poolMain = poolScene.isEmpty() ? null : poolScene.first();
+            // 旁边放电源，免得发电机因为没电不工作
+            Block src = null;
+            for(Block b : Vars.content.blocks()) if(b.name.equals("power-source")) src = b;
+            if(src != null) placeBL(src, ox + 1, oy + 2);
+            Vars.player.unit(null);
+            Core.camera.position.set((ox + 1.5f) * 8f, oy * 8f);
+            Log.info("[drv] pool 场景就绪: @", poolInfo("放下后"));
+        }catch(Throwable t){ Log.err("[drv] setupPoolScene failed", t); }
+    }
+
+    static void poolFill(){
+        try{
+            if(poolMain == null) return;
+            int cap = poolMain.getMaximumAccepted(Items.coal);
+            // 按验收上限"灌满"（游戏里 acceptItem 就是按这个上限放行的），
+            // 不越过上限 —— 越限属于测试自己造出来的非现实状态
+            if(poolMain.items != null) poolMain.items.set(Items.coal, cap);
+            Log.info("[drv] pool 灌满: @", poolInfo("灌满后"));
+        }catch(Throwable t){ Log.err("[drv] poolFill failed", t); }
+    }
+
+    static void poolOpenPanel(){
+        try{
+            if(poolMain == null || !poolMain.isValid()) return;
+            Log.info("[drv] pool 面板前: @", poolInfo("要看面板"));
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            poolMain.getClass().getMethod("display", arc.scene.ui.layout.Table.class).invoke(poolMain, panel);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("组合发电机（组合体共享池）信息面板");
+            d.cont.add(panel).pad(10f);
+            d.show();
+            Log.info("[drv] pool 面板已弹出（子元素=@）", panel.getChildren().size);
+        }catch(Throwable t){ Log.err("[drv] poolOpenPanel failed", t); }
+    }
+
+    static void poolBreakOne(){
+        try{
+            if(poolScene.size < 2) return;
+            // 拆"最后一台"：剩下的成员仍然相邻（整组还连着），能看清"容量变小但库存不丢"
+            Building victim = poolScene.peek();
+            Log.info("[drv] pool 拆前: @", poolInfo("拆前"));
+            if(victim != null && victim.isValid()) victim.tile.setBlock(Blocks.air);
+            Timer.schedule(() -> Log.info("[drv] pool 拆后: @", poolInfo("拆后")), 1f);
+        }catch(Throwable t){ Log.err("[drv] poolBreakOne failed", t); }
+    }
+
+    static String shieldBar(){
+        if(megaUnit == null) return "无巨兽";
+        int fields = 0;
+        float max = 0f, scaled = 0f;
+        for(var a : megaUnit.abilities()){
+            if(a instanceof mindustry.entities.abilities.ForceFieldAbility ff){
+                fields++;
+                max += ff.max;
+                scaled += ff.scaledMax(megaUnit);
+            }
+        }
+        return "力场数=" + fields + " 盾=" + megaUnit.shield() + " max合计=" + max + " scaledMax合计=" + scaled
+            + " 第一条bar比例=" + firstShieldRatio();
+    }
+
+    static String firstShieldRatio(){
+        for(var a : megaUnit.abilities()){
+            if(a instanceof mindustry.entities.abilities.ForceFieldAbility ff)
+                return (megaUnit.shield() / ff.max) + "（上限=" + ff.max + "）";
+        }
+        return "无";
+    }
+
+    /** 每帧把相机钉在巨兽身上（llvmpipe 下相机跟随会跟丢，截图就看不到单位）。 */
+    static void installCameraLock(){
+        var t = new arc.scene.ui.layout.Table();
+        t.touchable = arc.scene.event.Touchable.disabled;
+        t.update(() -> {
+            if(megaUnit != null && megaUnit.isAdded()) Core.camera.position.set(megaUnit.x, megaUnit.y);
+        });
+        Vars.ui.hudGroup.addChild(t);
+    }
+
+    static void megaOpenPanel(){
+        try{
+            if(megaUnit == null) return;
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            megaUnit.type.display(megaUnit, panel);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("组合巨兽信息面板");
+            d.cont.add(panel).pad(10f);
+            d.show();
+            Log.info("[drv] 巨兽信息面板已弹出（子元素=@）frames=@", panel.getChildren().size, frames);
+        }catch(Throwable t){ Log.err("[drv] megaOpenPanel failed", t); }
+    }
+
+    static void megaMerge(){
+        try{
+            Log.info("[drv] 融合前: Groups.unit=@ mace 有效=@ 已添加=@ 血=@ oct 有效=@ 已添加=@ 血=@ 盾=@",
+                Groups.unit.size(),
+                maceUnit == null ? "-" : maceUnit.isValid(), maceUnit == null ? "-" : maceUnit.isAdded(), maceUnit == null ? -1f : maceUnit.health(),
+                octUnit == null ? "-" : octUnit.isValid(), octUnit == null ? "-" : octUnit.isAdded(), octUnit == null ? -1f : octUnit.health(),
+                octUnit == null ? -1f : octUnit.shield());
+            Object gid = combineCall("combine.units.UnitComboDamage", "comboId", new Class<?>[]{Unit.class}, maceUnit);
+            Log.info("[drv] mace comboId=@", gid);
+            Object merged = combineCall("combine.units.UnitComboMerge", "merge", new Class<?>[]{Unit.class}, maceUnit);
+            Log.info("[drv] 融合结果=@", merged);
+            if(merged instanceof Unit u) megaUnit = u;
+            if(megaUnit != null){
+                megaDump("融合后");
+                shot("mega_world");
+            }
+        }catch(Throwable t){ Log.err("[drv] megaMerge failed", t); }
+    }
+
+    static String regionName(arc.graphics.g2d.TextureRegion r){
+        return r == null ? "null" : (r + "@" + System.identityHashCode(r));
+    }
+
+    static void megaDump(String tag){
+        try{
+            if(megaUnit == null){ Log.info("[drv] mega @: 没有巨兽", tag); return; }
+            Unit u = megaUnit;
+            Object dominant = field(u.getClass(), u, "dominant");
+            Object drawScale = field(u.getClass(), u, "drawScale");
+            Log.info("[drv] mega @: type=@ 类=@ 有效=@ 已添加=@ hitSize=@ 血=@/@ 盾=@ 力场数=@ 挂座=@ dominant=@ drawScale=@",
+                tag, u.type.name, u.getClass().getName(), u.isValid(), u.isAdded(), u.hitSize(), u.health(), u.maxHealth(), u.shield(),
+                u.abilities().length, u.mounts().length, dominant, drawScale);
+            for(var a : u.abilities()){
+                Log.info("[drv]   能力 @ (max=@ scaledMax=@)", a.getClass().getName(),
+                    a instanceof mindustry.entities.abilities.ForceFieldAbility ff ? ff.max : "-",
+                    a instanceof mindustry.entities.abilities.ForceFieldAbility ff ? ff.scaledMax(u) : "-");
+            }
+            try{
+                Class<?> mt = Class.forName("combine.units.mega.MegaUnitType", true, ml);
+                Log.info("[drv]   type 是 MegaUnitType? = @ 类=@", mt.isInstance(u.type), u.type.getClass().getName());
+            }catch(Throwable t){ Log.err("[drv] 类型检查失败", t); }
+            if(dominant instanceof UnitType dt){
+                Log.info("[drv]   dominant fullIcon=@ found=@ region=@ found=@ uiIcon=@",
+                    regionName(dt.fullIcon), dt.fullIcon != null && Core.atlas.isFound(dt.fullIcon),
+                    regionName(dt.region), dt.region != null && Core.atlas.isFound(dt.region), regionName(dt.uiIcon));
+            }
+            Log.info("[drv]   type.fullIcon=@ found=@ type.region=@ found=@ drawShields=@ flying=@",
+                regionName(u.type.fullIcon), u.type.fullIcon != null && Core.atlas.isFound(u.type.fullIcon),
+                regionName(u.type.region), u.type.region != null && Core.atlas.isFound(u.type.region),
+                u.type.drawShields, u.type.flying);
+            // 绘制裁剪：EntityGroup.draw 用 clipSize 做视口裁剪
+            try{
+                float clip = u.clipSize();
+                arc.math.geom.Rect vp = Core.camera.bounds(new arc.math.geom.Rect());
+                boolean overlaps = vp.overlaps(u.x - clip / 2f, u.y - clip / 2f, clip, clip);
+                boolean inDrawGroup = false;
+                int drawSize = 0;
+                for(var d : Groups.draw){
+                    drawSize++;
+                    if(d == (Object)u) inDrawGroup = true;
+                }
+                Log.info("[drv]   clipSize=@ 视口=@x@+@x@ 裁剪结果=@ 在绘制组=@ 绘制组大小=@ 在单位组=@",
+                    clip, (int)vp.x, (int)vp.y, (int)vp.width, (int)vp.height, overlaps, inDrawGroup, drawSize,
+                    Groups.unit.contains(o -> o == u));
+            }catch(Throwable t){ Log.err("[drv] 裁剪诊断失败", t); }
+        }catch(Throwable t){ Log.err("[drv] megaDump failed", t); }
+    }
+
+    static Object field(Class<?> c, Object o, String name){
+        Class<?> k = c;
+        while(k != null){
+            try{
+                java.lang.reflect.Field f = k.getDeclaredField(name);
+                f.setAccessible(true);
+                return f.get(o);
+            }catch(Throwable ignored){ k = k.getSuperclass(); }
+        }
+        return null;
+    }
+
+    static float megaShieldMax(){
+        for(var a : megaUnit.abilities()){
+            if(a instanceof mindustry.entities.abilities.ForceFieldAbility ff) return ff.max;
+        }
+        return -1f;
+    }
+
+    static void run(int ticks){
+        for(int i = 0; i < ticks; i++){
+            arc.util.Time.delta = 1f;
+            Vars.logic.update();
+        }
+    }
 
     /** 帧计数器：挂在 HUD 上的空表，只用来数"画面真的跑了多少帧"。 */
     static int frames = 0, framesAtAdd = -1;
@@ -863,6 +1241,137 @@ public class Driver extends Mod{
             }
         }catch(Throwable t){ Log.err("[drv] wallRepairStep failed", t); }
     }
+
+    // ---------------- 核心单位：修废墟 / 重建 / 批量改方向 ----------------
+    static int rbPhase = 0, rbFrames = -1, rbRuins = 0, rbBroken = 0, rbRotConvs = 0, rbStartTick = 0;
+    static Block rbWall, rbConv;
+
+    static void setupRebuildScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.state.rules.derelictRepair = true;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<150;y++) for(int x=30;x<210;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            for(Block b : Vars.content.blocks()){
+                if(rbWall == null && b.name.equals("copper-wall")) rbWall = b;
+                if(rbConv == null && b.name.equals("conveyor")) rbConv = b;
+            }
+            if(rbWall == null || rbConv == null){ Log.err("[drv] rebuild 场景缺方块 wall=@ conv=@", rbWall, rbConv); return; }
+
+            // 找一块陆地
+            int ox = -1, oy = -1;
+            outer:
+            for(int y = 45; y < 130; y++){
+                for(int x = 35; x < 190; x++){
+                    boolean ok = true;
+                    for(int dy = 0; dy < 22 && ok; dy++) for(int dx = 0; dx < 22; dx++){
+                        Tile t = Vars.world.tile(x + dx, y + dy);
+                        if(t == null || t.floor().isDeep() || t.block() != Blocks.air){ ok = false; break; }
+                    }
+                    if(ok){ ox = x; oy = y; break outer; }
+                }
+            }
+            if(ox < 0){ Log.err("[drv] 没找到陆地"); return; }
+            rdOx = ox; rdOy = oy;
+
+            // 玩家的核心 + 材料（重建要吃料）
+            Building core = placeBL(Blocks.coreShard, ox + 18, oy + 18);
+            if(core != null && core.items != null){
+                for(Item it : Vars.content.items()) core.items.set(it, 4000);
+            }
+            // 4x4 面 derelict 废墟
+            for(int y=0;y<4;y++) for(int x=0;x<4;x++){
+                Building w = placeBL(rbWall, ox + 2 + x, oy + 6 + y);
+                if(w != null) w.changeTeam(Team.derelict);
+            }
+            // 4 台"被摧毁的建筑"（队伍计划表：原版 rebuildArea 的第一段来源）
+            Vars.player.team().data().plans.clear();
+            for(int x=0;x<4;x++){
+                Vars.player.team().data().plans.addLast(new Teams.BlockPlan(ox + 8 + x, oy + 6, (short)0, rbConv, null));
+            }
+            // 一排方向 0 的传送带（后面拖一排方向 1 的计划 = 批量改方向）
+            for(int x=0;x<8;x++){
+                Building c = placeBL(rbConv, ox + 2 + x, oy + 2);
+                if(c != null){ c.rotation = 0; try{ c.updateProximity(); }catch(Throwable ignored){} }
+            }
+            // 把镜头对到场景中央（能同时看到三块）
+            Core.camera.position.set((ox + 6) * 8f, (oy + 6) * 8f);
+
+            // 真客户端里 player.unit() 默认是 null（玩家还没接管单位）：
+            // 手动造一台核心单位（= 核心机，本模组按核心尺寸给它挂了多把建造武器）并接管它，
+            // 这样下面调原版 InputHandler.rebuildArea 才走得通（它要求 player.isBuilder()）。
+            Unit u = Vars.player.unit();
+            if(u == null){
+                u = ((mindustry.world.blocks.storage.CoreBlock) Blocks.coreShard).unitType.create(Vars.player.team());
+                u.set((ox + 6) * 8f, (oy + 6) * 8f);
+                u.add();
+                Vars.player.unit(u);
+            }else{
+                u.set((ox + 6) * 8f, (oy + 6) * 8f);
+            }
+            int mountCount = 0;
+            for(var wm : u.mounts) if(wm.weapon != null && wm.weapon.getClass().getName().equals("combine.MultiBuildWeapon")) mountCount++;
+            Log.info("[drv] rebuild 场景: 原点=@,@ 核心=@ 废墟=16 待重建=4 玩家单位=@ 建造挂座=@",
+                ox, oy, core, u.type.name, mountCount);
+
+            rbRuins = 16; rbBroken = 4; rbRotConvs = 8;
+        }catch(Throwable t){ Log.err("[drv] setupRebuildScene failed", t); }
+    }
+
+    /** 场景摆好后（截图"改之前"）再下命令：原版 B 键框选 + 拖一排原地转向。 */
+    static void rebuildGo(){
+        try{
+            Unit u = Vars.player.unit();
+            if(u == null){ Log.err("[drv] rebuildGo: 玩家没单位"); return; }
+            shot("rebuild_before");
+            // 原版 B 键框选（真流程）：一次把 废墟 + 被摧毁建筑 全排进玩家单位的队列
+            Vars.control.input.rebuildArea(rdOx, rdOy + 2, rdOx + 12, rdOy + 10);
+            // 再拖一排原地转向计划（和玩家拖着传送带划过自己那一排生成的一样）
+            for(int x=0;x<8;x++) u.addBuild(new mindustry.entities.units.BuildPlan(rdOx + 2 + x, rdOy + 2, 1, rbConv, null));
+            rbStartTick = (int)Vars.state.tick;
+            Log.info("[drv] rebuild 场景: 排好计划 @ 条（框选 + 8 条转向）", u.plans().size);
+        }catch(Throwable t){ Log.err("[drv] rebuildGo failed", t); }
+    }
+
+    static void rebuildStep(){
+        try{
+            if(rbFrames < 0){ rbFrames = frames; return; }
+            int repaired = 0, rebuilt = 0, rotated = 0;
+            for(Tile t : Vars.world.tiles){
+                if(t == null || t.build == null) continue;
+                if(t.block() == rbWall && t.team() == Team.sharded) repaired++;
+                else if(t.block() == rbConv && t.build.rotation == 1) rotated++;
+            }
+            // 重建好的传送带（被摧毁建筑那 4 格）
+            for(int x = 0; x < 4; x++){
+                Tile t = Vars.world.tile(rdOx + 8 + x, rdOy + 6);
+                if(t != null && t.block() == rbConv && t.build != null) rebuilt++;
+            }
+            Unit u = Vars.player.unit();
+            int queue = u == null || u.plans() == null ? -1 : u.plans().size;
+            Log.info("[drv] rebuild 检查@: 废墟修好=@/@ 重建成=@/@ 转向=@/@ 队列=@ 暂停=@ tick=@ state=@ isGame=@ 单位=@(@,@) updateBuilding=@ canBuild=@",
+                rbPhase, repaired, rbRuins, rebuilt, rbBroken, rotated, rbRotConvs, queue,
+                Vars.state.isPaused(), (int)Vars.state.tick,
+                Vars.state.getState(), Vars.state.isGame(),
+                u == null ? "null" : u.type.name, u == null ? -1 : (int)(u.x / 8), u == null ? -1 : (int)(u.y / 8),
+                u == null ? "-" : u.updateBuilding(), u == null ? "-" : u.canBuild());
+            if(rbPhase == 0){
+                rbPhase = 1;
+            }else if(repaired >= rbRuins && rebuilt >= rbBroken && rotated >= rbRotConvs){
+                shot("rebuild_after");
+                Log.info("[drv] rebuild 完成: 废墟=@ 重建=@ 转向=@ (用时 @ 渲染帧 / @ 逻辑 tick)",
+                    repaired, rebuilt, rotated, frames - rbFrames, (int)Vars.state.tick - rbStartTick);
+                Core.app.exit();
+            }
+        }catch(Throwable t){ Log.err("[drv] rebuildStep failed", t); }
+    }
+
+    static int rdOx = -1, rdOy = -1;
 
     // ---------------- 组合连接器 ----------------
     static Building connA, connB, connLink, connNode;

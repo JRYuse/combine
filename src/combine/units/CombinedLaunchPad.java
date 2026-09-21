@@ -667,7 +667,7 @@ public class CombinedLaunchPad extends LaunchPad {
                 }
             }
             if (items != null) {
-                for (Item item : involvedItems) {
+                for (Item item : combine.util.ComboReflect.displayItems(items, involvedItems)) {
                     int total = items.get(item);
                     if (total > 0) {
                         final int t = total, c = Math.max(comboTotalItemCap, 1);

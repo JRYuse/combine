@@ -67,13 +67,22 @@ verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑�
 
 原理：`Xvfb` 提供离屏 X，`SDL_VIDEODRIVER=offscreen` 让 SDL 走 EGL，Mesa 软渲染（llvmpipe）出画面；
 截图由 `verify/client/Driver.java`（一个驱动 mod）用 `ScreenUtils.saveScreenshot` 自己抓。
-驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn|bp|wall|rep|pwr|tech|tech2|technode`、`-Ddrv.out=<目录>`
+驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn|bp|wall|rebuild|rep|pwr|tech|tech2|technode|mega|pool`、`-Ddrv.out=<目录>`
 （`tech` = 主菜单直接开科技树；`tech2` = 进图后再开、并把每棵根树的树页都切一遍截图；`technode` = 把镜头居中到组合连接器/液体卸载器节点再截图，用来核对节点在不在两棵树上、图标对不对）
 （`gen` = 核反应堆 + 一台容量 10 万的发电机，看燃料条/发电效率；`status` = 方块状态菱形 + 容器面板；
 `conn` = 两台组合工厂 + 一串组合连接器，看连接器贴图/连线与信息面板；
 `bp` = 蓝图里存组合连接器，重进游戏后还在不在；`wall` = 组合墙修满不再显示破损；
+`rebuild` = 核心机（玩家单位）走原版 B 键框选 rebuildArea + 拖一排原地转向计划：
+4x4 台 derelict 废墟 + 4 台被摧毁建筑 + 8 台改方向的传送带，看是不是当场全做完
+（截图 `*_rebuild_before.png` / `*_rebuild_after.png`，日志里报"废墟/重建/转向"各多少）；
 `rep` = 用户复现存档（stainedMountains）连续存读档，看物品总量会不会涨，
 数据目录用 `verify/make-repro-dataset.sh` 造）。
+（`mega` = mace + 两台 oct 融合成组合巨兽：看身体有没有画出来（混合编组会升空 → 走飞行层）、
+信息面板上的力墙条有没有超 100%（截图 `*_mega_world.png` / `*_mega_hud.png` / `*_mega_panel.png`，
+日志里报 dominant/drawScale/力场上限/bar 比例）；
+`pool` = 4 台并排的组合发电机共享一口池子、灌满燃料 → 开信息面板截图 → 拆掉一台成员再看：
+面板里要能看到池子里的燃料、拆成员不能按容量销毁库存
+（截图 `*_pool_panel_full.png` / `*_pool_panel_after.png`，日志里报组容量/池总量/世界总量））
 
 **注意**：软渲染下一帧很慢（~5fps），截图之间要留够时间，别用 0.5 秒的小间隔下结论。
 
@@ -116,10 +125,13 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 | `combine.dbg.ModStorageCoreTest` | 需要"别的模组写的仓库"（`verify/make-modstorage-fixture.sh` 造一个） | 模组仓库挨着核心照样扩容、且不被组合压掉 |
 | `combine.dbg.CoreCapacityTest` | 任意 | 造/拆容器不丢不涨、存读档一分不差、仓库链读档不涨 |
 | `combine.dbg.UnitBarTest` | 任意 | 组合单位工厂/升级厂有原版那些 bar（含单位数量/上限） |
+| `combine.dbg.MegaFieldTest` | 任意（有 mace + oct） | 组合巨兽：血上限=成员之和、力场合并成 1 份（上限=成员之和 → 力墙条不超 100%）、`flyingLayer`/`clipSize` 不是 late-init 留下的 -1（否则悬浮时画在地板下面=不显示） |
+| `combine.dbg.GeneratorPoolKeepTest` | 任意（有 combustion-generator） | 组合发电机满池后拆掉一台成员：池子不被按容量截断（容量只拦新物品进入）、世界物品总量守恒 |
 | `combine.dbg.GeneratorNuclearTest` | 任意（有 thorium-reactor） | 核模式发电效率 = 燃料 / 核反应堆总容量（≤1），组合进大容量建筑不再要巨量燃料 |
 | `combine.dbg.LinkWallRepairTest` | 任意（有 copper-wall + mend-projector） | 组合墙血池：伤害整组分摊；修复投影能把整组修到满血（不再永远"破损"） |
 | `combine.dbg.NewBuildAfterLoadTest` | 任意 | 读档后新建/拆掉组合建筑，核心与各组合建筑的物品总量一份不差 |
 | `combine.dbg.DerelictRepairTest` | 任意 | team=derelict 的废墟：排一串计划（蓝图框）后应当**全部**立刻被修好 |
+| `combine.dbg.RebuildAreaTest` | 任意（有 copper-wall + conveyor） | 核心机走原版 rebuildArea（废墟+被摧毁建筑）与"拖一排原地转向"：装本模组建造武器的核心机要 1 秒内全做完，对照组（摘掉建造武器）当基线。**必须用真实 delta（1/60）跑**，delta=1 会把原版"一秒一格"的节流掩盖掉 |
 | `combine.dbg.HeatProducerTest` | 任意（有 slag-heater） | 矿渣制热机：每台对外只报**自己**那份热量（邻着 N 台不会被算 N 遍），组内需热方仍拿到整组热量 |
 | `combine.dbg.LaunchLoadoutKeyTest` | 任意 | 发射蓝图与核心的对应：`Planet.defaultCore` 指向组合核心；serpulo/erekir 发射不会退回 core-shard 蓝图（Erekir 不该要铜/铅） |
 | `combine.dbg.BlueprintReloadTest` | 任意（先 `-Dbr.phase=write` 再 `-Dbr.phase=read`） | 蓝图里的组合连接器：按客户端顺序（读蓝图早于模组建方块）会被丢掉，模组重读蓝图库后恢复 |

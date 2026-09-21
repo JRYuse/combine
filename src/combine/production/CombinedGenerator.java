@@ -513,27 +513,13 @@ public class CombinedGenerator extends ConsumeGenerator {
         }
       }
 
-      if (newLeader.items != null && totalItemCap > 0) {
-        // FIX: 每种物品独立上限——只有单一类型自身超过上限时才截断该类型。
-        // 旧写法按池子总量截断，与按类型验收不一致：两种燃料各自顶到上限时
-        // 池子总量必然超过总容量，任何重建（包括拆除周围非组合建筑触发的
-        // onProximityUpdate -> rebuildCombo）都会把超出总量部分销毁。
-        for (Item item : content.items()) {
-          int amt = newLeader.items.get(item);
-          if (amt > totalItemCap) {
-            newLeader.items.remove(item, amt - totalItemCap);
-          }
-        }
-      }
-      if (newLeader.liquids != null && totalLiqCap > 0.001f) {
-        // 上限是"每种液体各自"的：把每种超标液体各自截回组容量
-        for (Liquid liquid : cachedLiquids) {
-          float amt = newLeader.liquids.get(liquid);
-          if (amt > totalLiqCap + 0.001f) {
-            newLeader.liquids.remove(liquid, amt - totalLiqCap);
-          }
-        }
-      }
+      // 【不许在重建时按容量销毁库存】这里原来按"这次算出来的组容量"截断物品/液体：
+      // 每种物品的验收上限就是组容量（acceptItem 里 items.get(item) < getMaximumAccepted），
+      // 所以池子是"每种都能装满一份"，总量天然超过组容量；而组容量会随成员增减变化 ——
+      // 满池时拆掉一台成员（或只是周围方块变化触发一次 rebuildCombo）就把超出新容量的
+      // 那份真删掉，表现就是用户报的"组合工厂物资满后有时也会莫名其妙清空物品"。
+      // 容量只该拦住"新物品进入"（acceptItem/acceptLiquid 已经在做），存量一律保留
+      // （同 CombinedCrafter/CombinedDrill/组合仓库：宁可超容也不丢物品）。
 
       for (CombinedGeneratorBuild oldMember : oldGroup) {
         if (oldMember != this && oldMember.isValid() && !newGroup.contains(oldMember)) {
@@ -1421,7 +1407,10 @@ public class CombinedGenerator extends ConsumeGenerator {
       }
 
       if (items != null) {
-        for (Item item : cachedItems) {
+        // 列"块声明过的 + 池子里实际有的"：发电机的燃料是运行期过滤出来的（ConsumeItemFilter），
+        // 不在 cachedItems 里 —— 只按 cachedItems 列，池子灌满燃料面板上却一行物品都没有
+        // （用户报的「观测组合建筑物品面板时（看着像）清空所有物资」）。
+        for (Item item : combine.util.ComboReflect.displayItems(items, cachedItems)) {
           int total = items.get(item);
           if (total > 0) {
             final int t = total;

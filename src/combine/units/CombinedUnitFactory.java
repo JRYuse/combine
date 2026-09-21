@@ -284,6 +284,8 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
                     } else {
                         this.progress %= 1.0F;
                         Unit unit = plan.unit.create(this.team);
+                        // 组合单位工厂产出的单位继承本建筑组合体的组标记，用于共享承伤。
+                        UnitComboDamage.tagProduced(unit, this);
                         if (unit.isCommandable()) {
                             if (this.commandPos != null) {
                                 unit.command().commandPosition(this.commandPos);

@@ -651,7 +651,7 @@ public class CombinedOverdriveProjector extends OverdriveProjector {
                 }
             }
             if (items != null) {
-                for (Item item : involvedItems) {
+                for (Item item : combine.util.ComboReflect.displayItems(items, involvedItems)) {
                     int total = items.get(item);
                     if (total > 0) {
                         final int t = total, c = Math.max(comboTotalItemCap, 1);

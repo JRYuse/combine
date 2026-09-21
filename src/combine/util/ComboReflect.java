@@ -628,4 +628,24 @@ public class ComboReflect {
     }
 
     private static final arc.struct.IntMap<boolean[]> neededItemCache = new arc.struct.IntMap<>();
+
+    /**
+     * 信息面板该列哪些物品：**块声明过的输入/输出**（{@code cachedItems}）+ **池子里实际有的**。
+     *
+     * 为什么必须带上"池子里实际有的"：很多方块的输入是**运行期动态**的（发电机的燃料是
+     * {@code ConsumeItemFilter} 按可燃度过滤的任意物品、单位工厂按配方、蓝图方块按建造需求），
+     * 这些都不在 {@code cachedItems} 里。结果就是"池子里明明堆满了燃料，点开组合建筑的信息面板
+     * 却一行物品都不显示"——用户报的「观测组合建筑物品面板时（看着像）清空所有物资」。
+     */
+    public static arc.struct.Seq<mindustry.type.Item> displayItems(
+            mindustry.world.modules.ItemModule mod, Iterable<mindustry.type.Item> declared){
+        arc.struct.Seq<mindustry.type.Item> out = new arc.struct.Seq<>();
+        if(declared != null)
+            for(mindustry.type.Item it : declared)
+                if(it != null && !out.contains(it)) out.add(it);
+        if(mod != null)
+            for(mindustry.type.Item it : content.items())
+                if(mod.get(it) > 0 && !out.contains(it)) out.add(it);
+        return out;
+    }
 }

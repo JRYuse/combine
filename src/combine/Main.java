@@ -186,6 +186,23 @@ public class Main extends Mod {
     // （协作分组自己变了的时候，CoopCombo.rebuild 会同步调 ComboNet.rebuild，不靠这个顺序。）
     CoopCombo.register();
 
+    // 组合单位共享承伤/修复：用镜像实体类替换全部原版单位实体，拦截 rawDamage/heal
+    // 按"同 comboId 同队伍且在范围内"的组合成员当前生命占比分摊；
+    // 产出来自组合单位工厂/组合重构厂的单位会自动打组标记（comboId = 领头建筑坐标+1）。
+    combine.units.UnitComboDamage.register();
+
+    // 组合火力共享：正在开火的单位可调用组里空闲单位的就绪武器代打，发射位置以开火单位为基准。
+    combine.units.UnitComboFire.register();
+
+    // 手动编组 UI：指挥模式下单选一个己方单位后，屏幕顶部出现"组合"按钮，
+    // 可选择与周围单位组成新组合、并入附近单位组或退出组合（无头服务端无 UI，跳过）。
+    if(!Vars.headless) combine.units.UnitComboBind.register();
+
+    // 组合巨兽：单位组（或一批相邻单位）可融合为单一巨兽——血量/护甲/护盾/武器/能力
+    // 全部叠加保留，贴图取数量最多的成员类型并按综合 hitSize 缩放，飞行/海军形态按
+    // 成员构成判定；点选巨兽可随时解体。类型与实体 ID 登记必须服务端/客户端都执行。
+    combine.units.UnitComboMerge.register();
+
     // 组合体↔电网的对账（共用一份 PowerModule 的组合建筑在原版并网/拆网里会掉队，
     // 表现就是"读档/拆东西之后要动一下电网才来电"，见 combine.util.ComboPower）
     combine.util.ComboPower.register();
