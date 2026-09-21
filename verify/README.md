@@ -83,7 +83,7 @@ verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑�
 派生类型共用基础巨兽的占位 id，占位图标原来写死成 dagger、指令也只有 [移动, 组合]，
 所以 poly 这类工程单位合体后 自动重建/辅助建造/治疗建筑/挖矿 会消失）
 （截图 `*_mega_world.png` / `*_mega_hud.png` / `*_mega_panel.png` / `*_mega_command.png`，
-日志里报 dominant/drawScale/力场上限/bar 比例/引擎参数/面板图标与代表成员图标是否同一个）；
+日志里报 dominant/drawScale/力场上限/bar 比例/引擎参数/面板图标与代表成员图标是否同一个、指令表是不是并集、两艘同型船合体速度有没有砍半）；
 `pool` = 4 台并排的组合发电机共享一口池子、灌满燃料 → 开信息面板截图 → 拆掉一台成员再看：
 面板里要能看到池子里的燃料、拆成员不能按容量销毁库存
 （截图 `*_pool_panel_full.png` / `*_pool_panel_after.png`，日志里报组容量/池总量/世界总量）；

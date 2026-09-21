@@ -219,6 +219,67 @@ public class MegaFieldTest implements ApplicationListener{
             check("命令面板用的占位类型也有这些指令（面板才会列出来）", placeholderHas);
         }
 
+        // 速度/物品上限/建造速度都必须按【成员个数】聚合：
+        // 两艘同型船合体原来会变成"一半速度"（tally 按类型遍历、求和却没乘成员数）
+        Unit risso1 = UnitTypes.risso.create(Team.sharded);
+        risso1.set(ox * 8f - 400f, oy * 8f);
+        risso1.add();
+        Unit risso2 = UnitTypes.risso.create(Team.sharded);
+        risso2.set(ox * 8f - 380f, oy * 8f);
+        risso2.add();
+        run(20);
+        Unit shipMega = null;
+        try{
+            Class<?> c = Class.forName("combine.units.UnitComboMerge", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+            Object m4 = c.getMethod("merge", Unit.class).invoke(null, risso1);
+            if(m4 instanceof Unit u4) shipMega = u4;
+        }catch(Throwable ignored){}
+        if(shipMega != null){
+            System.out.println("[MF] 两艘 risso 合体: speed=" + shipMega.type.speed + "（单台 " + UnitTypes.risso.speed
+                + "，原来是它的一半） 物品上限=" + shipMega.type.itemCapacity + "（单台 " + UnitTypes.risso.itemCapacity + "）"
+                + " hitSize=" + shipMega.hitSize());
+            check("两艘同型船合体后速度 = 单台速度（原来砍半：" + (UnitTypes.risso.speed / 2f) + "）",
+                Math.abs(shipMega.type.speed - UnitTypes.risso.speed) < 0.001f);
+            check("物品上限按成员求和（" + shipMega.type.itemCapacity + " = 2 × " + UnitTypes.risso.itemCapacity + "）",
+                shipMega.type.itemCapacity == UnitTypes.risso.itemCapacity * 2);
+        }
+        Unit risso3 = UnitTypes.risso.create(Team.sharded);
+        risso3.set(ox * 8f - 500f, oy * 8f);
+        risso3.add();
+        Unit minke = UnitTypes.minke.create(Team.sharded);
+        minke.set(ox * 8f - 480f, oy * 8f);
+        minke.add();
+        run(20);
+        Unit mixedShip = null;
+        try{
+            Class<?> c = Class.forName("combine.units.UnitComboMerge", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+            Object m5 = c.getMethod("merge", Unit.class).invoke(null, risso3);
+            if(m5 instanceof Unit u5) mixedShip = u5;
+        }catch(Throwable ignored){}
+        if(mixedShip != null){
+            float expect = (UnitTypes.risso.speed + UnitTypes.minke.speed) / 2f;
+            System.out.println("[MF] risso + minke 合体: speed=" + mixedShip.type.speed
+                + " 期望（两台平均）=" + expect);
+            check("不同型船合体速度 = 两台速度的平均值", Math.abs(mixedShip.type.speed - expect) < 0.001f);
+        }
+        // 两台 poly：建造速度要按成员翻倍（"多个工程单位造得更快"）
+        Unit poly1 = UnitTypes.poly.create(Team.sharded);
+        poly1.set(ox * 8f + 400f, oy * 8f);
+        poly1.add();
+        Unit poly2 = UnitTypes.poly.create(Team.sharded);
+        poly2.set(ox * 8f + 420f, oy * 8f);
+        poly2.add();
+        run(20);
+        Unit polyPair = null;
+        try{
+            Class<?> c = Class.forName("combine.units.UnitComboMerge", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+            Object m6 = c.getMethod("merge", Unit.class).invoke(null, poly1);
+            if(m6 instanceof Unit u6) polyPair = u6;
+        }catch(Throwable ignored){}
+        if(polyPair != null)
+            check("两台 poly 合体建造速度翻倍（" + polyPair.type.buildSpeed + " = 2 × " + UnitTypes.poly.buildSpeed + "）",
+                Math.abs(polyPair.type.buildSpeed - UnitTypes.poly.buildSpeed * 2f) < 0.001f);
+
         // 命令面板按 unit.type.id → content.unit(id) 取图标；派生类型共用基础巨兽的占位 id，
         // 所以占位类型必须带"组合巨兽"这个名字（图标由客户端同步，见 compTypeFor）
         var byId = Vars.content.unit(mega.type.id);

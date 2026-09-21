@@ -363,9 +363,14 @@ public class MegaUnitEntity extends UnitEntity{
         int tier = -1, cap = 0, spdCount = 0;
         boolean mineFloor = false, mineWalls = false;
         for(UnitType t : tally.keys()){
-            // 速度 = 成员速度平均值（总和÷成员数）：慢的成员会拖慢整体，快的也带不动全队
-            spd += t.speed;
-            spdCount += tally.get(t);
+            // 【按成员个数加权】这里 tally 是按"类型"遍历的（每种类型只来一次），
+            // 所以求和必须乘上该类型的成员数 —— 原来只加一次、计数却按成员数，
+            // 两艘**同型**船合体速度直接砍半（用户报的"两艘船组合后速度超级慢"），
+            // 三台同型单位更是只剩 1/3。
+            // 语义不变：速度 = 成员速度平均值（总和 ÷ 成员数），慢的成员拖慢整体、快的带不动全队。
+            int count = tally.get(t);
+            spd += t.speed * count;
+            spdCount += count;
             if(t.mineSpeed > 0f && t.mineTier >= 0){
                 mineSpd = Math.max(mineSpd, t.mineSpeed);
                 mineRange = Math.max(mineRange, t.mineRange);
@@ -373,10 +378,12 @@ public class MegaUnitEntity extends UnitEntity{
             tier = Math.max(tier, t.mineTier);
             mineFloor |= t.mineFloor;
             mineWalls |= t.mineWalls;
-            // 原版 buildSpeed 以 -1 表示"不能建造"，只叠加正值
-            if(t.buildSpeed > 0f) buildSpd += t.buildSpeed;
+            // 原版 buildSpeed 以 -1 表示"不能建造"，只叠加正值；
+            // "多个工程单位造得更快"同样要按成员个数加（两台 poly 合体 = 双倍建造速度）
+            if(t.buildSpeed > 0f) buildSpd += t.buildSpeed * count;
             buildRange = Math.max(buildRange, t.buildRange);
-            cap += Math.max(t.itemCapacity, 0);
+            // 物品上限 = Σ 成员（不是 Σ 类型）
+            cap += Math.max(t.itemCapacity, 0) * count;
         }
         ct.speed = spdCount > 0 ? Math.max(spd / spdCount, 0.3f) : 0.8f;
         ct.mineTier = tier;
