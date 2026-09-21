@@ -726,6 +726,9 @@ public class ComboNet {
     private static boolean isCorePool(Building b){
         if(b instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild) return true;
         if(b instanceof CombinedStorageBlock.CombinedStorageBuild s) return s.linkedCoreOf() != null;
+        // 【注意】这里**不能**用"模块正好是核心那份"来判断：组合工厂临时挂在核心池上时
+        // 也满足这个条件，那样断开组合后它会被当成核心成员、永远留在核心库存上。
+        // 判定"谁有资格待在核心池里"只看并仓状态；usesCorePool() 只在挑池子时当偏好用。
         return false;
     }
 
@@ -752,7 +755,20 @@ public class ComboNet {
         for(var entry : owners.entrySet()){
             IntSet ownerComps = entry.getValue();
             if(ownerComps.size <= 1) continue;
-            if(coreOwned.containsKey(entry.getKey())) continue;
+            if(coreOwned.containsKey(entry.getKey())){
+                // 核心那份池子不拆（核心 + 并仓仓库本来就说好共用）。
+                // 但**不是**核心成员的（例如被组合节点接进来的组合工厂）必须脱离：
+                // 断开之后还挂在核心库存上，就会出现"组合断了、物品还跟着那台机器走"。
+                ItemModule core = entry.getKey();
+                for(int i = 0; i < comps.size; i++){
+                    for(Building m : comps.get(i)){
+                        if(m.items == core && !isCorePool(m)){
+                            m.items = new ItemModule();
+                        }
+                    }
+                }
+                continue;
+            }
 
             ItemModule old = entry.getKey();
             int n = ownerComps.size;
@@ -808,7 +824,18 @@ public class ComboNet {
         for(var entry : owners.entrySet()){
             IntSet ownerComps = entry.getValue();
             if(ownerComps.size <= 1) continue;
-            if(coreOwned.containsKey(entry.getKey())) continue;
+            if(coreOwned.containsKey(entry.getKey())){
+                // 同物品：核心的液体池不拆，但非核心成员要脱离
+                LiquidModule core = entry.getKey();
+                for(int i = 0; i < comps.size; i++){
+                    for(Building m : comps.get(i)){
+                        if(m.liquids == core && !isCorePool(m)){
+                            m.liquids = new LiquidModule();
+                        }
+                    }
+                }
+                continue;
+            }
 
             LiquidModule old = entry.getKey();
             int n = ownerComps.size;
@@ -906,6 +933,25 @@ public class ComboNet {
     }
 
     /**
+     * 手里这份模块**就是某座核心的库存**吗（不管它是核心自己、并仓的仓库，还是别人的模块在
+     * 网络重整时被换成了核心那份）。
+     *
+     * 【为什么还要查一遍】并仓状态（linkedCore）是 CombinedStorageBlock 那边重算出来的，
+     * 和 ComboNet 的重建不是同一时刻：中间那一瞬 coreLinked() 可能还是 false，
+     * 于是网络池会挑成组合工厂那一份 —— 玩家看到的就是"核心的东西全跑到工厂里去了"
+     * （用户报的：组合节点接组合仓库 + 石墨压缩机）。
+     */
+    private static boolean usesCorePool(Building m){
+        if(m == null || m.items == null || state == null || m.team == null) return false;
+        var data = state.teams.get(m.team);
+        if(data == null || data.cores == null) return false;
+        for(var core : data.cores){
+            if(core != null && core.items == m.items) return true;
+        }
+        return false;
+    }
+
+    /**
      * 取 pos 最小的成员手里的那份模块，保证每次重建选到同一个池对象。
      *
      * 例外：并进核心的组合仓库，它的模块**就是核心库存**。如果网络里有这么一台，
@@ -915,7 +961,7 @@ public class ComboNet {
         ItemModule core = null;
         int corePos = Integer.MAX_VALUE;
         for(Building m : members){
-            if(m.items != null && coreLinked(m) && candidates.contains(m.items, true) && m.pos() < corePos){
+            if(m.items != null && (coreLinked(m) || usesCorePool(m)) && candidates.contains(m.items, true) && m.pos() < corePos){
                 core = m.items;
                 corePos = m.pos();
             }
@@ -937,7 +983,7 @@ public class ComboNet {
         LiquidModule core = null;
         int corePos = Integer.MAX_VALUE;
         for(Building m : members){
-            if(m.liquids != null && coreLinked(m) && candidates.contains(m.liquids, true) && m.pos() < corePos){
+            if(m.liquids != null && (coreLinked(m) || usesCorePool(m)) && candidates.contains(m.liquids, true) && m.pos() < corePos){
                 core = m.liquids;
                 corePos = m.pos();
             }

@@ -1,5 +1,6 @@
 package combine.units;
 import combine.util.ComboReflect;
+import combine.util.ComboPower;
 import arc.struct.IntSet;
 import arc.struct.ObjectSet;
 import arc.struct.Queue;
@@ -13,7 +14,6 @@ import mindustry.world.consumers.ConsumeItemDynamic;
 import mindustry.world.consumers.ConsumeItems;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
-import mindustry.world.modules.PowerModule;
 
 import static mindustry.Vars.*;
 
@@ -88,8 +88,6 @@ public interface IUnitCombo {
                     B(this).items = B(leaderBuild).items;
                 if (B(leaderBuild).liquids != null)
                     B(this).liquids = B(leaderBuild).liquids;
-                if (B(leaderBuild).power != null)
-                    B(this).power = B(leaderBuild).power;
             } else {
                 gLeader(null);
             }
@@ -144,6 +142,10 @@ public interface IUnitCombo {
         if (oldGroup.size > newGroup.size)
             splitAssets(oldGroup, newGroup);
         shareModules(newLeader);
+        // 组结构变了：全组过一遍电网对账（原版并网/拆网在组合体上可能漏掉几台）
+        for (IUnitCombo b : newGroup)
+            if (B(b).isValid())
+                ComboPower.mark(B(b));
 
         for (IUnitCombo old : oldGroup) {
             if (old != this && B(old).isValid() && !newGroup.contains(old)) {
@@ -332,25 +334,10 @@ public interface IUnitCombo {
                     B(member).liquids = B(leader).liquids;
         }
 
-        // FIX[电力共享]: 全组共用领导者的电力模块——任一成员接电即整组通电。
-        // links 存在 PowerModule 里: 先摘旧电网, 把成员自己的节点链接并入领导者模块, 再换模块
-        if (B(leader).power != null) {
-            for (IUnitCombo member : group()) {
-                if (member != leader && B(member).isValid() && B(member).power != null
-                        && B(member).power != B(leader).power) {
-                    PowerModule oldPower = B(member).power;
-                    if (oldPower.graph != null)
-                        oldPower.graph.remove(B(member));
-                    for (int li = 0; li < oldPower.links.size; li++) {
-                        int link = oldPower.links.get(li);
-                        if (!B(leader).power.links.contains(link))
-                            B(leader).power.links.add(link);
-                    }
-                    B(member).power = B(leader).power;
-                    B(member).updatePowerGraph();
-                }
-            }
-        }
+        // 【不再共用 PowerModule】见 CombinedCrafter.shareModules 的说明：共用一份模块会让
+        // "电网里算进哪几台/算多少电"变成原版并网顺序的副作用 —— 在线摆的基地和读档/入服的基地
+        // 会算出不同的电力数（联机时服务端与客户端对不上），拆网时还会把成员漏在旧电网上。
+        // 组合方块本来就是导电体，相邻/连线自动并网，每台各留自己的模块即可。
     }
 
     /** 完工料费实时复核：不依赖 potentialEfficiency 缓存, 直接按消耗器将要扣除的量盘点共享池 */
@@ -414,25 +401,7 @@ public interface IUnitCombo {
                 if (shared)
                     B(this).liquids = new LiquidModule();
             }
-            if (B(this).power != null) {
-                boolean sharedPower = false;
-                for (IUnitCombo member : members) {
-                    if (member != this && B(member).isValid() && B(member).power == B(this).power) {
-                        sharedPower = true;
-                        break;
-                    }
-                }
-                if (sharedPower) {
-                    // 换独立模块但保留电力连接(links 存在模块里, 直接 new 会丢光)
-                    PowerModule oldPower = B(this).power;
-                    B(this).power = new PowerModule();
-                    if (oldPower != null) {
-                        B(this).power.links.addAll(oldPower.links);
-                        B(this).power.status = oldPower.status;
-                    }
-                    B(this).updatePowerGraph();
-                }
-            }
+            // 电力模块各归各的（见 shareModules），拆自己的时候不用再分离共享模块
             IUnitCombo l = leader();
             if (l != null && B(l).isValid() && l != this)
                 l.gDirty(true);
@@ -506,7 +475,9 @@ public interface IUnitCombo {
                 survivors.get(i).gDirty(true);
                 survivors.get(i).gItemCap(0);
                 survivors.get(i).gLiquidCap(0f);
+                ComboPower.markAround(bb);
             }
+            ComboPower.markAround(B(this));
         }
         gLeader(null);
         gGroup(new Seq<>());

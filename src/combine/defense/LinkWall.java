@@ -124,7 +124,7 @@ public class LinkWall extends Wall {
     });
   }
 
-  public class LinkWallBuild extends Building implements IComboGrouped {
+  public class LinkWallBuild extends Building implements IComboGrouped, combine.saves.ComboSaved {
 
     public Seq<LinkWallBuild> links = new Seq<>();
     public LinkWallBuild linkLeader;
@@ -506,30 +506,50 @@ public class LinkWall extends Wall {
             x, y, 0f, 31f);
     }
 
+    // 地图区里只写"原版那一块"的字节：墙什么都不加、门一个 open、相位墙一个 shield
+    // （原版三者的 version 都是 0）。模组自己的字段（breakTimer）挪到自定义存档块
+    // ComboSaveState —— 详见 ComboSaved。
     @Override
     public byte version() {
-      return 2;
+      return combine.saves.ComboSaveState.vanillaVersion(block);
     }
 
     @Override
     public void write(arc.util.io.Writes write) {
       super.write(write);
-      write.bool(open);
-      // FIX[shield]: 相位盾状态（version 2 起）
-      write.f(shield);
+      LinkWall wall = (LinkWall) block;
+      if (wall.mode == Mode.door)
+        write.bool(open);
+      else if (wall.mode == Mode.shield)
+        write.f(shield);
+    }
+
+    @Override
+    public void writeCombo(arc.util.io.Writes write) {
       write.f(breakTimer);
     }
 
     @Override
     public void read(arc.util.io.Reads read, byte revision) {
       super.read(read, revision);
-      if (revision >= 1)
-        open = read.bool();
-      // FIX[shield]: 相位盾状态（version 2 起；旧档缺省 = 满盾）
       if (revision >= 2) {
+        // 旧档（≤2.6）：模组把 open/shield/breakTimer 全写在了地图区里
+        open = read.bool();
         shield = read.f();
         breakTimer = read.f();
+        return;
       }
+
+      LinkWall wall = (LinkWall) block;
+      if (wall.mode == Mode.door)
+        open = read.bool();
+      else if (wall.mode == Mode.shield)
+        shield = read.f();
+    }
+
+    @Override
+    public void readCombo(arc.util.io.Reads read, byte revision) {
+      breakTimer = read.f();
     }
 
     /**

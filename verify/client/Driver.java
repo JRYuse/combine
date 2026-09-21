@@ -130,6 +130,13 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::setupReproScene, 6f);
                 Timer.schedule(Driver::reproStep, 20f, 10f);
                 Timer.schedule(() -> { Log.info("[drv] rep 模式超时结束"); Core.app.exit(); }, 600f);
+            }else if(mode.equals("pwr")){
+                // 用户报："每次读写地图后，都要给电网一些刺激（拆一个并入电网的建筑）
+                // 才会触发组合建筑与电网的交互更新" —— 读用户存档 ×3 次存读，每次做一遍电网体检。
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupPowerScene, 6f);
+                Timer.schedule(Driver::powerStep, 25f, 12f);
+                Timer.schedule(() -> { Log.info("[drv] pwr 模式超时结束"); Core.app.exit(); }, 600f);
             }else if(mode.equals("status")){
                 // 两块东西一起看：
                 //  1) 升华站（sublimate）灌了氰气后的**方块状态**菱形（红=noinput / 绿=active）
@@ -588,6 +595,101 @@ public class Driver extends Mod{
             return sb.toString();
         }
         return "无核心";
+    }
+
+    // ---------------- 用户报：读档之后组合建筑要"刺激电网"才更新 ----------------
+    static int pwrPhase = 0;
+
+    static void setupPowerScene(){
+        try{
+            hideDialogs();
+            arc.files.Fi f = Vars.dataDirectory.child("saves/" + repSaveName);
+            Log.info("[drv] pwr 存档=@ 存在=@", f.absolutePath(), f.exists());
+            if(!f.exists()) f = Vars.dataDirectory.child("saves/" + repSaveName + "-backup.msav");
+            mindustry.io.SaveIO.load(f);
+            Vars.state.set(mindustry.core.GameState.State.playing);
+            Log.info("[drv] pwr 载入完成 地图=@", Vars.state.map.name());
+        }catch(Throwable t){ Log.err("[drv] setupPowerScene failed", t); }
+    }
+
+    static boolean pwrHasUpdater(mindustry.world.blocks.power.PowerGraph g){
+        for(var e : Groups.powerGraph){
+            if(e instanceof mindustry.gen.PowerGraphUpdater u && u.graph == g) return true;
+        }
+        return false;
+    }
+
+    /** 电网体检：每张电网列出来，看成员表/产耗/有没有 updater；再统计组合建筑的电网是否自洽。 */
+    static void powerAudit(String tag){
+        try{
+            var byGraph = new java.util.LinkedHashMap<mindustry.world.blocks.power.PowerGraph, arc.struct.Seq<Building>>();
+            int powered = 0, deadTopology = 0, deadGraph = 0, noProd = 0;
+            for(Tile t : Vars.world.tiles){
+                Building b = t == null ? null : t.build;
+                if(b == null || !b.isValid() || b.power == null || b.power.graph == null) continue;
+                powered++;
+                byGraph.computeIfAbsent(b.power.graph, g -> new arc.struct.Seq<>()).add(b);
+            }
+            Log.info("[drv] pwr ===== @ : 有电建筑=@ 电网张数=@ =====", tag, powered, byGraph.size());
+            for(var e : byGraph.entrySet()){
+                var g = e.getKey();
+                var members = e.getValue();
+                boolean updater = pwrHasUpdater(g);
+                // 自洽性：按原版连接规则重算这张电网里的建筑，看看有没有人被漏掉
+                arc.struct.ObjectSet<Building> seen = new arc.struct.ObjectSet<>();
+                arc.struct.Seq<Building> comp = new arc.struct.Seq<>();
+                arc.struct.Queue<Building> q = new arc.struct.Queue<>();
+                arc.struct.Seq<Building> tmp = new arc.struct.Seq<>();
+                q.addLast(members.first()); seen.add(members.first());
+                while(!q.isEmpty()){
+                    Building cur = q.removeFirst();
+                    comp.add(cur);
+                    for(Building nb : cur.getPowerConnections(tmp)){
+                        if(nb != null && nb.power != null && seen.add(nb)) q.addLast(nb);
+                    }
+                }
+                boolean consistent = comp.size == members.size;
+                if(!consistent) deadTopology++;
+                if(!updater) deadGraph++;
+                if(g.producers.size > 0 && g.getLastPowerProduced() <= 0f) noProd++;
+                StringBuilder names = new StringBuilder();
+                int shown = 0;
+                for(Building b : members){
+                    if(shown++ >= 8){ names.append(" +").append(members.size - 8); break; }
+                    names.append(' ').append(b.block.name).append('@').append(b.tileX()).append(',').append(b.tileY());
+                }
+                Log.info("[drv] pwr 电网#@ 成员=@ 产=@ 耗=@ 产出=@ 需要=@ updater=@ 自洽=@ 建筑:@",
+                    g.getID(), members.size, g.producers.size, g.consumers.size,
+                    g.getLastPowerProduced(), g.getLastPowerNeeded(), updater, consistent, names);
+            }
+            Log.info("[drv] pwr @ 汇总: 有电=@ 电网=@ 不自洽电网=@ 无updater电网=@ 有待发电却产出0=@",
+                tag, powered, byGraph.size(), deadTopology, deadGraph, noProd);
+        }catch(Throwable t){ Log.err("[drv] powerAudit failed", t); }
+    }
+
+    static void powerStep(){
+        try{
+            if(pwrPhase == 0){
+                powerAudit("A 读档后（没刺激过电网）");
+                pwrPhase = 1;
+            }else if(pwrPhase == 1){
+                mindustry.io.SaveIO.save(Core.files.absolute("/tmp/cl/pwr1.msav"));
+                mindustry.io.SaveIO.load(Core.files.absolute("/tmp/cl/pwr1.msav"));
+                Vars.state.set(mindustry.core.GameState.State.playing);
+                pwrPhase = 2;
+            }else if(pwrPhase == 2){
+                powerAudit("B 存读一次后（没刺激过电网）");
+                mindustry.io.SaveIO.save(Core.files.absolute("/tmp/cl/pwr2.msav"));
+                mindustry.io.SaveIO.load(Core.files.absolute("/tmp/cl/pwr2.msav"));
+                Vars.state.set(mindustry.core.GameState.State.playing);
+                pwrPhase = 3;
+            }else if(pwrPhase == 3){
+                powerAudit("C 再存读一次后（没刺激过电网）");
+                Log.info("[drv] pwr 结束");
+                Core.app.exit();
+                pwrPhase = 4;
+            }
+        }catch(Throwable t){ Log.err("[drv] powerStep failed", t); }
     }
 
     static void setupReproScene(){

@@ -67,7 +67,7 @@ verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑�
 
 原理：`Xvfb` 提供离屏 X，`SDL_VIDEODRIVER=offscreen` 让 SDL 走 EGL，Mesa 软渲染（llvmpipe）出画面；
 截图由 `verify/client/Driver.java`（一个驱动 mod）用 `ScreenUtils.saveScreenshot` 自己抓。
-驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn|bp|wall|rep|tech|tech2|technode`、`-Ddrv.out=<目录>`
+驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn|bp|wall|rep|pwr|tech|tech2|technode`、`-Ddrv.out=<目录>`
 （`tech` = 主菜单直接开科技树；`tech2` = 进图后再开、并把每棵根树的树页都切一遍截图；`technode` = 把镜头居中到组合连接器/液体卸载器节点再截图，用来核对节点在不在两棵树上、图标对不对）
 （`gen` = 核反应堆 + 一台容量 10 万的发电机，看燃料条/发电效率；`status` = 方块状态菱形 + 容器面板；
 `conn` = 两台组合工厂 + 一串组合连接器，看连接器贴图/连线与信息面板；
@@ -124,7 +124,15 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 | `combine.dbg.LaunchLoadoutKeyTest` | 任意 | 发射蓝图与核心的对应：`Planet.defaultCore` 指向组合核心；serpulo/erekir 发射不会退回 core-shard 蓝图（Erekir 不该要铜/铅） |
 | `combine.dbg.BlueprintReloadTest` | 任意（先 `-Dbr.phase=write` 再 `-Dbr.phase=read`） | 蓝图里的组合连接器：按客户端顺序（读蓝图早于模组建方块）会被丢掉，模组重读蓝图库后恢复 |
 | `combine.dbg.LoadDedupeWindowTest` | 任意 | 读档头几帧再合并"同一份池子的副本"必须**去重**（不翻倍）；窗口结束后真库存照常相加 |
+| `combine.dbg.NoModCompatTest` | 任意（两阶段：先带模组 `-Dmode=write`，再用**不带模组**的数据目录 `-Dmode=read`） | 关掉模组后存档还能读：地图区里只写原版字节，组合建筑回落到原版建筑（模组自己加的方块回落成空气），物品总量一分不差 |
+| `combine.dbg.ComboChunkSaveTest` | 任意 | 自定义存档块真的在搬运模组字段：发电机选中的燃料/炮塔选中的弹药/组合墙 breakTimer 存读档后还在，组合体仍共用一个池子、物品不翻倍 |
+| `combine.dbg.AssemblerPayloadTest` | 任意 | 组装机（UnitAssembler）要交的建筑 payload 收不收：配方里的 `PayloadStack.item` 必须已经换成组合实例（还是老实例的话 `acceptPayload` 里 `b.item == payload.content()` 恒 false —— 用户报的"组装机不收建筑输入"）；顺带卡浅层扫描的耗时与幂等 |
 | `combine.dbg.HalfBuiltBreakTest` | 任意 | 造到一半的建筑要能拆：挂座认领着的那一格被玩家下拆除指令后必须松手（不能把拆除又 construct 回去） |
+| `combine.dbg.CorePoolPullTest` | 任意（有核心/容器/组合节点/组合工厂） | 核心 + 并仓仓库 + 用组合节点接进来的组合工厂：接上时池子必须还是**核心那一份**（不能把核心库存搬到工厂里），断开后工厂要脱离、核心物品一份不少 |
+| `combine.dbg.PowerAccountTest` | 任意（有组合工厂/电源） | 组合体耗电记账：3 台组合冶炼厂 + 一侧电源 → 电网"需要"必须正好是整组之和，而且**在线摆出来**与**读档读出来**两条路必须一模一样（联机服务端/客户端对不上的根因） |
+| `combine.dbg.PowerGridAuditTest` | 任意（有组合工厂/电源/电力节点） | 组合体↔电网：放好/读档后按原版连接规则重算分量，必须同图、必须有 updater、必须有产出（S1~S8：同类/跨类型组合工厂、发电机组、节点跨距离接电、协作组合、连接器链、电池） |
+| `combine.dbg.PowerFreshLoadTest` | 任意 | 两阶段：`-Dpf.mode=write` 摆一个密集混合基地（组合工厂群+协作组合+节点/连接器+电源）并存档，`-Dpf.mode=read` **另起进程**读档，整张图电网必须自洽、不用刺激（`-Dpf.seed=` 换随机基地） |
+| `combine.dbg.PowerFuzzTest` | 任意 | 电网不变量模糊测试：随机放/拆方块 + 随机存读档，每步检查「同一分量同一张活电网 + 有电源必须发电」（`-Dfz.seed=` / `-Dfz.steps=`；失败会打印操作历史，`-Dfz.replay=<文件>` 可回放） |
 
 ## 复现排版问题
 

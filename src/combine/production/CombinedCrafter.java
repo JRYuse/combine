@@ -46,7 +46,6 @@ import mindustry.world.meta.StatUnit;
 import mindustry.world.meta.StatValues;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
-import mindustry.world.modules.PowerModule;
 
 import static mindustry.Vars.*;
 import static mindustry.Vars.iconMed;
@@ -342,7 +341,7 @@ public class CombinedCrafter extends GenericCrafter {
 
     // ==================== Building ====================
 
-    public class CombinedCrafterBuild extends GenericCrafterBuild implements HeatBlock {
+    public class CombinedCrafterBuild extends GenericCrafterBuild implements HeatBlock, combine.saves.ComboSaved {
         public CombinedCrafterBuild comboLeader;
         public Seq<CombinedCrafterBuild> comboGroup = new Seq<>();
         public boolean comboDirty = true;
@@ -652,6 +651,11 @@ public class CombinedCrafter extends GenericCrafter {
             }
 
             shareModules(newLeader);
+            // 组结构变了（放/拆成员、接/断组合节点）：全组过一遍电网对账
+            for (CombinedCrafterBuild b : newGroup) {
+                if (b.isValid())
+                    combine.util.ComboPower.mark(b);
+            }
 
             for (CombinedCrafterBuild oldMember : oldGroup) {
                 if (oldMember != this && oldMember.isValid() && !newGroup.contains(oldMember)) {
@@ -898,16 +902,7 @@ public class CombinedCrafter extends GenericCrafter {
                 CombinedCrafterBuild b = kicked.get(i);
                 b.items = newItemMods[i];
                 b.liquids = newLiquidMods[i];
-                // FIX[电力共享]: 离组成员重建独立电力模块并保留原连接
-                if (b.power != null) {
-                    PowerModule oldPower = b.power;
-                    b.power = new PowerModule();
-                    if (oldPower != null) {
-                        b.power.links.addAll(oldPower.links);
-                        b.power.status = oldPower.status;
-                    }
-                    b.updatePowerGraph();
-                }
+                // 离组成员本来就各自持有电力模块（见 shareModules），这里不用动电网
             }
         }
 
@@ -982,26 +977,12 @@ public class CombinedCrafter extends GenericCrafter {
                 }
             }
 
-            // FIX[电力共享]: 全组共用领导者的电力模块——任一成员接电即整组通电。
-            // links 存在 PowerModule 里: 先摘旧电网, 把成员自己的节点链接并入领导者模块, 再换模块
-            if (leader.power != null) {
-                for (CombinedCrafterBuild member : group()) {
-                    if (member != leader && member.isValid() && member.power != null
-                            && member.power != leader.power) {
-                        PowerModule oldPower = member.power;
-                        if (oldPower.graph != null)
-                            oldPower.graph.remove(member);
-                        for (int li = 0; li < oldPower.links.size; li++) {
-                            int link = oldPower.links.get(li);
-                            if (!leader.power.links.contains(link))
-                                leader.power.links.add(link);
-                        }
-                        member.power = leader.power;
-                        member.updatePowerGraph();
-                    }
-                }
-            }
-
+            // 【不再共用 PowerModule】以前把整组的 power 指向领导者那一份，好让"任一成员接电=整组通电"。
+            // 但原版 PowerGraph 假设"一台建筑一份模块"：共用之后，电网里到底算进哪几台、算多少电，
+            // 取决于原版并网/拆网的执行顺序 —— 游戏里摆出来的基地和读档/入服建出来的基地会算出
+            // 两个不同的数（用户联机截图：服务端 +2.4k、客户端 -9.2k），而且拆网时还会把成员漏在旧图上。
+            // 现在每台保留自己的模块：组合方块本来就是导电体（conductivePower = true），
+            // 相邻/连线接上就自动并进同一张电网，语义不变，记账变成确定性的。
         }
 
         // -------------------- 生命周期 --------------------
@@ -1059,25 +1040,7 @@ public class CombinedCrafter extends GenericCrafter {
                     if (shared)
                         liquids = new LiquidModule();
                 }
-                if (power != null) {
-                    boolean sharedPower = false;
-                    for (CombinedCrafterBuild member : members) {
-                        if (member != this && member.isValid() && member.power == this.power) {
-                            sharedPower = true;
-                            break;
-                        }
-                    }
-                    if (sharedPower) {
-                        // FIX[电力共享]: 换独立模块但保留电力连接(links 存在模块里, 直接 new 会丢光)
-                        PowerModule oldPower = power;
-                        power = new PowerModule();
-                        if (oldPower != null) {
-                            power.links.addAll(oldPower.links);
-                            power.status = oldPower.status;
-                        }
-                        updatePowerGraph();
-                    }
-                }
+                // 电力模块各归各的（见 shareModules），拆自己的时候不用再分离共享模块
             }
 
             if (wasLeader) {
@@ -1202,6 +1165,12 @@ public class CombinedCrafter extends GenericCrafter {
             comboTotalItemCap = 0;
             comboHeat = 0f;
             comboHeatCap = 0f;
+            // 拆掉组里一台，剩下的成员可能被原版的拆网扇形留在旧图上（共用模块的老问题）
+            combine.util.ComboPower.markAround(this);
+            for (CombinedCrafterBuild member : members) {
+                if (member != this && member.isValid())
+                    combine.util.ComboPower.markAround(member);
+            }
             super.onRemoved();
         }
 
@@ -2275,48 +2244,56 @@ public class CombinedCrafter extends GenericCrafter {
         }
 
         // -------------------- 序列化 --------------------
+        // 地图区里只写"原版那一台"的字节：GenericCrafter / AttributeCrafter / HeatCrafter 是
+        // base + progress + warmup，HeatProducer 再跟一个 heat，Separator 是自己写的
+        // base + progress + warmup + seed。模组自己的字段（组长、共享热量、attrsum、seed…）
+        // 全部挪到自定义存档块 ComboSaveState —— 详见 ComboSaved。
         @Override
         public byte version() {
-            return 10;
+            return combine.saves.ComboSaveState.vanillaVersion(block);
         }
 
         @Override
         public void write(Writes write) {
-            // 确定真实 leader（按 pos 最小）
-            CombinedCrafterBuild trueLeader = this;
-            if (comboGroup != null && comboGroup.size > 0) {
-                for (CombinedCrafterBuild b : comboGroup) {
-                    if (b != null && b.isValid() && b.pos() < trueLeader.pos())
-                        trueLeader = b;
-                }
+            CombinedCrafter cb = (CombinedCrafter) block;
+            if (cb.mode == Mode.separator) {
+                // 原版 SeparatorBuild 继承 Building，自己写 progress/warmup/seed
+                write.f(progress);
+                write.f(warmup);
+                write.i(seed);
+            } else {
+                super.write(write);
+                if (cb.mode == Mode.heatproducer)
+                    write.f(producerHeat); // 原版 HeatProducerBuild 末尾多一个 heat
             }
+        }
 
-            // 只有真实 leader 保存真实模块；其他成员写入空模块
+        // 存档先调 writeBase 写模块数据、后调 write —— "只有组长写真实模块"必须挂在 writeBase 上
+        // （写在 write() 里来不及），否则每个成员各写一份整池，读档合并后数量 ×N。
+        @Override
+        public void writeBase(Writes write) {
             ItemModule savedItems = items;
             LiquidModule savedLiquids = liquids;
-            if (this != trueLeader) {
+            if (combine.saves.ComboSaveState.isFollower(this, comboGroup)) {
                 if (items != null)
                     items = new ItemModule();
                 if (liquids != null)
                     liquids = new LiquidModule();
             }
-
-            super.write(write);
-
-            // 恢复引用（避免影响后续逻辑）
+            super.writeBase(write);
             items = savedItems;
             liquids = savedLiquids;
+        }
 
-            // 写入 leader 引用
-            write.bool(comboLeader != null);
-            if (comboLeader != null)
-                write.i(comboLeader.pos());
-
-            // 写入共享热量
+        @Override
+        public void writeCombo(Writes write) {
+            Building leader = combine.saves.ComboSaveState.trueLeader(this, comboGroup);
+            write.bool(leader != this);
+            if (leader != this)
+                write.i(leader.pos());
             write.f(getComboHeat());
             write.f(getComboHeatCap());
 
-            // 模式特定数据
             CombinedCrafter cb = (CombinedCrafter) block;
             if (cb.mode == Mode.separator) {
                 write.i(seed);
@@ -2329,47 +2306,60 @@ public class CombinedCrafter extends GenericCrafter {
 
         @Override
         public void read(Reads read, byte revision) {
-            super.read(read, revision);
-
-            boolean hasLeader = false;
-            int leaderPos = -1;
+            CombinedCrafter cb = (CombinedCrafter) block;
             if (revision >= 10) {
-                hasLeader = read.bool();
-                if (hasLeader)
-                    leaderPos = read.i();
+                // 旧档（≤2.6）：模组字段直接续写在地图区里
+                super.read(read, revision);
+                applyLeader(read, true);
+                return;
             }
 
-            // 读取共享热量
-            if (revision >= 10) {
-                comboHeat = read.f();
-                comboHeatCap = read.f();
+            if (cb.mode == Mode.separator) {
+                progress = read.f();
+                warmup = read.f();
+                seed = read.i();
+            } else {
+                super.read(read, revision);
+                if (cb.mode == Mode.heatproducer)
+                    producerHeat = read.f();
+            }
+            comboDirty = true;
+        }
+
+        @Override
+        public void readCombo(Reads read, byte revision) {
+            // 新格式里"非组长"在存档里写的就是空模块，读档时整组已经被并成一份，
+            // 这里不能再清空（清了就把并好的池子丢掉）。
+            applyLeader(read, false);
+        }
+
+        void applyLeader(Reads read, boolean clearModules) {
+            boolean hasLeader = read.bool();
+            int leaderPos = hasLeader ? read.i() : -1;
+            comboHeat = read.f();
+            comboHeatCap = read.f();
+
+            CombinedCrafter cb = (CombinedCrafter) block;
+            if (cb.mode == Mode.separator) {
+                seed = read.i();
+            } else if (cb.mode == Mode.attribute) {
+                attrsum = read.f();
+            } else if (cb.mode == Mode.heatproducer) {
+                producerHeat = read.f();
             }
 
             comboDirty = true;
-
             if (hasLeader && leaderPos != pos()) {
                 // 非 leader：先清空自己的模块，记录 leader 位置，等 updateTile 时恢复引用
                 pendingLeaderPos = leaderPos;
-                if (items != null)
+                if (clearModules && items != null)
                     items = new ItemModule();
-                if (liquids != null)
+                if (clearModules && liquids != null)
                     liquids = new LiquidModule();
             } else {
                 // 自己是 leader（或没有 leader）
                 pendingLeaderPos = -1;
                 comboLeader = null;
-            }
-
-            // 读取模式特定数据（version >= 2）
-            if (revision >= 10) {
-                CombinedCrafter cb = (CombinedCrafter) block;
-                if (cb.mode == Mode.separator) {
-                    seed = read.i();
-                } else if (cb.mode == Mode.attribute) {
-                    attrsum = read.f();
-                } else if (cb.mode == Mode.heatproducer) {
-                    producerHeat = read.f();
-                }
             }
         }
     }

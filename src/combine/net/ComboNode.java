@@ -94,6 +94,8 @@ public class ComboNode extends Block {
                         og.update();
                     }
                 }
+                combine.util.ComboPower.mark(entity);
+                combine.util.ComboPower.mark(other);
                 // 【关键】断开也要把协作组合标记为脏：分组是"跟着节点连线走"的，
                 // 不重算的话两边**看起来断开了、其实还是一个组合体**（物品/液体照样共享，池子不拆）。
                 CoopCombo.markDirty();
@@ -182,6 +184,8 @@ public class ComboNode extends Block {
                 dirtyLinkedBuildings(nb, seen);
             }else{
                 ComboReflect.markGroupDirty(b);
+                // 连线变了 = 电网拓扑变了：被连的组合体交给对账器，掉队的重新并网
+                combine.util.ComboPower.mark(b);
             }
         }
     }
@@ -472,6 +476,9 @@ public class ComboNode extends Block {
                     power.graph.addGraph(other.power.graph);
                 }
             }
+            // 连线两端都可能因为这次并网/拆网掉队（组合体共用一份 PowerModule）
+            combine.util.ComboPower.mark(this);
+            combine.util.ComboPower.mark(other);
             ComboNet.markDirty();
         }
 
@@ -491,6 +498,8 @@ public class ComboNode extends Block {
                 og.reflow(other);
                 og.update();
             }
+            combine.util.ComboPower.mark(this);
+            combine.util.ComboPower.mark(other);
             CoopCombo.markDirty();
             ComboNet.markDirty();
         }
@@ -524,7 +533,13 @@ public class ComboNode extends Block {
                         og.reflow(other);
                         og.update();
                     }
+                    // 节点被拆/被拿走：相邻的组合体会被原版的拆网扇形漏掉，交给对账器
+                    combine.util.ComboPower.mark(other);
                 }
+            }
+            // 自己周围的建筑（靠邻接并网的那些）也要对账
+            if(proximity != null){
+                for(Building nb : proximity) combine.util.ComboPower.mark(nb);
             }
             if(power != null){
                 new mindustry.world.blocks.power.PowerGraph().reflow(this);

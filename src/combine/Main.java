@@ -190,6 +190,10 @@ public class Main extends Mod {
     // （协作分组自己变了的时候，CoopCombo.rebuild 会同步调 ComboNet.rebuild，不靠这个顺序。）
     CoopCombo.register();
 
+    // 组合体↔电网的对账（共用一份 PowerModule 的组合建筑在原版并网/拆网里会掉队，
+    // 表现就是"读档/拆东西之后要动一下电网才来电"，见 combine.util.ComboPower）
+    combine.util.ComboPower.register();
+
     // 设置里的"建筑组合开关"界面（客户端才有 UI，服务端自动跳过）
 //    combine.ui.ComboBlockList.register();
 //    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
@@ -204,6 +208,8 @@ public class Main extends Mod {
       Replacer.remapLoadoutKeys();
       Replacer.remapSectorInfos();
       Replacer.remapPlanetDefaults();
+      // 别的模组可能到这一步才动过方块配方（组装机的 PayloadStack 等），再兜一次
+      Replacer.remapCapturedBlocks();
     });
 
     // 组合仓库并仓（机制本体在 CombinedStorageBlock 里）：没连核心时像其它组合建筑一样
@@ -351,11 +357,21 @@ public class Main extends Mod {
       Log.err("[combine] failed to patch save versions", t);
     }
 
+    // 组合建筑"模组专属字段"的自定义存档块：地图区里只写原版那份字节，
+    // 关掉模组后原版读档时这些字段整块跳过，组合建筑干净地变回原版建筑
+    // （详见 combine.saves.ComboSaved / ComboSaveState）
+    combine.saves.ComboSaveState.register();
+
     try {
       getWhiteList();
       processModBlocks();
       processWalls();
       processCompatBlocks();
+      // 内容初始化期被"按引用抓走"的老方块实例（典型：组装机 UnitAssembler 配方里的
+      // PayloadStack.item = 老钨墙/碳化墙）换回组合实例 —— 不换的话原版
+      // UnitAssemblerBuild.acceptPayload 里 b.item == payload.content() 恒 false，
+      // 组装机就不收建筑 payload（用户报的）
+      Replacer.remapCapturedBlocks();
       // 造价表必须在 content.load() 之后现造（Items.* 是 load() 阶段才赋值的静态字段）
       initRequirementTables();
       createLinkBlocks();

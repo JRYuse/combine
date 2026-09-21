@@ -198,6 +198,8 @@ public class CoopCombo {
     Events.on(EventType.WorldLoadEvent.class, e -> {
       captureBaseCaps();
       rescan();
+      // 读档后整张图对账一次：共用电力模块的组合建筑可能在原版并网/拆网里掉队，见 ComboPower
+      combine.util.ComboPower.markWorld();
     });
     Events.on(EventType.TileChangeEvent.class, e -> {
       if (e.tile != null) addChangedTile(e.tile);
@@ -226,6 +228,20 @@ public class CoopCombo {
     if (tile == null) return;
     dirty = true;
     changedTiles.add(tile);
+    // 【电网对账】方块增删会触发原版的拆网/并网，而共用一份 PowerModule 的组合建筑
+    // 可能被原版那套"扇形拆分"漏在旧图上（读档、拆电线杆、拆组员都会遇到）。
+    // 这里只要改动附近有带电建筑，就把"整张图对账"排上（见 combine.util.ComboPower）。
+    for (int dx = -1; dx <= 1; dx++) {
+      for (int dy = -1; dy <= 1; dy++) {
+        Tile cur = world == null ? null : world.tile(tile.x + dx, tile.y + dy);
+        if (cur == null) continue;
+        Building b = cur.build;
+        if (b != null && b.power != null) {
+          combine.util.ComboPower.mark(b);
+          return;
+        }
+      }
+    }
   }
 
   // ==================== 资格判定 ====================
@@ -609,6 +625,7 @@ public class CoopCombo {
       if (b.power != null) {
         try {
           new mindustry.world.blocks.power.PowerGraph().reflow(b);
+          combine.util.ComboPower.mark(b);
         } catch (Throwable ignored) {
         }
       }
@@ -635,6 +652,9 @@ public class CoopCombo {
     if (state == null || world == null || world.isGenerating()) return;
     if (dirty) {
       dirty = false;
+      // 这一轮是被"世界被改过"叫醒的：电网拓扑可能已经变了（原版拆网/并网只认"一台一份模块"），
+      // 排一次整张图对账，见 combine.util.ComboPower
+      combine.util.ComboPower.markWorld();
       // 读档后头几帧也算去重语义（见 ComboNet.loadDedupeFrames）
       boolean dedupe = dedupeOnce || ComboNet.pendingLoadDedupe();
       dedupeOnce = false;
@@ -1180,6 +1200,8 @@ public class CoopCombo {
             // 还原成"纯耗电方"：重新划分电网（走不到的建筑留在原图里，等于拆分）
             new mindustry.world.blocks.power.PowerGraph().reflow(m);
           }
+          // 并网/拆网可能有同组建筑留在原版那张没人更新的旧图上 —— 交给对账器收口
+          combine.util.ComboPower.mark(m);
         } catch (Throwable ignored) {
         }
       }

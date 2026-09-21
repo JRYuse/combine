@@ -384,4 +384,138 @@ public class Replacer {
       Log.warn("[Replacer] loadout key remap failed: @", t.getMessage());
     }
   }
+
+  /**
+   * 把"内容初始化阶段按引用抓走的方块实例"换回组合实例。
+   *
+   * 典型就是用户报的"组装机不收建筑输入"：
+   * {@code UnitAssembler} 的配方是内容初始化时用
+   * {@code PayloadStack.list(UnitTypes.stell, 4, Blocks.tungstenWallLarge, 10)} 建的 ——
+   * 里面抓着**替换前**的钨墙/碳化墙老实例；而世界里、蓝图里的建筑都是组合实例（LinkWall），
+   * 于是原版 {@code UnitAssemblerBuild.acceptPayload} 里那句 {@code b.item == payload.content()}
+   * 恒 false：单位 payload 收得进（单位没被替换）、建筑 payload 永远收不进（用户报的不对称）。
+   *
+   * 这里不写死组装机：从每个方块出发做一遍**浅层**图扫描（只走容器与方块自己的类，
+   * 不钻 arc./图形/UI），把可达的 {@code PayloadStack.item} 以及直接抓着的方块实例
+   * 换回组合实例 —— 模组自己写的组装机/自定义 payload 配方一起修。
+   */
+  public static void remapCapturedBlocks() {
+    if (replaced.isEmpty() || Vars.content == null)
+      return;
+    try {
+      java.util.IdentityHashMap<Object, Integer> visited = new java.util.IdentityHashMap<>();
+      capturedCount = 0;
+      for (Block b : Vars.content.blocks())
+        scanCaptured(b, visited, 0);
+      if (capturedCount > 0)
+        Log.info("[combine] 回填内容初始化期被抓走的老方块实例: @ 处", capturedCount);
+    } catch (Throwable t) {
+      Log.warn("[Replacer] 抓走的方块实例回填失败: @", t.getMessage());
+    }
+  }
+
+  /** 上一轮回填了几处（只用于启动日志）。 */
+  static int capturedCount = 0;
+
+  /** 这些包里的对象不钻：贴图/绘制/UI/统计这些图又大又没有方块引用。 */
+  static boolean heavyType(Class<?> c) {
+    if (c.isPrimitive())
+      return true;
+    String n = c.getName();
+    return n.startsWith("java.") || n.startsWith("javax.") || n.startsWith("arc.")
+        || n.startsWith("kotlin.") || n.startsWith("scala.")
+        || n.startsWith("mindustry.graphics.") || n.startsWith("mindustry.ui.")
+        || n.startsWith("mindustry.audio.") || n.startsWith("mindustry.net.")
+        || n.startsWith("mindustry.world.draw.") || n.startsWith("mindustry.world.meta.")
+        || n.contains("$$Lambda") || c.isSynthetic() || c.isEnum();
+  }
+
+  /** 容器（Seq / ObjectMap / 数组）即使落在"重包"里也要走一遍。 */
+  static boolean container(Class<?> c) {
+    return c.isArray() || Iterable.class.isAssignableFrom(c)
+        || ObjectMap.class.isAssignableFrom(c)
+        || mindustry.type.PayloadStack.class.isAssignableFrom(c);
+  }
+
+  /**
+   * 浅层图扫描：把 PayloadStack.item / 直接抓着的方块实例换回组合实例。
+   *
+   * visited 记的是"最短到达深度"而不是布尔值：一个对象可能既被近路也被远路指到，
+   * 按身份哈希遍历的顺序每次都不一样，只记布尔值会让"这一趟扫到多深"随机化
+   * （同一份内容两次启动回填的数量会对不上）。记最短深度后覆盖范围就与遍历顺序无关了。
+   */
+  static void scanCaptured(Object o, java.util.IdentityHashMap<Object, Integer> visited, int depth) {
+    if (o == null || depth > 6)
+      return;
+    Integer prev = visited.get(o);
+    if (prev != null && prev <= depth)
+      return;
+    visited.put(o, depth);
+
+    if (o instanceof mindustry.type.PayloadStack stack) {
+      if (stack.item instanceof Block old) {
+        Block combo = replaced.get(old);
+        if (combo != null) {
+          stack.item = combo;
+          capturedCount++;
+        }
+      }
+      return;
+    }
+
+    Class<?> cls = o.getClass();
+
+    if (cls.isArray()) {
+      int len = java.lang.reflect.Array.getLength(o);
+      for (int i = 0; i < len; i++)
+        scanCaptured(java.lang.reflect.Array.get(o, i), visited, depth + 1);
+      return;
+    }
+
+    if (o instanceof Iterable<?> it) {
+      for (Object e : it)
+        scanCaptured(e, visited, depth + 1);
+      return;
+    }
+
+    if (o instanceof ObjectMap<?, ?> map) {
+      for (ObjectMap.Entry<?, ?> e : map.entries()) {
+        scanCaptured(e.key, visited, depth + 1);
+        scanCaptured(e.value, visited, depth + 1);
+      }
+      return;
+    }
+
+    // 只在"内容自己的类"里钻：贴图/绘制/UI/lambda/字符串之类的图不碰
+    if (heavyType(cls))
+      return;
+
+    for (Class<?> c = cls; c != null && c != Object.class; c = c.getSuperclass()) {
+      for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+        if (java.lang.reflect.Modifier.isStatic(f.getModifiers()))
+          continue;
+        Class<?> t = f.getType();
+        if (t.isPrimitive() || (heavyType(t) && !container(t)))
+          continue;
+        try {
+          f.setAccessible(true);
+          Object v = f.get(o);
+          if (v == null)
+            continue;
+          // 直接抓着的方块实例：就地换回组合实例（不再往下钻，方块本身在扫描里会遍历到）
+          if (v instanceof Block old) {
+            Block combo = replaced.get(old);
+            if (combo != null && !java.lang.reflect.Modifier.isFinal(f.getModifiers())) {
+              f.set(o, combo);
+              capturedCount++;
+            }
+            continue;
+          }
+          scanCaptured(v, visited, depth + 1);
+        } catch (Throwable ignored) {
+        }
+      }
+    }
+  }
+
 }

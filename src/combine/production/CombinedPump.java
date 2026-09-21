@@ -32,6 +32,7 @@ import mindustry.world.Tile;
 import mindustry.world.blocks.production.Pump;
 import mindustry.world.meta.Stat;
 import mindustry.world.meta.StatUnit;
+import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
 
 import static mindustry.Vars.*;
@@ -76,7 +77,7 @@ public class CombinedPump extends Pump {
         stats.add(Stat.liquidCapacity, displayLiquid, StatUnit.liquidUnits);
     }
 
-    public class CombinedPumpBuild extends PumpBuild {
+    public class CombinedPumpBuild extends PumpBuild implements combine.saves.ComboSaved {
         public CombinedPumpBuild comboLeader;
         public Seq<CombinedPumpBuild> comboGroup = new Seq<>();
         public boolean comboDirty = true;
@@ -581,50 +582,73 @@ public class CombinedPump extends Pump {
         }
 
         // -------------------- 序列化 --------------------
+        // 地图区里只写"原版机械泵那一份字节"（原版 PumpBuild 就是 Building，什么都不加），
+        // 模组自己的字段（组长）挪到自定义存档块 ComboSaveState —— 详见 ComboSaved。
         @Override
         public byte version() {
-            return 10;
+            return combine.saves.ComboSaveState.vanillaVersion(block);
         }
 
         @Override
         public void write(Writes write) {
-            CombinedPumpBuild trueLeader = this;
-            if (comboGroup != null && comboGroup.size > 0)
-                for (CombinedPumpBuild b : comboGroup)
-                    if (b != null && b.isValid() && b.pos() < trueLeader.pos())
-                        trueLeader = b;
-            LiquidModule savedLiquids = liquids;
-            if (this != trueLeader && liquids != null)
-                liquids = new LiquidModule();
             super.write(write);
+        }
+
+        // 存档先调 writeBase 写模块数据、后调 write —— "只有组长写真实模块"必须挂在 writeBase 上
+        // （写在 write() 里来不及），否则每个成员各写一份整池，读档合并后数量 ×N。
+        @Override
+        public void writeBase(Writes write) {
+            ItemModule savedItems = items;
+            LiquidModule savedLiquids = liquids;
+            if (combine.saves.ComboSaveState.isFollower(this, comboGroup)) {
+                if (items != null)
+                    items = new ItemModule();
+                if (liquids != null)
+                    liquids = new LiquidModule();
+            }
+            super.writeBase(write);
+            items = savedItems;
             liquids = savedLiquids;
-            write.bool(comboLeader != null);
-            if (comboLeader != null)
-                write.i(comboLeader.pos());
+        }
+
+        @Override
+        public void writeCombo(Writes write) {
+            Building leader = combine.saves.ComboSaveState.trueLeader(this, comboGroup);
+            write.bool(leader != this);
+            if (leader != this)
+                write.i(leader.pos());
         }
 
         @Override
         public void read(Reads read, byte revision) {
             super.read(read, revision);
-            boolean hasLeader = false;
-            int leaderPos = -1;
-
             if (revision >= 10) {
-            hasLeader = read.bool();
-                        if (hasLeader)
-                leaderPos = read.i();
-
+                // 旧档（≤2.6）：模组字段直接续写在地图区里
+                readLeader(read, true);
+                return;
             }
+            comboDirty = true;
+        }
 
+        @Override
+        public void readCombo(Reads read, byte revision) {
+            // 新格式里"非组长"在存档里写的就是空模块，读档时整组已经被并成一份，
+            // 这里不能再清空（清了就把并好的池子丢掉）。
+            readLeader(read, false);
+        }
+
+        void readLeader(Reads read, boolean clearModules) {
+            boolean hasLeader = read.bool();
+            int leaderPos = hasLeader ? read.i() : -1;
             comboDirty = true;
             if (hasLeader && leaderPos != pos()) {
                 pendingLeaderPos = leaderPos;
-                if (liquids != null)
+                if (clearModules && liquids != null)
                     liquids = new LiquidModule();
             } else {
                 pendingLeaderPos = -1;
                 comboLeader = null;
             }
-}
+        }
     }
 }

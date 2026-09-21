@@ -98,7 +98,7 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
     }
   }
 
-  public class CombinedContinuousLiquidTurretBuild extends ContinuousLiquidTurretBuild {
+  public class CombinedContinuousLiquidTurretBuild extends ContinuousLiquidTurretBuild implements combine.saves.ComboSaved {
 
   /** LiquidModule.current 是 private 且无 setter，反射缓存（仅在当前液体与发射液体不一致时写回） */
   static final java.lang.reflect.Field fLiquidCurrent = findLiquidCurrent();
@@ -574,30 +574,38 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
 
     // ---- selected 序列化（基线 version=3，故用 4）----
 
+    // 地图区里只写"原版持续液体炮台那一份字节"（super.write = 原版自己的布局），
+    // 模组自己的字段（选中的弹药液体）挪到自定义存档块 ComboSaveState —— 详见 ComboSaved。
     @Override
     public byte version() {
-      return 10;
+      return combine.saves.ComboSaveState.vanillaVersion(block);
     }
 
     @Override
     public void write(Writes write) {
       super.write(write);
+    }
+
+    @Override
+    public void writeCombo(Writes write) {
       write.s(selected == null ? -1 : selected.id);
     }
 
     @Override
     public void read(Reads read, byte revision) {
       super.read(read, revision);
-
+      // 旧档（≤2.6）：模组字段直接续写在地图区里
       if (revision >= 10) {
-      if (revision >= 10) {
-        short id = read.s();
-        selected = id == -1 ? null : content.liquid(id);
+        readCombo(read, revision);
+        return;
       }
+    }
 
-      }
-
-}
+    @Override
+    public void readCombo(Reads read, byte revision) {
+      short id = read.s();
+      selected = id == -1 ? null : content.liquid(id);
+    }
 
     // -------------------- 液体交互 --------------------
 
