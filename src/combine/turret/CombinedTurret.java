@@ -1,4 +1,5 @@
 package combine.turret;
+import arc.struct.*;
 import combine.net.ComboNet;
 import combine.production.CombinedCrafter;
 import combine.util.ComboReflect;
@@ -10,11 +11,6 @@ import arc.math.Angles;
 import arc.math.Mathf;
 import arc.scene.ui.Image;
 import arc.scene.ui.layout.Table;
-import arc.struct.IntSet;
-import arc.struct.ObjectIntMap;
-import arc.struct.ObjectSet;
-import arc.struct.Queue;
-import arc.struct.Seq;
 import arc.util.Log;
 import arc.util.Nullable;
 import arc.util.Strings;
@@ -139,14 +135,24 @@ public class CombinedTurret extends Turret {
   @Override
   public void setStats() {
     super.setStats();
+
+    // 【关键】原版 PowerTurret / LaserTurret 的子弹信息就在这里显示。
+    // 不能直接写 ObjectMap.of(this, shootType)——CombinedTurret 只 extends Turret，
+    // this 的静态类型是 CombinedTurret，泛型推断出的 ObjectMap<CombinedTurret, BulletType>
+    // 传不进 StatValues.ammo(ObjectMap<Block, BulletType>)，编译器要么报错、要么静默选错。
+    // 显式声明成 ObjectMap<Block, BulletType> 才能让编译器和运行时都走上正确的重载。
+    if (shootType != null) {
+      stats.add(Stat.ammo, StatValues.ammo(ObjectMap.of(this, shootType)));
+    }
+
     stats.remove(Stat.liquidCapacity);
     stats.add(Stat.liquidCapacity, displayLiquid, StatUnit.liquidUnits);
-    // LaserTurret.setStats：冷却液显示为输入而非 booster
+
     if (mode == Mode.laser) {
       stats.remove(Stat.booster);
       if (coolant != null)
         stats.add(Stat.input,
-            StatValues.boosters(reload, coolant.amount, coolantMultiplier, false, this::consumesLiquid));
+                StatValues.boosters(reload, coolant.amount, coolantMultiplier, false, this::consumesLiquid));
     }
   }
 
