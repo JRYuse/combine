@@ -172,6 +172,15 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::megaOpenPanel, 34f);
                 Timer.schedule(() -> shot("mega_panel"), 38f);
                 Timer.schedule(() -> { Log.info("[drv] mega 模式结束 frames=@", frames); Core.app.exit(); }, 44f);
+            }else if(mode.equals("userpanel")){
+                // 用户报："组合**工厂**物品面板…清空所有物资"。直接读用户存档，挑几台装满货的
+                // 组合工厂把信息面板弹出来截图，并把面板里的文字（Bar 的 label）打进日志。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::loadUserSave, 5f);
+                Timer.schedule(Driver::userPanelShot0, 40f);
+                Timer.schedule(Driver::userPanelShot1, 52f);
+                Timer.schedule(() -> { Log.info("[drv] userpanel 模式结束 frames=@", frames); Core.app.exit(); }, 60f);
             }else if(mode.equals("pool")){
                 // 用户报："组合建筑物品面板…清空所有物资""组合工厂物资满后有时也会莫名其妙清空物品"。
                 // 场景：4 台并排的组合发电机（共享一口池子）灌满燃料 → 开信息面板截图 →
@@ -349,6 +358,92 @@ public class Driver extends Mod{
         }
         return total;
     }
+
+    // ---------------- 用户存档：组合工厂的信息面板 ----------------
+    static arc.struct.Seq<Building> userFactories = new arc.struct.Seq<>();
+
+    static void loadUserSave(){
+        try{
+            arc.files.Fi dir = Vars.saveDirectory;
+            arc.files.Fi file = null;
+            for(arc.files.Fi f : dir.list()){
+                if(!f.name().endsWith(".msav") || f.name().contains("backup")) continue;
+                if(f.name().contains("泰伯利亚-4")) file = f;
+            }
+            if(file == null){
+                for(arc.files.Fi f : dir.list()) if(f.name().endsWith(".msav")) file = f;
+            }
+            if(file == null){ Log.err("[drv] userpanel: 没找到存档（@）", dir.absolutePath()); return; }
+            Log.info("[drv] userpanel: 读档 @", file.name());
+            mindustry.io.SaveIO.load(file);
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            Log.info("[drv] userpanel: 地图=@ 建筑=@", Vars.state.map.name(), Vars.state.teams.get(Team.sharded).buildings.size);
+
+            // 收集装满货的组合工厂（同一份模块只留一台代表）
+            java.util.IdentityHashMap<mindustry.world.modules.ItemModule, Building> reps = new java.util.IdentityHashMap<>();
+            for(Tile t : Vars.world.tiles){
+                Building b = t == null ? null : t.build;
+                if(b == null || !b.isValid() || b.items == null || b.items.total() <= 0) continue;
+                String cn = b.getClass().getName();
+                if(!cn.startsWith("combine.production.CombinedCrafter")
+                    && !cn.startsWith("combine.units.CombinedUnitFactory")) continue;
+                reps.put(b.items, b);
+            }
+            for(var e : reps.entrySet()) userFactories.add(e.getValue());
+            userFactories.sort(b -> -b.items.total());
+            Log.info("[drv] userpanel: 有货的组合工厂池子 @ 口", userFactories.size);
+            for(int i = 0; i < Math.min(6, userFactories.size); i++){
+                Building b = userFactories.get(i);
+                Log.info("[drv]   #" + i + " " + b.block.name + "@" + b.tileX() + "," + b.tileY()
+                    + " 类=" + b.getClass().getSimpleName() + " 池总=" + b.items.total()
+                    + " 单台容量=" + b.block.itemCapacity + " 验收上限=" + b.getMaximumAccepted(Vars.content.item(0)));
+            }
+        }catch(Throwable t){ Log.err("[drv] loadUserSave failed", t); }
+    }
+
+    /** 把第 idx 台组合工厂的信息面板弹出来（原版 display 的那套），截图 + 打印面板文字。 */
+    static void userPanelOpen(int idx){
+        try{
+            if(idx >= userFactories.size){ Log.info("[drv] userpanel: 没有第 @ 台", idx); return; }
+            Building b = userFactories.get(idx);
+            if(b == null || !b.isValid()){ Log.info("[drv] userpanel: 第 @ 台已失效", idx); return; }
+            Core.camera.position.set(b.x, b.y);
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            b.getClass().getMethod("display", arc.scene.ui.layout.Table.class).invoke(b, panel);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("组合工厂信息面板: " + b.block.name);
+            d.cont.add(panel).pad(10f);
+            d.show();
+            Log.info("[drv] userpanel #" + idx + " 面板已弹出: " + b.block.name + "@" + b.tileX() + "," + b.tileY()
+                + " 池总=" + (b.items == null ? -1 : b.items.total()));
+            userPanel = panel;
+        }catch(Throwable t){ Log.err("[drv] userPanelOpen failed", t); }
+    }
+
+    static arc.scene.ui.layout.Table userPanel;
+
+    /** 面板显示一帧后，把里面的文字（Bar / Label）抠出来打进日志。 */
+    static void userPanelTexts(String tag){
+        try{
+            if(userPanel == null) return;
+            arc.struct.Seq<String> out = new arc.struct.Seq<>();
+            collectTexts(userPanel, out);
+            StringBuilder sb = new StringBuilder();
+            for(String s : out) sb.append('「').append(s).append('」');
+            Log.info("[drv] userpanel 面板文字（@）: @", tag, sb.length() == 0 ? "（空）" : sb.toString());
+        }catch(Throwable t){ Log.err("[drv] userPanelTexts failed", t); }
+    }
+
+    static void collectTexts(arc.scene.Element e, arc.struct.Seq<String> out){
+        if(e == null) return;
+        if(e instanceof arc.scene.ui.Label l && l.getText() != null){
+            String s = l.getText().toString().trim();
+            if(!s.isEmpty()) out.add(s);
+        }
+        if(e instanceof arc.scene.Group g) for(arc.scene.Element c : g.getChildren()) collectTexts(c, out);
+    }
+
+    static void userPanelShot0(){ userPanelOpen(0); Timer.schedule(() -> { userPanelTexts("#0"); shot("user_factory_panel0"); }, 2f); }
+    static void userPanelShot1(){ userPanelOpen(2); Timer.schedule(() -> { userPanelTexts("#2"); shot("user_factory_panel2"); }, 2f); }
 
     static String poolInfo(String tag){
         if(poolMain == null || !poolMain.isValid()) return tag + ": 主建筑没了";

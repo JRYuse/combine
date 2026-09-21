@@ -67,7 +67,7 @@ verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑�
 
 原理：`Xvfb` 提供离屏 X，`SDL_VIDEODRIVER=offscreen` 让 SDL 走 EGL，Mesa 软渲染（llvmpipe）出画面；
 截图由 `verify/client/Driver.java`（一个驱动 mod）用 `ScreenUtils.saveScreenshot` 自己抓。
-驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn|bp|wall|rebuild|rep|pwr|tech|tech2|technode|mega|pool`、`-Ddrv.out=<目录>`
+驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn|bp|wall|rebuild|rep|pwr|tech|tech2|technode|mega|pool|userpanel`、`-Ddrv.out=<目录>`
 （`tech` = 主菜单直接开科技树；`tech2` = 进图后再开、并把每棵根树的树页都切一遍截图；`technode` = 把镜头居中到组合连接器/液体卸载器节点再截图，用来核对节点在不在两棵树上、图标对不对）
 （`gen` = 核反应堆 + 一台容量 10 万的发电机，看燃料条/发电效率；`status` = 方块状态菱形 + 容器面板；
 `conn` = 两台组合工厂 + 一串组合连接器，看连接器贴图/连线与信息面板；
@@ -82,7 +82,10 @@ verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑�
 日志里报 dominant/drawScale/力场上限/bar 比例）；
 `pool` = 4 台并排的组合发电机共享一口池子、灌满燃料 → 开信息面板截图 → 拆掉一台成员再看：
 面板里要能看到池子里的燃料、拆成员不能按容量销毁库存
-（截图 `*_pool_panel_full.png` / `*_pool_panel_after.png`，日志里报组容量/池总量/世界总量））
+（截图 `*_pool_panel_full.png` / `*_pool_panel_after.png`，日志里报组容量/池总量/世界总量）；
+`userpanel` = 用**用户存档**（数据目录里带 saves/*.msav，例如 `/tmp/mp_usr3/data`）读档，
+挑几口"最有货"的组合工厂池子把信息面板弹出来截图，并把面板里的文字打进日志
+（看面板是不是真的把池子列出来了））
 
 **注意**：软渲染下一帧很慢（~5fps），截图之间要留够时间，别用 0.5 秒的小间隔下结论。
 
