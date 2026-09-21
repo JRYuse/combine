@@ -242,6 +242,41 @@ public class MegaFieldTest implements ApplicationListener{
                 Math.abs(shipMega.type.speed - UnitTypes.risso.speed) < 0.001f);
             check("物品上限按成员求和（" + shipMega.type.itemCapacity + " = 2 × " + UnitTypes.risso.itemCapacity + "）",
                 shipMega.type.itemCapacity == UnitTypes.risso.itemCapacity * 2);
+
+            // 【水阻】原版船（WaterMoveComp）把 floorSpeedMultiplier 整个替换成
+            // (floor.shallow ? 1f : 1.3f)：水里没有水阻、深水还快 30%；
+            // 巨兽继承的是普通 UnitEntity，不处理就按 UnitComp 算 —— 深水 0.2、浅水 0.5。
+            Tile deep = null, shallow = null;
+            for(Tile t : Vars.world.tiles){
+                if(t == null || t.floor() == null) continue;
+                if(deep == null && t.floor().isDeep() && t.floor().drownTime > 0f && t.block() == Blocks.air) deep = t;
+                // 浅水：地形层带 shallow 标记（原版 ShallowLiquid 覆盖的浅水块）
+                if(shallow == null && t.floor().shallow && t.block() == Blocks.air) shallow = t;
+                if(deep != null && shallow != null) break;
+            }
+            Unit ref = UnitTypes.risso.create(Team.sharded);
+            ref.add();
+            if(deep != null){
+                shipMega.set(deep.worldx(), deep.worldy());
+                ref.set(deep.worldx(), deep.worldy());
+                run(2);
+                float megaMul = shipMega.floorSpeedMultiplier();
+                float shipMul = ref.floorSpeedMultiplier();
+                System.out.println("[MF] 深水地形系数: 船合体=" + megaMul + " 原版船=" + shipMul
+                    + "（修前会按普通单位算成 " + (0.2f * shipMega.speedMultiplier()) + "）");
+                check("船合体在深水里的地形系数和原版船一致（水阻已处理，修前是 0.2）",
+                    Math.abs(megaMul - shipMul) < 0.001f);
+                check("深水系数 = 1.3（原版 WaterMoveComp 的深水加成）", Math.abs(megaMul - 1.3f) < 0.02f);
+            }
+            if(shallow != null){
+                shipMega.set(shallow.worldx(), shallow.worldy());
+                ref.set(shallow.worldx(), shallow.worldy());
+                run(2);
+                float megaMul = shipMega.floorSpeedMultiplier(), shipMul = ref.floorSpeedMultiplier();
+                System.out.println("[MF] 浅水地形系数: 船合体=" + megaMul + " 原版船=" + shipMul);
+                check("船合体在浅水里的地形系数和原版船一致", Math.abs(megaMul - shipMul) < 0.001f);
+                check("浅水系数 = 1.0（水里没有水阻，修前按普通单位是 0.5）", Math.abs(megaMul - 1.0f) < 0.02f);
+            }
         }
         Unit risso3 = UnitTypes.risso.create(Team.sharded);
         risso3.set(ox * 8f - 500f, oy * 8f);

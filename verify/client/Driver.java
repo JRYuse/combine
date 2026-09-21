@@ -175,6 +175,17 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::megaCommandMode, 42f);
                 Timer.schedule(() -> shot("mega_command"), 47f);
                 Timer.schedule(() -> { Log.info("[drv] mega 模式结束 frames=@", frames); Core.app.exit(); }, 53f);
+            }else if(mode.equals("shipmega")){
+                // 用户报："两艘船组合后速度变得超级慢 / 没处理水的阻力"。
+                // 两艘 risso 在**深水**里合体：看它还在不在水面、速度系数是不是和原版船一致
+                // （原版船 1.3；没处理水阻时按普通单位算只有 0.2）。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupShipScene, 5f);
+                Timer.schedule(Driver::shipMerge, 12f);
+                Timer.schedule(Driver::shipReport, 20f);
+                Timer.schedule(() -> shot("ship_mega"), 24f);
+                Timer.schedule(() -> { Log.info("[drv] shipmega 模式结束 frames=@", frames); Core.app.exit(); }, 30f);
             }else if(mode.equals("userpanel")){
                 // 用户报："组合**工厂**物品面板…清空所有物资"。直接读用户存档，挑几台装满货的
                 // 组合工厂把信息面板弹出来截图，并把面板里的文字（Bar 的 label）打进日志。
@@ -577,12 +588,16 @@ public class Driver extends Mod{
         return "无";
     }
 
-    /** 每帧把相机钉在巨兽身上（llvmpipe 下相机跟随会跟丢，截图就看不到单位）。 */
+    /** 截图时想锁定的单位（默认是 mega 模式那台巨兽）。 */
+    static Unit camTarget;
+
+    /** 每帧把相机钉在目标单位身上（llvmpipe 下相机跟随会跟丢，截图就看不到单位）。 */
     static void installCameraLock(){
         var t = new arc.scene.ui.layout.Table();
         t.touchable = arc.scene.event.Touchable.disabled;
         t.update(() -> {
-            if(megaUnit != null && megaUnit.isAdded()) Core.camera.position.set(megaUnit.x, megaUnit.y);
+            Unit u = camTarget != null ? camTarget : megaUnit;
+            if(u != null && u.isAdded()) Core.camera.position.set(u.x, u.y);
         });
         Vars.ui.hudGroup.addChild(t);
     }
@@ -604,6 +619,101 @@ public class Driver extends Mod{
      * 面板里的单位图标走的是 content.unit(unit.type.id).uiIcon —— 派生类型共用基础巨兽的占位 id，
      * 所以这里顺手把"面板实际会用的那个类型/图标"打出来对账。
      */
+    // ---------------- 组合巨兽：两艘船在深水里合体（水阻） ----------------
+    static int shipOx = -1, shipOy = -1;
+    static Unit shipMegaUnit, rissoA, rissoB, shipRef;
+
+    static void setupShipScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            // 关掉战争迷雾：否则深水那块是没探索过的，单位 inFogTo() 直接不画，截图上啥都看不到
+            Vars.state.rules.fog = false;
+            Vars.state.rules.staticFog = false;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            int ox = -1, oy = -1;
+            outer:
+            for(int y = 45; y < 150; y++){
+                for(int x = 40; x < 200; x++){
+                    boolean ok = true;
+                    for(int dy = -2; dy <= 2 && ok; dy++) for(int dx = -3; dx <= 3; dx++){
+                        Tile t = Vars.world.tile(x + dx, y + dy);
+                        if(t == null || t.floor() == null || !t.floor().isDeep() || t.block() != Blocks.air){ ok = false; break; }
+                    }
+                    if(ok){ ox = x; oy = y; break outer; }
+                }
+            }
+            if(ox < 0){ Log.err("[drv] shipmega: 没找到深水"); return; }
+            // 核心必须放在**陆地**上（水里 placeBL 会失败 → 队伍没核心 → 那块水域没被探索 →
+            // 单位 inFogTo() 为真，截图里什么都看不到）
+            int coreX = -1, coreY = -1;
+            outerCore:
+            for(int r = 3; r <= 12; r++){
+                for(int dy = -r; dy <= r; dy++) for(int dx = -r; dx <= r; dx++){
+                    if(Math.max(Math.abs(dx), Math.abs(dy)) != r) continue;
+                    Tile t = Vars.world.tile(ox + dx, oy + dy);
+                    if(t != null && t.floor() != null && !t.floor().isLiquid && t.block() == Blocks.air){ coreX = ox + dx; coreY = oy + dy; break outerCore; }
+                }
+            }
+            if(coreX >= 0){
+                Building core = placeBL(Blocks.coreShard, coreX, coreY);
+                if(core != null && core.items != null) for(Item it : Vars.content.items()) core.items.set(it, 5000);
+                Log.info("[drv] shipmega: 岸上核心 @,@ 放入=@", coreX, coreY, core != null);
+            }else Log.err("[drv] shipmega: 附近没找到陆地放核心");
+            shipOx = ox; shipOy = oy;
+            Log.info("[drv] shipmega: 深水=@,@ 地形=@", ox, oy, Vars.world.tile(ox, oy).floor().name);
+            Timer.schedule(Driver::shipSpawn, 2f);
+        }catch(Throwable t){ Log.err("[drv] setupShipScene failed", t); }
+    }
+
+    static void shipSpawn(){
+        try{
+            float cx = shipOx * 8f, cy = shipOy * 8f;
+            rissoA = UnitTypes.risso.create(Team.sharded);
+            rissoA.set(cx - 12f, cy);
+            rissoA.add();
+            rissoB = UnitTypes.risso.create(Team.sharded);
+            rissoB.set(cx + 12f, cy);
+            rissoB.add();
+            // 对照船放远一点：merge 会把 160 单位内的同队未编组单位一起并走
+            shipRef = UnitTypes.risso.create(Team.sharded);
+            shipRef.set(cx + 220f, cy);
+            shipRef.add();
+            Core.camera.position.set(cx, cy);
+            Log.info("[drv] shipmega: 两艘 risso + 一台对照船已就位");
+        }catch(Throwable t){ Log.err("[drv] shipSpawn failed", t); }
+    }
+
+    static void shipMerge(){
+        try{
+            Object merged = rissoA == null ? null
+                : combineCall("combine.units.UnitComboMerge", "merge", new Class<?>[]{Unit.class}, rissoA);
+            if(merged instanceof Unit u) shipMegaUnit = u;
+            Log.info("[drv] shipmega 融合结果=@", merged);
+        }catch(Throwable t){ Log.err("[drv] shipMerge failed", t); }
+    }
+
+    static void shipReport(){
+        try{
+            if(shipMegaUnit == null){ Log.info("[drv] shipmega: 没有巨兽"); return; }
+            Unit u = shipMegaUnit;
+            camTarget = u;
+            installCameraLock();
+            Core.camera.position.set(u.x, u.y);
+            if(shipRef != null && shipRef.isValid())
+                Log.info("[drv] shipmega 对照（同地形）: 巨兽 speed=@ 系数=@ 有效=@（地形 @） | 原版 risso speed=@ 系数=@ 有效=@",
+                    u.type.speed, u.floorSpeedMultiplier(), u.type.speed * u.floorSpeedMultiplier(),
+                    u.floorOn() == null ? "null" : u.floorOn().name,
+                    shipRef.type.speed, shipRef.floorSpeedMultiplier(),
+                    shipRef.type.speed * shipRef.floorSpeedMultiplier());
+            Log.info("[drv] shipmega: type=@ hitSize=@ 溺水=@ elevation=@ 盾=@", u.type.name, u.hitSize(), u.canDrown(), u.elevation, u.shield());
+        }catch(Throwable t){ Log.err("[drv] shipReport failed", t); }
+    }
+
     static void megaCommandMode(){
         try{
             if(megaUnit == null) return;

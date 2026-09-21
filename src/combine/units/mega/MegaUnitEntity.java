@@ -66,6 +66,8 @@ public class MegaUnitEntity extends UnitEntity{
      * 否则混合编组（飞机+坦克）合体后飞机的能力直接丢失。
      */
     private transient boolean hasFlyer = false, hasNaval = false, hasGround = false;
+    /** 成员里有没有爬爬虫（Crawlc）：它们在深水里的速度系数和普通单位不一样（见 {@link #floorSpeedMultiplier()}）。 */
+    private transient boolean hasCrawler = false;
 
     /** 移动模式：走路 / 游泳 / 飞行 / 搁浅（纯海军组在陆地上，原版海军语义）。 */
     public static final int MODE_WALK = 0, MODE_SWIM = 1, MODE_FLY = 2, MODE_STUCK = 3;
@@ -161,7 +163,7 @@ public class MegaUnitEntity extends UnitEntity{
         UnitType dom = null;
         int domCount = 0;
         ObjectMap<UnitType, Integer> tally = new ObjectMap<>();
-        boolean fly = false, nav = false, gnd = false;
+        boolean fly = false, nav = false, gnd = false, crawl = false;
 
         for(int i = 0; i < members.size; i++){
             UnitPayload up = members.get(i);
@@ -176,6 +178,11 @@ public class MegaUnitEntity extends UnitEntity{
                 nav = true;
             }else{
                 gnd = true;
+                // 爬爬虫（Crawlc）在深水里的速度系数是原版写死的 0.45，和普通单位不同
+                try{
+                    if(t.constructor != null && t.constructor.get() instanceof mindustry.gen.Crawlc) crawl = true;
+                }catch(Throwable ignored){
+                }
             }
 
             float h = Math.max(t.hitSize, 1f);
@@ -196,6 +203,7 @@ public class MegaUnitEntity extends UnitEntity{
         hasFlyer = fly;
         hasNaval = nav;
         hasGround = gnd;
+        hasCrawler = crawl;
         dominant = dom;
         maxHealth(Math.max(sumMax, 1f));
         armor(sumArmor);
@@ -414,6 +422,17 @@ public class MegaUnitEntity extends UnitEntity{
             }
             // 有飞行成员 → 会升空 → 按 hitSize 生成引擎（见 MegaUnitType.rebuildEngines）
             ct.hoverEngines = fl;
+            if(n){
+                // 纯船编组：照原版 init() 对山东（WaterMovec）的那几条来
+                //   naval：影响 CommandAI 的通行判定（船默认只认水路）
+                //   emitWalkSound / shadowElevation：视觉（船的影子是水面影）
+                // 混合编组（船+陆/飞）不给 naval —— 它还要上岸走路，按陆地判定更合理。
+                if(!g && !fl){
+                    ct.naval = true;
+                    ct.emitWalkSound = false;
+                    if(ct.shadowElevation < 0f) ct.shadowElevation = 0.11f;
+                }
+            }
             if(engRef != null){
                 // 换算成"相对 hitSize 的比例"：身体贴图也是按 综合hitSize/成员hitSize 缩放的，
                 // 引擎跟身体同源，画出来才配套（不会出现身板巨大、尾焰迷你）
@@ -453,6 +472,10 @@ public class MegaUnitEntity extends UnitEntity{
                 if(!ct.commands.contains(cmd)) ct.commands.add(cmd);
             for(var st : t.stances)
                 if(!ct.stances.contains(st)) ct.stances.add(st);
+            // 抗性也继承（船在水里会被水地形持续套"湿" = -6% 速度，
+            // 原版是在 init() 里给船加 StatusEffects.wet 免疫的，巨兽 init() 没跑过 → 白吃这个减速）
+            for(var immune : t.immunities)
+                ct.immunities.add(immune);
             if(t.canBoost) ct.canBoost = true;
             if(t.canHeal) ct.canHeal = true;
         }
@@ -622,6 +645,43 @@ public class MegaUnitEntity extends UnitEntity{
             return hasNaval ? MODE_SWIM : MODE_WALK;
         }
         return hasGround ? MODE_WALK : MODE_STUCK;
+    }
+
+    /**
+     * 地形速度系数（"水阻"就在这里）。
+     *
+     * 原版是按**实体组件**分派的，不是按类型：
+     * <ul>
+     *     <li>船（{@code WaterMoveComp} / {@code WaterCrawlComp}）把
+     *         {@code floorSpeedMultiplier()} 整个 {@code @Replace} 掉了：
+     *         {@code (floor.shallow ? 1f : 1.3f)} —— 水里不但没有水阻，深水还快 30%；</li>
+     *     <li>普通单位（{@code UnitComp}）才是
+     *         {@code pow(floor.speedMultiplier, type.floorMultiplier)}：深水 0.2、浅水 0.5；</li>
+     *     <li>爬爬虫（{@code CrawlComp}）：深水固定 0.45。</li>
+     * </ul>
+     * 巨兽实体继承的是最普通的 {@code UnitEntity}、派生类型又是 late 注册
+     * （{@code floorMultiplier} 停在默认 1），所以两艘船合体后按"普通单位"算 ——
+     * 一进深水直接吃 0.2 倍水阻（用户报的"两艘船组合后超级慢 / 没处理水的阻力"）。
+     * 这里按移动模式分派：游/搁浅（有船成员的形态）用船那套，爬虫成员在深水按爬虫那套，
+     * 其余交给原版 UnitComp 的算法。
+     */
+    @Override
+    public float floorSpeedMultiplier(){
+        if(!isFlying()){
+            int mode = moveMode();
+            if(mode == MODE_SWIM || mode == MODE_STUCK){
+                // 船：水里没有水阻（深水 1.3、浅水 1.0），和原版 WaterMoveComp 一致
+                mindustry.world.blocks.environment.Floor on = floorOn();
+                return (on != null && on.shallow ? 1f : 1.3f) * speedMultiplier;
+            }
+            if(hasCrawler){
+                // 爬虫：原版 CrawlComp 对深水固定 0.45（不受 floorMultiplier 影响）
+                mindustry.world.blocks.environment.Floor on = floorOn();
+                if(on != null && on.isDeep())
+                    return (float)Math.pow(0.45f, type.floorMultiplier) * speedMultiplier;
+            }
+        }
+        return super.floorSpeedMultiplier();
     }
 
     /**
