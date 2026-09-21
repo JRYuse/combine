@@ -171,7 +171,10 @@ public class Driver extends Mod{
                 Timer.schedule(() -> shot("mega_hud"), 30f);
                 Timer.schedule(Driver::megaOpenPanel, 34f);
                 Timer.schedule(() -> shot("mega_panel"), 38f);
-                Timer.schedule(() -> { Log.info("[drv] mega 模式结束 frames=@", frames); Core.app.exit(); }, 44f);
+                // 指挥模式：框选巨兽后命令菜单里的图标（用户报"一直显示 dagger"）
+                Timer.schedule(Driver::megaCommandMode, 42f);
+                Timer.schedule(() -> shot("mega_command"), 47f);
+                Timer.schedule(() -> { Log.info("[drv] mega 模式结束 frames=@", frames); Core.app.exit(); }, 53f);
             }else if(mode.equals("userpanel")){
                 // 用户报："组合**工厂**物品面板…清空所有物资"。直接读用户存档，挑几台装满货的
                 // 组合工厂把信息面板弹出来截图，并把面板里的文字（Bar 的 label）打进日志。
@@ -259,7 +262,7 @@ public class Driver extends Mod{
     static final String mode = System.getProperty("drv.mode", "list");
 
     // ---------------- 组合巨兽（mace + oct 融合） ----------------
-    static Unit megaUnit, maceUnit, octUnit, octUnit2;
+    static Unit megaUnit, maceUnit, octUnit, octUnit2, polyUnit;
     static int megaPhase = 0, megaFrames = -1;
 
     static Object combineCall(String cls, String method, Class<?>[] sig, Object... args){
@@ -322,6 +325,11 @@ public class Driver extends Mod{
             octUnit2 = UnitTypes.oct.create(Team.sharded);
             octUnit2.set(cx + 70f, cy + 20f);
             octUnit2.add();
+            // poly：工程/采矿单位 —— 自动重建 / 辅助建造 / 挖矿 这些指令都挂在它身上，
+            // 合体后指令表必须继承（用户报的"poly 合体后这些命令消失"）
+            polyUnit = UnitTypes.poly.create(Team.sharded);
+            polyUnit.set(cx - 60f, cy + 20f);
+            polyUnit.add();
             Core.camera.position.set(cx, cy);
             Log.info("[drv] mega 场景: 陆地=@,@ mace=@(@, @) oct=@(@, @) Groups.unit=@ frames=@", megaOx, megaOy,
                 maceUnit.type.name, (int)maceUnit.x, (int)maceUnit.y, octUnit.type.name, (int)octUnit.x, (int)octUnit.y,
@@ -589,6 +597,62 @@ public class Driver extends Mod{
             d.show();
             Log.info("[drv] 巨兽信息面板已弹出（子元素=@）frames=@", panel.getChildren().size, frames);
         }catch(Throwable t){ Log.err("[drv] megaOpenPanel failed", t); }
+    }
+
+    /**
+     * 进指挥模式、把巨兽塞进选择集（= 玩家框选它），把命令菜单截图下来。
+     * 面板里的单位图标走的是 content.unit(unit.type.id).uiIcon —— 派生类型共用基础巨兽的占位 id，
+     * 所以这里顺手把"面板实际会用的那个类型/图标"打出来对账。
+     */
+    static void megaCommandMode(){
+        try{
+            if(megaUnit == null) return;
+            // 真按 Shift 进指挥模式做不到（commandMode 每帧按按键状态重算），
+            // 所以这里把"命令菜单列表用的那个控件"直接搭出来：原版面板用的是
+            // StatValues.stack(content.unit(unit.type.id), 数量) → stack(type.uiIcon, ...)，
+            // 画出来的是不是巨兽自己的图标，一眼就能看。
+            Vars.control.input.selectedUnits.clear();
+            Vars.control.input.selectedUnits.add(megaUnit);
+            arc.Events.fire(mindustry.game.EventType.Trigger.unitCommandChange);
+
+            mindustry.type.UnitType resolved = Vars.content.unit(megaUnit.type.id);
+            Object dominant = field(megaUnit.getClass(), megaUnit, "dominant");
+            String domIcon = "-", resIcon = "-";
+            if(dominant instanceof UnitType dt && dt.uiIcon != null) domIcon = regionName(dt.uiIcon);
+            if(resolved != null && resolved.uiIcon != null) resIcon = regionName(resolved.uiIcon);
+            Log.info("[drv] 指挥模式: 巨兽 type=@(id=@) → content.unit(id)=@(@) 名字=@",
+                megaUnit.type.name, megaUnit.type.id, resolved == null ? "null" : resolved.name,
+                resolved == null ? "-" : resolved.getClass().getSimpleName(),
+                resolved == null ? "-" : resolved.localizedName);
+            Log.info("[drv]   代表成员图标=@ 面板会用的图标=@ 同一个=@", domIcon, resIcon, domIcon.equals(resIcon));
+            Log.info("[drv]   选择集=@", Vars.control.input.selectedUnits.size);
+
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            panel.add("命令菜单里那一格（StatValues.stack(content.unit(type.id), 1)）：").left().row();
+            panel.table(t -> {
+                t.left();
+                t.add(mindustry.world.meta.StatValues.stack(resolved, 1)).pad(6f);
+                t.add(new arc.scene.ui.Image(UnitTypes.dagger.uiIcon)).size(32f).pad(6f).tooltip("这是 dagger（旧 bug 里显示的那个）");
+                t.add("← 左=现在面板会显示的；右=dagger（旧 bug 对照）").left().padLeft(6f);
+            }).left().row();
+            // 命令菜单里的指令按钮行（原版面板就是遍历 content.unit(id).commands 画这些）
+            panel.add("命令按钮（面板遍历 type.commands 画的就是这些）：").left().padTop(8f).row();
+            StringBuilder names = new StringBuilder();
+            panel.table(t -> {
+                t.left();
+                int col = 0;
+                for(var command : resolved.commands){
+                    t.button(mindustry.gen.Icon.icons.get(command.icon, mindustry.gen.Icon.cancel), mindustry.ui.Styles.clearNoneTogglei, () -> {})
+                        .size(44f).pad(3f).tooltip(command.localized());
+                    if(++col % 8 == 0) t.row();
+                }
+            }).left().row();
+            for(var command : resolved.commands) names.append(command.name).append(' ');
+            Log.info("[drv]   面板会用到的指令: @", names.toString());
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("指挥模式单位图标核对");
+            d.cont.add(panel).pad(10f);
+            d.show();
+        }catch(Throwable t){ Log.err("[drv] megaCommandMode failed", t); }
     }
 
     static void megaMerge(){

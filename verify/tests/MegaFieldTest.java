@@ -148,6 +148,85 @@ public class MegaFieldTest implements ApplicationListener{
         check("clipSize 有效（不是 -1，视口裁剪才有正常包围盒）", mega.type.clipSize > 0f);
         check("有武器挂座（成员武器没被 setType 清掉）", mega.mounts() != null && mega.mounts().length > 0);
 
+        // 引擎：late 注册导致 UnitType.init() 从没跑过，engines 原来恒为空 → 会飞的巨兽没有尾焰。
+        // 比例取自"飞行成员里体型最大的那台"（这里是 oct：hitSize 66 / engineOffset 46 / engineSize 7.8），
+        // 也就是 engineOffset = 综合hitSize × 46/66、engineSize = 综合hitSize × 7.8/66
+        // —— 和身体贴图同一个缩放来源，画出来才配套（没参考时兜底用 flare 的 5.75/9、2.5/9）。
+        int engines = mega.type.engines == null ? -1 : mega.type.engines.size;
+        float eo = mega.type.engineOffset, es = mega.type.engineSize;
+        float refOffset = UnitTypes.oct.engineOffset / UnitTypes.oct.hitSize;
+        float refSize = UnitTypes.oct.engineSize / UnitTypes.oct.hitSize;
+        System.out.println("[MF] 引擎: 个数=" + engines + " engineOffset=" + eo + " engineSize=" + es
+            + " hitSize=" + mega.hitSize() + "（oct 比例 @" + refOffset + " / @" + refSize + "）");
+        check("有飞行成员的巨兽有引擎（原来恒为 0）", engines > 0);
+        check("居中一个引擎（同 flare / oct 的画法）", engines == 1);
+        check("引擎位置随体型放大（engineOffset ≈ hitSize × 46/66 = " + (mega.hitSize() * refOffset) + "）",
+            Math.abs(eo - mega.hitSize() * refOffset) < 0.01f);
+        check("引擎大小随体型放大（engineSize ≈ hitSize × 7.8/66 = " + (mega.hitSize() * refSize) + "）",
+            Math.abs(es - mega.hitSize() * refSize) < 0.01f);
+        for(var e : mega.type.engines)
+            System.out.println("[MF]   引擎 @" + e.x + "," + e.y + " 半径=" + e.radius + " 朝向=" + e.rotation);
+
+        // 纯地面编组（两台没有飞行能力的单位）：不该有引擎、也不该升空
+        Unit dagger = UnitTypes.dagger.create(Team.sharded);
+        dagger.set(ox * 8f + 140f, oy * 8f);
+        dagger.add();
+        Unit mace2 = UnitTypes.mace.create(Team.sharded);
+        mace2.set(ox * 8f + 160f, oy * 8f);
+        mace2.add();
+        run(20);
+        Unit groundMega = null;
+        try{
+            Class<?> c = Class.forName("combine.units.UnitComboMerge", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+            Object m2 = c.getMethod("merge", Unit.class).invoke(null, dagger);
+            if(m2 instanceof Unit u2) groundMega = u2;
+        }catch(Throwable ignored){}
+        if(groundMega != null){
+            int ge = groundMega.type.engines == null ? -1 : groundMega.type.engines.size;
+            System.out.println("[MF] 纯地面编组巨兽（dagger + 前面的地面单位）: 引擎=" + ge
+                + " elevation=" + groundMega.elevation);
+            check("不含飞行成员的巨兽不生成引擎", ge == 0);
+        }
+
+        // 成员指令必须继承：poly 是工程/采矿单位，原版 init() 会给它加
+        // 自动重建 / 辅助建造 / 挖矿，合体后这些指令不能丢（用户报的）
+        Unit poly = UnitTypes.poly.create(Team.sharded);
+        poly.set(ox * 8f + 260f, oy * 8f);
+        poly.add();
+        Unit mace3 = UnitTypes.mace.create(Team.sharded);
+        mace3.set(ox * 8f + 280f, oy * 8f);
+        mace3.add();
+        run(20);
+        Unit polyMega = null;
+        try{
+            Class<?> c = Class.forName("combine.units.UnitComboMerge", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+            Object m3 = c.getMethod("merge", Unit.class).invoke(null, poly);
+            if(m3 instanceof Unit u3) polyMega = u3;
+        }catch(Throwable ignored){}
+        if(polyMega != null){
+            var cmds = polyMega.type.commands;
+            boolean rebuild = cmds.contains(mindustry.ai.UnitCommand.rebuildCommand, true);
+            boolean assist = cmds.contains(mindustry.ai.UnitCommand.assistCommand, true);
+            boolean mine = cmds.contains(mindustry.ai.UnitCommand.mineCommand, true);
+            // 命令面板读的是占位类型（content.unit(type.id)）的指令表，两边都要有
+            var placeholderCmds = Vars.content.unit(polyMega.type.id).commands;
+            boolean placeholderHas = placeholderCmds.contains(mindustry.ai.UnitCommand.rebuildCommand, true)
+                && placeholderCmds.contains(mindustry.ai.UnitCommand.mineCommand, true);
+            System.out.println("[MF] poly 合体后指令: " + cmds + "（占位类型指令: " + placeholderCmds + "）");
+            check("合体后保留「自动重建」指令", rebuild);
+            check("合体后保留「辅助建造」指令", assist);
+            check("合体后保留「挖矿」指令", mine);
+            check("命令面板用的占位类型也有这些指令（面板才会列出来）", placeholderHas);
+        }
+
+        // 命令面板按 unit.type.id → content.unit(id) 取图标；派生类型共用基础巨兽的占位 id，
+        // 所以占位类型必须带"组合巨兽"这个名字（图标由客户端同步，见 compTypeFor）
+        var byId = Vars.content.unit(mega.type.id);
+        System.out.println("[MF] content.unit(type.id) = " + byId.name + " / " + byId.localizedName
+            + "，是巨兽基础类型=" + byId.getClass().getName().startsWith("combine.units.mega"));
+        check("按 type.id 查回来的类型就是命令面板会用的那个（基础巨兽类型）", byId.name.startsWith("combine-mega"));
+        check("它的名字是「组合巨兽」（原先是 combine-mega-ground）", "组合巨兽".equals(byId.localizedName));
+
         // 混合编组里有飞行成员：升到飞行高度（这就是"身体被画到地板下面"的触发条件）
         run(60);
         System.out.println("[MF] 60 tick 后: elevation=" + mega.elevation + " 盾=" + mega.shield() + "/" + fieldMax(mega));

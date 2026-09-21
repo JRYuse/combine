@@ -67,13 +67,21 @@ public class UnitComboMerge{
             engineSize = 10f;
             engineOffset = 20f;
             speed = 1.6f;
+            // 这个变体自带引擎参数：比例照它自己的来（hitSize 20 → 位置 1.0×、大小 0.5×）
+            engineOffsetRatio = 20f / 20f;
+            engineSizeRatio = 10f / 20f;
         }};
 
         megaNaval = new MegaUnitType("combine-mega-naval"){{
             speed = 1.1f;
         }};
 
-        // 类型没有自己的贴图：图标兜底，防止内容浏览器/小地图等 UI 拿到空图标
+        // 类型没有自己的贴图：图标兜底，防止内容浏览器/小地图等 UI 拿到空图标。
+        // 注意这几个只是"还没有巨兽存在时"的占位：命令面板是按 unit.type.id 去 content.unit(id)
+        // 取类型的（派生类型共用 megaGround 的 id），所以每次推导出新的成员构成时，
+        // MegaUnitEntity.compTypeFor 会把 megaGround 的图标/名字同步成代表成员那套，
+        // 否则面板会一直显示 dagger（用户报的"框选巨兽显示 dagger 图标"）。
+        megaGround.localizedName = megaAir.localizedName = megaNaval.localizedName = "组合巨兽";
         if(!Vars.headless){
             try{
                 megaGround.fullIcon = megaGround.uiIcon = UnitTypes.dagger.fullIcon;

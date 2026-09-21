@@ -1,5 +1,7 @@
 package combine.units.mega;
 
+import arc.Core;
+import arc.graphics.g2d.TextureRegion;
 import arc.math.Angles;
 import arc.struct.ObjectMap;
 import arc.struct.Seq;
@@ -338,8 +340,15 @@ public class MegaUnitEntity extends UnitEntity{
         // 占位 id：快照/存档写它，对端解析出基础巨兽类型后由成员列表重建本类型
         ct.id = UnitComboMerge.megaGround.id;
         ct.localizedName = "组合巨兽";
-        if(!mindustry.Vars.headless && dom.fullIcon != null){
-            ct.fullIcon = ct.uiIcon = dom.fullIcon;
+        // 代表成员的图标（客户端才有 atlas；服务端没有贴图，跳过）
+        TextureRegion icon = null;
+        if(!mindustry.Vars.headless){
+            icon = dom.uiIcon != null ? dom.uiIcon : dom.fullIcon;
+            if(icon != null && Core.atlas != null && Core.atlas.isFound(icon)){
+                ct.fullIcon = ct.uiIcon = icon;
+            }else{
+                icon = null;
+            }
         }
 
         ct.health = Math.max(sumMax, 1f);
@@ -384,12 +393,26 @@ public class MegaUnitEntity extends UnitEntity{
         // 每帧直接读 type.pathCost，null 会每帧抛异常打断整个单位更新链 = 游戏极慢）。
         // 按成员构成指派：有陆地成员走地面代价；纯海军走水面；纯飞行无视地形。
         {
-            boolean g = false, n = false;
+            boolean g = false, n = false, fl = false;
+            UnitType engRef = null;
             for(UnitType t : tally.keys()){
-                if(!t.flying){
-                    if(UnitComboMerge.isNaval(t)) n = true;
-                    else g = true;
+                if(t.flying){
+                    fl = true;
+                    // 引擎参考：飞行成员里体型最大的那台（它自己的 engineOffset/engineSize
+                    // 最接近"巨兽该长什么样"；flare 那套只是没有飞行成员参考时的兜底）
+                    if(engRef == null || t.hitSize > engRef.hitSize) engRef = t;
                 }
+                else if(UnitComboMerge.isNaval(t)) n = true;
+                else g = true;
+            }
+            // 有飞行成员 → 会升空 → 按 hitSize 生成引擎（见 MegaUnitType.rebuildEngines）
+            ct.hoverEngines = fl;
+            if(engRef != null){
+                // 换算成"相对 hitSize 的比例"：身体贴图也是按 综合hitSize/成员hitSize 缩放的，
+                // 引擎跟身体同源，画出来才配套（不会出现身板巨大、尾焰迷你）
+                float refHit = Math.max(engRef.hitSize, 1f);
+                if(engRef.engineOffset > 0.01f) ct.engineOffsetRatio = engRef.engineOffset / refHit;
+                if(engRef.engineSize > 0.01f) ct.engineSizeRatio = engRef.engineSize / refHit;
             }
             // pathCost 读旧 Pathfinder.costTypes（按下标取实例），pathCostId 读
             // ControlPathfinder.costTypes（ground=0/hover=1/legs=2/naval=3）
@@ -410,12 +433,51 @@ public class MegaUnitEntity extends UnitEntity{
         ct.defaultCommand = mindustry.ai.UnitCommand.moveCommand;
         ct.stances.addAll(mindustry.ai.UnitStance.stop, mindustry.ai.UnitStance.holdFire,
             mindustry.ai.UnitStance.pursueTarget, mindustry.ai.UnitStance.patrol, mindustry.ai.UnitStance.ram);
+        // 【成员指令/姿态要并进来】原版这些是 UnitType.init() 按能力填的：
+        //   canBoost 且 buildSpeed>0 → 自动重建(rebuildCommand) + 辅助建造(assistCommand)；
+        //   mineTier>0 → 挖矿(mineCommand)；flying 且 canHeal → 治疗建筑(repairCommand)；
+        //   还有载具类的装载/卸载指令。巨兽类型是 late 注册、init() 从没跑过，
+        //   这里只写死 [移动, 组合] 的话，poly 这类工程/采矿单位合体后上面那些指令就全没了
+        //   （用户报的"poly 和其它单位合体后 自动重建/辅助建造/治疗建筑/挖矿 命令消失"）。
+        // 直接取每个成员的 commands/stances 求并集：成员类型是正常加载的内容，init() 跑过，
+        // 它们的列表就是最权威的答案（还能顺带带上别的模组给单位加的指令）。
+        for(UnitType t : tally.keys()){
+            for(var cmd : t.commands)
+                if(!ct.commands.contains(cmd)) ct.commands.add(cmd);
+            for(var st : t.stances)
+                if(!ct.stances.contains(st)) ct.stances.add(st);
+            if(t.canBoost) ct.canBoost = true;
+            if(t.canHeal) ct.canHeal = true;
+        }
         ct.range = 260f;
         ct.maxRange = 260f;
 
         // hitSize/是否低空是这里才定的，late-init 的绘制字段（flyingLayer/clipSize/lightRadius）要按新值重算
         ct.lowAltitude = true;
         ct.applyLateDefaults();
+
+        // 【占位类型同步】原版命令面板是按 unit.type.id 聚合、再用 content.unit(id) 取类型的
+        // （PlacementFragment：图标用 StatValues.stack(type, n) 读 type.uiIcon，指令按钮遍历
+        // type.commands）。派生巨兽类型全都共用基础巨兽的占位 id，所以面板实际拿到的是
+        // 基础类型本身 —— 它必须跟着这次推导同步，否则：
+        //   · 图标一直是注册时写死的 dagger（用户报的"框选巨兽显示 dagger"）；
+        //   · 指令只剩 [移动, 组合]，成员的自动重建/辅助建造/治疗建筑/挖矿在面板里全不见了。
+        // 纯元数据（名字/指令/姿态/canBoost），服务端也一起同步，只有图标在客户端才有的贴图上做。
+        MegaUnitType placeholder = UnitComboMerge.megaGround;
+        if(placeholder != null){
+            placeholder.localizedName = ct.localizedName;
+            placeholder.commands.clear();
+            placeholder.commands.addAll(ct.commands);
+            placeholder.stances.clear();
+            placeholder.stances.addAll(ct.stances);
+            placeholder.defaultCommand = ct.defaultCommand;
+            placeholder.canBoost = ct.canBoost;
+            placeholder.canHeal = ct.canHeal;
+            if(icon != null){
+                placeholder.fullIcon = icon;
+                placeholder.uiIcon = icon;
+            }
+        }
 
         compTypeCache.put(sig, ct);
         return ct;

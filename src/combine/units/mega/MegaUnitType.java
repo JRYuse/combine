@@ -22,6 +22,26 @@ import mindustry.type.UnitType;
 public class MegaUnitType extends UnitType{
 
     /**
+     * 这只巨兽会不会升空（成员里有飞行单位）。
+     *
+     * 巨兽"能不能飞"是按成员构成算的（见 {@link MegaUnitEntity#moveMode()}），类型上的
+     * {@code flying} 必须保持 false（否则原版会把它当固定飞行单位，碰撞/高度全乱）。
+     * 但引擎要不要画，就靠这个标记：会升空才生成引擎。
+     */
+    public boolean hoverEngines = false;
+
+    /** 引擎尺寸/位置的兜底参考比例，取自 flare（hitSize 9 / engineOffset 5.75 / engineSize 2.5）。 */
+    public static final float refHitSize = 9f, refEngineOffset = 5.75f, refEngineSize = 2.5f;
+
+    /**
+     * 引擎比例（相对 hitSize）。默认用 flare 那套：
+     * flare hitSize 9、engineOffset 5.75、engineSize 2.5 → 位置 0.639×hitSize、大小 0.278×hitSize。
+     * 成员里有飞行单位时，{@link MegaUnitEntity} 会按那台单位自己的引擎参数改写这两个比例
+     * （身体贴图就是按同一套缩放画的，引擎跟着同源才不会一个巨大一个迷你）。
+     */
+    public float engineOffsetRatio = refEngineOffset / refHitSize, engineSizeRatio = refEngineSize / refHitSize;
+
+    /**
      * 补齐 {@link UnitType#init()} / {@link UnitType#load()} 才会写的那些字段。
      *
      * 巨兽类型是模组 init 期 late 注册的，这两个方法**从没跑过**，而其中两个字段是"无效默认值"：
@@ -46,6 +66,28 @@ public class MegaUnitType extends UnitType{
             lightRadius = Math.max(60f, hitSize * 2.3f);
         }
         clipSize = Math.max(Math.max(clipSize, lightRadius * 1.1f), hitSize * 2.4f);
+        rebuildEngines();
+    }
+
+    /**
+     * 按体型生成引擎。
+     *
+     * 原版是在 {@link UnitType#init()} 里按 {@code engineSize/engineOffset} 建 {@code engines} 的，
+     * 而巨兽类型是 late 注册、init() 从没跑过 —— {@code engines} 永远是空表，
+     * 于是"会飞的巨兽"一点尾焰都没有。这里按 hitSize × 比例算出尺寸与位置
+     * （比例默认取自 flare；有飞行成员时由 MegaUnitEntity 换成那台单位的参数）。
+     */
+    public void rebuildEngines(){
+        engines.clear();
+        // 不会升空的巨兽不需要引擎（地面时 elevation=0，引擎本来就画不出来）
+        if(!flying && !hoverEngines) return;
+
+        engineOffset = hitSize * engineOffsetRatio;
+        engineSize = hitSize * engineSizeRatio;
+        if(engineOffset <= 0.01f || engineSize <= 0.01f) return;
+
+        // 和 flare / oct 一样居中一个引擎（引擎是圆，跟着 elevation 缩放，不会越界）
+        engines.add(new UnitEngine(0f, -engineOffset, engineSize, -90f));
     }
 
     public MegaUnitType(String name){
@@ -138,6 +180,12 @@ public class MegaUnitType extends UnitType{
             }
         }
 
+        // 【先引擎、后机身】——和原版 UnitType.draw 同一个顺序（引擎 → Draw.z(z) → drawBody）：
+        // 引擎是画在机身**下面**的，机身盖住它朝内那半圈，看上去才是"喷口从机身尾部喷出来"。
+        // 反过来（机身先、引擎后）就是用户看到的"引擎糊在单位身上"。
+        Draw.z(z);
+        if(engines.size > 0) drawEngines(unit);
+
         // 本体：代表类型贴图，按缩放系数
         Draw.z(z);
         applyColor(unit);
@@ -146,9 +194,6 @@ public class MegaUnitType extends UnitType{
                 region.width * s * Draw.scl, region.height * s * Draw.scl, unit.rotation - 90);
         }
         Draw.reset();
-
-        // 引擎（飞行变体）
-        if(engines.size > 0) drawEngines(unit);
 
         // 武器挂在本实体自己的 mounts 上（成员武器复制 + 环形排布），原版绘制循环直接可用
         drawWeaponOutlines(unit);
