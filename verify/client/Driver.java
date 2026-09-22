@@ -1,5 +1,5 @@
 package drv;
-import arc.*; import arc.util.*; import arc.util.Timer;
+import arc.*; import arc.struct.Seq; import arc.util.*; import arc.util.Timer;
 import mindustry.*; import mindustry.content.*; import mindustry.game.*; import mindustry.gen.*; import mindustry.mod.*;
 import mindustry.ui.dialogs.*; import mindustry.world.*; import mindustry.world.modules.*; import mindustry.type.*;
 
@@ -33,12 +33,14 @@ public class Driver extends Mod{
     static int counter = -1;
 
     @Override public void init(){
+        MpScenario.install();   // -Ddrv.scenario=1 时：服务端剧本（造单位/融合/解体）
         Events.on(EventType.ClientLoadEvent.class, e -> {
             Log.info("[drv] ClientLoadEvent mods=@ blocks=@ mode=@", Vars.mods.list().size, Vars.content.blocks().size, mode);
             try{ Core.files.absolute(outDir).mkdirs(); }catch(Throwable t){}
             counter = nextIndex();
             Log.info("[drv] 截图目录 @（从序号 @ 开始）", Core.files.absolute(outDir).absolutePath(), counter);
             ml = Vars.mods.getMod("combine").main.getClass().getClassLoader();
+            // 注：延迟/丢包是 verify/lagnet.py 那个 socket 代理做的，模组里不做任何网络拦截
             // -Ddrv.uiscale=200 → 模拟"小逻辑宽度"（PC 上 uiscale 调大/窗口小），用来复现排版问题
             String us = System.getProperty("drv.uiscale");
             if(us != null){
@@ -236,6 +238,27 @@ public class Driver extends Mod{
                         legsRef == null ? -1f : legsRef.hitSize());
                 }, 28f);
                 Timer.schedule(() -> { Log.info("[drv] mech 模式结束 frames=@", frames); Core.app.exit(); }, 36f);
+            }else if(mode.equals("mp")){
+                // 真联机：连接到 verify/run-mp.sh 起的 headless 服务器，看**服务端造/融合/解体单位**
+                // 之后客户端这边到底同步成了什么样（单位在不在、成员数对不对、有没有幽灵残留）。
+                installFrameCounter();
+                keepDialogsHidden();
+                // 【镜头必须自己钉住】客户端默认是"相机跟随玩家单位"，而玩家在核心那边、
+                // 巨兽在地图另一头 —— 不钉镜头，截图永远拍不到巨兽（早先几轮联机截图就是
+                // "全是水/全是基地"，看着像"客户端不显示巨兽"，其实是根本没框进画面）。
+                Core.settings.put("detach-camera", true);
+                installCameraLock();
+                int mpSecs = Integer.parseInt(System.getProperty("drv.mpSeconds", "100"));
+                Timer.schedule(Driver::mpConnect, 4f);
+                Timer.schedule(Driver::mpReport, 8f, 1f, mpSecs);
+                Timer.schedule(() -> shot("mp_joined"), 14f);
+                // 每 0.25 秒也补一次（installCameraLock 走 HUD 帧更新，双保险）
+                Timer.schedule(Driver::lookAtMega, 20f, 0.25f, 44 * 4);
+                Timer.schedule(() -> shot("mp_mega"), 26f);
+                Timer.schedule(() -> shot("mp_mega2"), 50f);
+                Timer.schedule(() -> shot("mp_after_split"), 66f);
+                Timer.schedule(Driver::mpVerdict, mpSecs - 2);
+                Timer.schedule(() -> { Log.info("[drv] mp 模式结束 frames=@", frames); Core.app.exit(); }, mpSecs);
             }else if(mode.equals("userpanel")){
                 // 用户报："组合**工厂**物品面板…清空所有物资"。直接读用户存档，挑几台装满货的
                 // 组合工厂把信息面板弹出来截图，并把面板里的文字（Bar 的 label）打进日志。
@@ -394,7 +417,7 @@ public class Driver extends Mod{
             Core.camera.position.set(cx, cy);
             Log.info("[drv] mega 场景: 陆地=@,@ mace=@(@, @) oct=@(@, @) Groups.unit=@ frames=@", megaOx, megaOy,
                 maceUnit.type.name, (int)maceUnit.x, (int)maceUnit.y, octUnit.type.name, (int)octUnit.x, (int)octUnit.y,
-                Groups.unit.size(), frames);
+                Groups.unit.count(u -> true), frames);
         }catch(Throwable t){ Log.err("[drv] megaSpawn failed", t); }
     }
 
@@ -646,7 +669,9 @@ public class Driver extends Mod{
         var t = new arc.scene.ui.layout.Table();
         t.touchable = arc.scene.event.Touchable.disabled;
         t.update(() -> {
-            Unit u = camTarget != null ? camTarget : megaUnit;
+            // camTarget 优先；其次是大模式自己造的巨兽；最后按类名找（联机模式：巨兽是服务端同步过来的，
+            // 没有本地字段可指）—— 不这么兜底，联机截图会拍到"镜头跟着玩家、巨兽在画面外"。
+            Unit u = camTarget != null ? camTarget : (megaUnit != null ? megaUnit : megaUnit());
             if(u != null && u.isAdded()) Core.camera.position.set(u.x, u.y);
         });
         Vars.ui.hudGroup.addChild(t);
@@ -1088,7 +1113,7 @@ public class Driver extends Mod{
     static void megaMerge(){
         try{
             Log.info("[drv] 融合前: Groups.unit=@ mace 有效=@ 已添加=@ 血=@ oct 有效=@ 已添加=@ 血=@ 盾=@",
-                Groups.unit.size(),
+                Groups.unit.count(u -> true),
                 maceUnit == null ? "-" : maceUnit.isValid(), maceUnit == null ? "-" : maceUnit.isAdded(), maceUnit == null ? -1f : maceUnit.health(),
                 octUnit == null ? "-" : octUnit.isValid(), octUnit == null ? "-" : octUnit.isAdded(), octUnit == null ? -1f : octUnit.health(),
                 octUnit == null ? -1f : octUnit.shield());
@@ -1205,11 +1230,30 @@ public class Driver extends Mod{
         try{
             for(arc.scene.Element e : Core.scene.root.getChildren()){
                 if(e instanceof arc.scene.ui.Dialog d){
+                    // 弹窗里往往就是"被踢/连接失败"的原因（比如 @disconnect.closed），先把文字打出来再关
+                    String text = dialogText(d);
+                    Log.info("[drv] 关掉弹窗 @ @", d.getClass().getSimpleName(), text.isEmpty() ? "" : ("→ " + text));
                     d.hide();
-                    Log.info("[drv] 关掉弹窗");
                 }
             }
         }catch(Throwable t){ Log.err("[drv] hideDialogs failed", t); }
+    }
+
+    /** 递归收集弹窗里的文字（诊断"被服务器踢了/连接失败"的原因）。 */
+    static String dialogText(arc.scene.Element e){
+        StringBuilder sb = new StringBuilder();
+        collectText(e, sb);
+        return sb.length() > 300 ? sb.substring(0, 300) : sb.toString();
+    }
+
+    static void collectText(arc.scene.Element e, StringBuilder sb){
+        try{
+            if(e instanceof arc.scene.ui.Label l && l.getText() != null && l.getText().length() > 0){
+                if(sb.length() > 0) sb.append(" | ");
+                sb.append(l.getText());
+            }
+            if(e instanceof arc.scene.Group g) for(arc.scene.Element c : g.getChildren()) collectText(c, sb);
+        }catch(Throwable ignored){}
     }
 
     /**
@@ -1219,6 +1263,142 @@ public class Driver extends Mod{
      */
     static void keepDialogsHidden(){
         Timer.schedule(Driver::hideDialogs, 2f, 1f, 60);
+    }
+
+    // ==================== 联机（mode=mp） ====================
+
+    static String mpHost = System.getProperty("drv.host", "127.0.0.1");
+    static int mpPort = Integer.parseInt(System.getProperty("drv.port", "6567"));
+    static Seq<String> mpSeen = new Seq<>();
+    static boolean mpConnected = false;
+
+    static void mpConnect(){
+        try{
+            // 服务器会踢掉空名字的连接（KickReason.nameEmpty）
+            String name = System.getProperty("drv.name", "drv-mp");
+            Vars.player.name = name;
+            Core.settings.put("name", name);
+            Log.info("[MP-CLIENT] 模组清单: @（本机名 @）", Vars.mods.getModStrings(), name);
+            Log.info("[MP-CLIENT] 连接 @:@ …", mpHost, mpPort);
+            Vars.netClient.beginConnecting();
+            Vars.net.connect(mpHost, mpPort, () -> Log.info("[MP-CLIENT] 已连上服务器 @:@", mpHost, mpPort));
+            mpConnected = true;
+        }catch(Throwable t){
+            Log.err("[MP-CLIENT] 连接失败", t);
+        }
+    }
+
+    /** 每秒把"客户端看到的世界"打一行（和服务端 MpHost 同一格式，run-mp.sh 拿来比对）。 */
+    static void mpReport(){
+        try{
+            if(!Vars.net.client()) return;
+            String s = mpState();
+            if(!mpSeen.contains(s)) mpSeen.add(s);
+            Log.info("[MP-STATE] " + s);
+            // 每秒把每个单位逐个打出来（排查"幽灵/看不见/成员数不对"时用）：默认关着，
+            // 免得正常跑一次就刷几千行；要排查就加参数 -Ddrv.mpVerbose=1。
+            if("1".equals(System.getProperty("drv.mpVerbose"))){
+                Log.info("[MP-DBG] net类=@ 本地队伍=@ 全图单位=@ 方块=@ 玩家数=@ 位置=@,@ map=@",
+                    Vars.net.getClass().getSimpleName(),
+                    Vars.player.team().name, Groups.unit.count(u -> true), Groups.build.count(b -> true), Groups.player.size(),
+                    (int)Vars.player.x, (int)Vars.player.y, Vars.state.map == null ? "null" : Vars.state.map.name());
+                for(Unit u : Groups.unit){
+                    String extra = "";
+                    try{ extra = " members=" + u.getClass().getMethod("memberCount").invoke(u); }catch(Throwable ignored){}
+                    Log.info("[MP-DBG]   单位 id=@ 类=@ 类型=@ 队伍=@ 位置=@,@ 血量=@/@ 已加=@ 有效=@ hit=@ size=@ @",
+                        u.id, u.getClass().getSimpleName(), u.type == null ? "null" : u.type.name,
+                        u.team() == null ? "null" : u.team().name, (int)u.x, (int)u.y, (int)u.health, (int)u.maxHealth,
+                        u.isAdded(), u.isValid(),
+                        (int)u.hitSize, u.type == null ? -1 : (int)u.type.hitSize, extra);
+                }
+            }
+            // 【绘制探针】"客户端不显示巨兽"要么是根本没进绘制、要么是被画到看不见的地方。
+            // 这几个值能把两类原因分开：region 有没有贴图、clipSize/图层是不是负数、
+            // elevation 走哪个绘制分支、迷雾判定、以及镜头到底对着哪。
+            Unit mg = megaUnit();
+            if(mg != null){
+                String dom = "?", scale = "?";
+                try{ dom = String.valueOf(mg.getClass().getField("dominant").get(mg)); }catch(Throwable ignored){}
+                try{ scale = String.valueOf(mg.getClass().getField("drawScale").get(mg)); }catch(Throwable ignored){}
+                Tmp.v1.set(mg.x, mg.y);
+                Core.camera.project(Tmp.v1);
+                Log.info("[MP-DRAW] 巨兽@ 位置=@,@ 屏幕=@,@ 相机=@,@ 有region=@ 有fullIcon=@ clipSize=@ flyingLayer=@ "
+                    + "elevation=@ 代表类型=@ 缩放=@ 迷雾扣住=@ 已加=@ 血=@/@ 盾=@ 玩家单位=@,@（跟随@）",
+                    mg.id, (int)mg.x, (int)mg.y, (int)Tmp.v1.x, (int)Tmp.v1.y,
+                    (int)Core.camera.position.x, (int)Core.camera.position.y,
+                    mg.type.region != null, mg.type.fullIcon != null, mg.type.clipSize,
+                    mg.type.flyingLayer, mg.elevation, dom, scale,
+                    mg.inFogTo(Vars.player.team()), mg.isAdded(), (int)mg.health, (int)mg.maxHealth, (int)mg.shield,
+                    (int)Vars.player.x, (int)Vars.player.y,
+                    Vars.player.unit() == null ? "无" : Vars.player.unit().type.name);
+            }
+        }catch(Throwable t){
+            Log.err("[MP-CLIENT] mpReport 失败", t);
+        }
+    }
+
+    static Seq<String> mpStates(){
+        return mpSeen;
+    }
+
+    /** 镜头对准组合巨兽（截"联机时巨兽长什么样"的证据图用）。 */
+    static boolean mpLoggedCam = false, mpLoggedMiss = false;
+
+    /** 客户端这一侧看到的巨兽实体（按类名找，拿不到就 null）。 */
+    static Unit megaUnit(){
+        for(Unit u : Groups.unit)
+            if(u.getClass().getName().equals("combine.units.mega.MegaUnitEntity")) return u;
+        return null;
+    }
+
+    static void lookAtMega(){
+        try{
+            Unit u = megaUnit();
+            if(u == null){
+                if(!mpLoggedMiss){
+                    mpLoggedMiss = true;
+                    Log.info("[MP-CAM] 没找到巨兽实体（Groups.unit=@）：@", Groups.unit.count(x -> true), unitSummary());
+                }
+                return;
+            }
+            Core.camera.position.set(u.x, u.y);
+            if(!mpLoggedCam){
+                mpLoggedCam = true;
+                Log.info("[MP-CAM] 镜头已对准巨兽 id=@ 位置=@,@ 相机=@,@",
+                    u.id, (int)u.x, (int)u.y, (int)Core.camera.position.x, (int)Core.camera.position.y);
+            }
+        }catch(Throwable t){ Log.err("[MP-CLIENT] lookAtMega 失败", t); }
+    }
+
+    static String unitSummary(){
+        StringBuilder sb = new StringBuilder();
+        for(Unit u : Groups.unit)
+            sb.append(u.getClass().getName()).append("@").append(u.id).append(" ");
+        return sb.toString();
+    }
+
+    static String mpState(){
+        int mega = 0, members = 0, daggers = 0, fortresses = 0, octs = 0, units = 0;
+        for(Unit u : Groups.unit){
+            if(u.team() != Vars.player.team()) continue;
+            units++;
+            if(u.getClass().getName().equals("combine.units.mega.MegaUnitEntity")){
+                mega++;
+                try{ members += (Integer)u.getClass().getMethod("memberCount").invoke(u); }catch(Throwable ignored){}
+            }
+            if(u.type == UnitTypes.dagger) daggers++;
+            if(u.type == UnitTypes.fortress) fortresses++;
+            if(u.type == UnitTypes.oct) octs++;
+        }
+        return "mega=" + mega + " members=" + members + " daggers=" + daggers
+            + " fortresses=" + fortresses + " octs=" + octs + " units=" + units;
+    }
+
+    /** 结尾报告：把客户端见过的所有状态打进日志（run-mp.sh 与服务端的做包含比对）。 */
+    static void mpVerdict(){
+        Log.info("[MP-CLIENT] 客户端见过的世界状态（共 @ 种）：", mpSeen.size);
+        for(String s : mpSeen) Log.info("[MP-CLIENT-STATE] " + s);
+        Log.info("[MP-CLIENT] 最终状态: @", mpState());
     }
 
     static void step1(){

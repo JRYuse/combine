@@ -133,6 +133,29 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
     public transient float megaRange = 240f;
     /** 成员构成签名（成员数 + 各成员类型 id 混合），变化时才重建武器/能力挂载。 */
     private transient int lastSig = -1;
+    /**
+     * 当前 mounts/abilities 是按哪个构成签名建出来的（{@link #rebuildMounts()} 里回填）。
+     *
+     * <p>原版 {@code afterSync}/{@code afterRead} 每个同步快照都会走 {@code setType} →
+     * {@code setupWeapons}。以前这两条路都是"无条件重建"，而重建会换掉整个 mounts/abilities
+     * 数组：武器挂载的装填/冷却/瞄准状态被清零，能力的内部状态也被清零 —— 力场
+     * （{@code ForceFieldAbility}）的展开动画 {@code radiusScale} 每帧 lerp 涨、又被快照压回 0，
+     * 画出来就是用户报的"联机时力墙一直放大缩小"。构成没变就绝不重建。
+     */
+    private transient int mountSig = -1;
+    /**
+     * 最近一次由我们建出来的 mounts/abilities 数组本体。
+     *
+     * <p>原版 {@code setType} 里有两段"按 type 重建数组"的代码：{@code mounts.length !=
+     * type.weapons.size} 就 {@code setupWeapons}、{@code abilities.length != type.abilities.size}
+     * （或首元素是 {@code EmptyDataAbility}）就按 {@code type.abilities} 重新 copy 一遍。
+     * 巨兽的**占位类型**上 weapons 只有那门幽灵武器、abilities 是空的，于是每来一个同步快照
+     * （客户端每秒几十个）都会把按成员构成建好的数组换掉：武器装填/冷却状态清零、
+     * 力场能力的展开动画（{@code radiusScale}）清零 —— 画出来就是"巨兽的力墙一直放大缩小"。
+     * 用数组本体比对，被换掉才重建，没被换就原样保留。
+     */
+    private transient WeaponMount[] builtMounts;
+    private transient Ability[] builtAbilities;
     /** 上次推导结果的快照，用于识别"构成没变但实例数据被 setType 重置"的情况。 */
     private transient int lastMounts = -1, lastAbilities = -1;
     private transient float lastHit = -1f, lastMax = -1f;
@@ -178,8 +201,11 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         refreshDerived(false);
     }
 
-    /** @param force 跳过签名检查强制重建（融合瞬间用）。 */
-    public void refreshDerived(boolean force){
+    /**
+     * 成员构成签名：成员数 + 各成员类型 id 混合（同一份构成永远同一个签名，两端各自推导一致）。
+     * 派生类型缓存、挂载/能力是否要重建，都以它为准。
+     */
+    public int compositionSig(){
         int sig = members.size;
         for(int i = 0; i < members.size; i++){
             UnitPayload up = members.get(i);
@@ -189,12 +215,19 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
                 sig = sig * 31 + 1;
             }
         }
+        return sig;
+    }
+
+    /** @param force 跳过签名检查强制重建（融合瞬间用）。 */
+    public void refreshDerived(boolean force){
+        int sig = compositionSig();
+        boolean sameComp = sig == lastSig;
         // 跳过条件不只看出构成签名：原版 afterSync/afterRead 会调 setType(this.type)，
         // 把 hitSize/maxHealth 重置成类型兜底值、并按 type.weapons(恒为空) 重建 mounts——
         // 构成签名没变但实例数据已被清空，必须用快照比对识别出来并重建。
         WeaponMount[] curMounts = mounts();
         Ability[] curAbilities = abilities();
-        if(!force && sig == lastSig
+        if(!force && sameComp
             && curMounts != null && curMounts.length == lastMounts
             && curAbilities != null && curAbilities.length == lastAbilities
             && Math.abs(hitSize() - lastHit) < 0.01f
@@ -279,7 +312,14 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
             }
         }
 
-        rebuildMounts();
+        // 【只在构成变化、或数组被原版换掉时才重建挂载】原版每个同步快照都会 setType →
+        // "按 type 重建 mounts/abilities"（巨兽占位类型的 weapons/abilities 是空的），
+        // 而重建会换掉数组、把武器装填状态与能力内部状态（力场展开动画）清零；
+        // 客户端每秒收到几十个快照 → 力场永远"刚展开就被压回去" = 用户报的"力墙一直放大缩小"。
+        // 构成没变、数组还是我们建的那份，就只重算标量（生命/体型/类型），挂载与能力原样留着。
+        if(force || !sameComp || mounts() != builtMounts || abilities() != builtAbilities){
+            rebuildMounts();
+        }
 
         // 记录推导结果快照，供下次跳过条件比对（识别 setType 重置）
         WeaponMount[] cur = mounts();
@@ -365,6 +405,11 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         }
         mounts(arr);
         abilities(abs.toArray(Ability.class));
+        // 记住这次建出来的数组本体：原版 setType/readAbilities 换掉它们时（占位类型的
+        // weapons/abilities 是空的），下一次 refreshDerived 按本体比对就能发现并重建
+        builtMounts = mounts();
+        builtAbilities = abilities();
+        mountSig = compositionSig();
 
         // 索敌半径 = 本体半径 + 武器环半径 + 最远武器射程
         float mr = hitSize() * 1.55f;
@@ -383,10 +428,47 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
     @Override
     public void setupWeapons(UnitType def){
         if(members.isEmpty()){
-            mounts(new WeaponMount[0]);
+            if(mounts() == null || mounts().length != 0) mounts(new WeaponMount[0]);
+            mountSig = -1;
             return;
         }
+        // 构成没变、挂载也还在 → 原样保留。
+        // 原版每个同步快照都会 readSync → afterSync → setType → 这里；无条件重建会把武器
+        // 装填/冷却/瞄准状态清零（客户端预测的 reload 不在快照里），也会把力场的展开动画
+        // （ForceFieldAbility.radiusScale）清零 —— 那就是"联机时力墙一直放大缩小"的来源。
+        int sig = compositionSig();
+        if(mountSig == sig && mounts() == builtMounts) return;
         rebuildMounts();
+    }
+
+    /**
+     * 原版 setType 会按 {@code type.weapons}/{@code type.abilities} 重建武器挂载与能力数组，
+     * 而巨兽的占位类型上 weapons 只有那门幽灵武器、abilities 恒为空 —— 每次同步快照
+     * （客户端每秒几十次）都会把按成员构成建好的数组换掉，把力场的展开动画
+     * （{@code radiusScale}）和武器的装填/冷却状态清零，表现就是用户报的
+     * "联机时力墙一直放大缩小"。
+     *
+     * <p>有成员时：只让原版更新标量（生命/拖拽/护甲/体型/控制器），数组交给
+     * {@link #refreshDerived()} 按成员构成维护；数组万一真被别处换掉，
+     * 它也会按 {@link #builtMounts}/{@link #builtAbilities} 本体比对补回来。
+     */
+    @Override
+    public void setType(UnitType type){
+        if(members.isEmpty()){
+            super.setType(type);
+            return;
+        }
+        this.type = type;
+        maxHealth = type.health;
+        drag = type.drag;
+        armor = type.armor;
+        hitSize = type.hitSize;
+        if(controller() == null){
+            try{
+                controller(type.createController(self()));
+            }catch(Throwable ignored){
+            }
+        }
     }
 
     /**
@@ -394,7 +476,7 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
      * 的功能由此按成员构成生效：
      * <ul>
      *     <li>速度 = 成员速度平均值（总和 ÷ 成员数）；拖拽/加速度/转向跟随代表类型；</li>
-     *     <li>采矿：等级取成员最高（门槛语义）、速度取最快、范围取最远，
+     *     <li>采矿：等级取成员最高（门槛语义）、**速度按成员累加**、范围取最远，
      *         沙矿/墙矿任一成员会即会；</li>
      *     <li>建造：速度按成员叠加（组合多个工程单位造得更快）、范围取最远；</li>
      *     <li>物品上限 = Σ 成员；</li>
@@ -454,8 +536,11 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
             int count = tally.get(t);
             spd += t.speed * count;
             spdCount += count;
+            // 【挖矿速率按成员累加】原版 MinerComp 的产量 = type.mineSpeed（每 tick 的挖掘进度），
+            // 所以"两只挖矿单位合体"要加在一起（原来取 max → 三只合体和一只一样快，用户报的
+            // "挖矿速率没有累加"）。门槛语义不变：mineTier 取最高、范围取最远。
             if(t.mineSpeed > 0f && t.mineTier >= 0){
-                mineSpd = Math.max(mineSpd, t.mineSpeed);
+                mineSpd += t.mineSpeed * count;
                 mineRange = Math.max(mineRange, t.mineRange);
             }
             tier = Math.max(tier, t.mineTier);

@@ -38,6 +38,17 @@ if [ -n "$EXTRA_CP" ] && [ ! -f "$EXTRA_CP" ]; then echo "找不到 $EXTRA_CP" >
 CP="$GAME_JAR${EXTRA_CP:+:$EXTRA_CP}"
 
 mkdir -p "$HERE/build"
+
+# 【防呆】数据目录里的 combine.jar 是旧的、而 build/libs 里刚编好的包更新 → 刷进去。
+# 踩过：改了模组、只跑了 ./gradlew deploy，忘了同步数据目录，测试拿旧包跑出"假结果"
+#（指标没变，看着像修没生效，其实是根本没跑新代码）。只在数据目录里**本来就有**这个包时才刷，
+# 这样 NoModCompatTest 那种"故意不带模组"的数据目录不受影响。
+if [ -f "$data/mods/combine.jar" ] && [ -f "$ROOT/build/libs/combine.jar" ] \
+   && [ "$ROOT/build/libs/combine.jar" -nt "$data/mods/combine.jar" ]; then
+  echo "[verify] 同步新编的 combine.jar → $data/mods/"
+  cp "$ROOT/build/libs/combine.jar" "$data/mods/combine.jar"
+fi
+
 echo "[verify] 编译测试类..."
 javac -nowarn -cp "$CP" -d "$HERE/build" "$HERE"/tests/*.java || exit 1
 

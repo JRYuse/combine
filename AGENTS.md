@@ -41,8 +41,28 @@
   2. 交付前**删掉所有调试日志/探针**（`[dbg]`、`dbgTicks`、`System.out.print`、驱动用的 print 之类），脚本会 grep 检查
   3. 编译产物放 `~/sd`：只放 `~/sd/combine.jar`
      （**不要**另外生成带版本号的名字，使用者自己改名字）
+  4. 不要动mod.hjson
 - 提交信息用中文，说清"根因 + 改法"。
-- `mod.hjson` 的更新日志只写功能，不写"修复崩溃/改仓库"这类；写之前精简。
-- `mod.hjson` 里**不能用半角引号**（HJSON 会被写坏）。
 - 推送用 22 端口常超时，走 443：
   `GIT_SSH_COMMAND="ssh -p 443 -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20" git push git@ssh.github.com:R112007/combine.git master`
+
+## 真联机验证（`run-mp.sh` + `lagnet.py`）：线程数必须有界
+
+```bash
+verify/run-mp.sh official /tmp/mp_cj/data 200 20 80   # 官方服务端 + 真客户端，代理加 200ms 延迟 / 20% UDP 丢包
+```
+
+它起三个进程：真·官方 headless 服务端、`verify/lagnet.py`（链路代理）、真客户端（Xvfb 软渲染，边跑边截图），
+最后比对"服务端出现过的每种状态，客户端是不是都看到过"。用法见 `verify/README.md` 第 6 节。
+
+- **改 `verify/lagnet.py` 必须跑 `verify/lagnet-selftest.py`**：1200 个包 @60/s 压一遍，
+  线程数峰值必须是**个位数**、零丢包、RTT ≈ 2×latency。
+- **禁止 per-packet / per-event 起线程或进程**：一个流向一条常驻 `Link`（连接建立时创建、断开时 `close()`）。
+  旧版本每转一个 UDP 包 `Link()` 一次 = 每包泄漏一条永不退出的线程；2.5 分钟攒到 786 条，
+  把 proot（单线程 ptrace 事件循环）拖成活锁，**整个会话（含 codex 自己）一起冻死** ——
+  2026-09-22 两次实测（16:17:50、14:54:47，同一个 `run-mp.sh ... 200 20 80`）。
+  所有长跑工具同理，细节见 `/root/.codex/AGENTS.md` 里 proot 那一节。
+- lagnet 自带 `--max-threads`（默认 64）自检：超了打印原因并主动退出，不让泄漏累积；
+  `run-mp.sh` 每跑一次都会打印线程数峰值（原始采样在 `verify/build/mp-threads.log`）。
+- 排查"会话卡死"：`ps -o pid,stat,cmd | grep -E 'codex|java|python3'` 出现 `t (tracing stop)`
+  = proot 活锁（`TracerPid` 指向那个终端的 proot）；`kill -9 <proot pid>`，再按 `TracerPid` 收掉残留 tracee。

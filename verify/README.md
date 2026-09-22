@@ -117,6 +117,53 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 ```
 带版本号的文件名由使用者自己改，脚本不生成。
 
+## 6. 真联机验证（`run-mp.sh`：真服务端 + 真客户端 + 链路模拟）
+
+前几层都是单进程测试。"单位到底有没有同步过去 / 客户端画没画出来"必须在**真联机**里验：
+
+```bash
+verify/run-mp.sh official /tmp/mp_cj/data            # 本地链路（无延迟无丢包）
+verify/run-mp.sh official /tmp/mp_cj/data 200 20 80  # 200ms 单向延迟 + 20% UDP 丢包，剧本跑 80 秒
+verify/run-mp.sh official /tmp/mp_coop/data 200 20 80
+```
+
+三个进程：官方 headless **专用服务器**（`~/sd/server-release.jar`，用 FIFO 喂 `host` 命令）、
+`verify/lagnet.py`（socket 代理，加延迟/抖动/UDP 丢包）、**真客户端**（Xvfb + 软渲染，边跑边截图到 `~/sd/shots/`）。
+服务端按剧本 造单位 → 融合成组合巨兽 → 解体 → 再融合，客户端每秒记录自己看到的世界；
+脚本最后比对"服务端每个**阶段边界**出现过的状态，客户端是不是都看到过"（漏了 = 没同步 / 幽灵 / 看不见），
+截图路径和线程数峰值都会打印出来。单次约 4~5 分钟（客户端软渲染加载就要 1.5~2 分钟）。
+
+排查"客户端少看到某个单位 / 单位是幽灵"时加 `MP_VERBOSE=1`：两端每秒把每个单位逐个打一行
+（`[MP-DBG]`，含类名/类型/位置/血量/成员数），平时别开 —— 一次跑就是几千行。
+客户端还会打一行 `[MP-DRAW]`（巨兽的屏幕坐标、`region` 有没有贴图、`clipSize`/`flyingLayer`、
+`elevation`、迷雾判定、镜头位置），**看不到巨兽时先看它**：
+镜头没框住（屏幕坐标跑到画面外）和真的没画（`region=null`）是两回事。
+
+**改 `lagnet.py` 必须跑自检**（回归"线程泄漏拖垮 proot"这个坑）：
+
+```bash
+verify/lagnet-selftest.py                    # 默认 1200 包 @60/s，单向 50ms
+verify/lagnet-selftest.py --count 3000 --rate 150 --latency 200   # 压更狠一点
+```
+
+判定：线程数峰值 **个位数**（<20）、零丢包、RTT ≈ 2×latency、SIGTERM 后立刻退出。
+
+**线程数有界是硬要求**（proot 环境下不是性能问题，是"整个会话会不会冻死"的问题）：
+
+- 一个流向一条常驻 `Link`（连接建立时创建、断开时 `close()`）；**绝对不要每包 `Link()`**。
+  旧版本就是每收一个 UDP 包 new 一个 Link（每个 Link 起一条永不退出的 `_run` 线程），
+  2.5 分钟攒到 786 条线程、每秒上千次 futex 唤醒 → proot（单线程 ptrace 事件循环）进活锁，
+  整个容器所有进程一起 `t (tracing stop)`，**连 codex 会话本身都没了响应**（2026-09-22 实测两次）。
+- `lagnet.py --max-threads`（默认 64）：线程数超上限就打印原因并主动退出（宁可这次测试失败重跑）；
+  每 10 秒的统计行会带 `线程=N(峰值 M)`。
+- `run-mp.sh` 会全程采样线程数（原始数据 `verify/build/mp-threads.log`），跑完打印峰值 —— 数字是结论的一部分。
+
+**卡死怎么认、怎么救**：整棵进程树 `ps -o pid,stat,cmd` 显示 `t (tracing stop)`、
+`grep TracerPid /proc/<pid>/status` 指向那个终端的 `proot`、proot 自己单核空转且 SIGTERM 不理，
+就是 proot 活锁了（不是游戏卡、也不是 API 超时）。`kill -9 <proot pid>`，
+再按 `TracerPid` 把残留 tracee 逐个 `kill -9`，顺手清掉 `/tmp/.X11-unix/X99` 等残留。
+详细规则见仓库 `AGENTS.md` 和 `/root/.codex/AGENTS.md`。
+
 ## 测试清单（哪个测试要哪套数据）
 
 | 测试 | 需要的模组 | 验什么 |
@@ -157,6 +204,8 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 | `combine.dbg.ItemConservationFuzz` | 任意 | 物品守恒模糊测试：随机 造/拆方块 + 节点连/断 + 存读档 + 手动开关「协作组合」，每一步（`-Difz.seeds=40`）都检查世界物品总量只允许因「被拆掉的方块自己那份模块」减少 —— 本地组合按容量分池时**不能动核心那份池子**（`-Difz.resetblocked=1` 可清理数据目录里被写脏的「手动不组合」名单） |
 | `combine.dbg.MegaSyncTest` | 任意（有 mace/crawler/poly） | 组合巨兽的探雾/小地图/同步/存档：`type.fogRadius>0`（=0/-1 时一点都不探）、`drawMinimap` 没被关掉、融合后成员被**通知客户端移除**（幽灵成员会占着 id，导致快照整片错位）、快照/存档往返成员一致、真存档存读后巨兽还在、**数量并列时代表类型取血量最大**的那只（dagger+mace → mace）；外加**兼容别的自定义实体模组**：别的模组注册实体不影响巨兽 id（固定槽 250）、成员实体类 id 变了也能按名字读回、成员是自定义实体类（本模组的 CMechUnit 等）也能存读、升级前的旧成员格式仍能读 |
 | `combine.dbg.DrillComboSpeedTest` | 任意（有机械钻头） | 矿机组合挖速：同一片矿 1 台 vs 相邻 3 台组合矿机跑同样 tick，产量必须按台数成倍（3 台 ≈ 3×），面板另有「整组挖速」一行 |
+| `combine.dbg.MegaStatSumTest` | 任意（有 poly 这类工程/采矿单位） | 巨兽的建造/挖矿速率按成员累加，而且是**量行为**：给单位排同一条建造计划、跑同样 5 tick，量 `ConstructBuild.progress` 的增量（1 台 poly → 2 台 → 3 台必须是 1×/2×/3×）；挖矿同理量同样 300 tick 挖到手的物品数；再按 NetClient 的路子（EntityMapping 新建 + readSync）造一份"客户端实体"，它的 `type.buildSpeed/mineSpeed` 也必须是累加值；最后验力场：连续喂两个同步快照，力场能力必须还是**同一个实例**、展开动画 `radiusScale` 不被清零（清零 = 联机时"力墙一直放大缩小"），武器装填进度也不被快照清零 |
+| `combine.dbg.MegaSurviveTest` | 任意（有核心） | 联机剧本把巨兽生到**地图外**导致"融合成功、1 秒后单位没了"：地图内融合必须活过 2 秒；地图外（含同帧融合）用来复现原版"环境死亡"清理 |
 
 **组合巨兽的贴图规则**（`mega`/`legs`/`mech` 三个真客户端模式各拍一张对比图）：
 
