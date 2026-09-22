@@ -21,6 +21,8 @@ public class MegaOrderPacket extends Packet{
     public boolean split;
     /** true = 把 memberIds 编成组合（不融合）；false = 融合。仅 split=false 时有意义。 */
     public boolean group;
+    /** true = 退出组合（memberIds 里的单位把 comboId 清零）。仅 split=false、group=false 时有意义。 */
+    public boolean ungroup;
     /** 目标单位的网络 id（融合 = 发起单位；解体 = 巨兽；编组时取第一个成员）。 */
     public int unitId;
     /** 框选操作（合体/编组）时的成员 id 列表；为空表示旧式"发起单位+周围全组合"。 */
@@ -40,6 +42,7 @@ public class MegaOrderPacket extends Packet{
     public void write(Writes write){
         write.bool(split);
         write.bool(group);
+        write.bool(ungroup);
         write.i(unitId);
         write.i(memberIds == null ? 0 : memberIds.length);
         if(memberIds != null){
@@ -51,6 +54,7 @@ public class MegaOrderPacket extends Packet{
     public void read(Reads read){
         split = read.bool();
         group = read.bool();
+        ungroup = read.bool();
         unitId = read.i();
         int n = Math.min(Math.max(read.i(), 0), 4096);
         memberIds = new int[n];
@@ -74,6 +78,9 @@ public class MegaOrderPacket extends Packet{
 
         if(split){
             if(unit instanceof MegaUnitEntity) UnitComboMerge.split(unit);
+        }else if(ungroup){
+            // 退出组合：只打 comboId = 0，服务器按 id 自己解析校验
+            UnitComboDamage.ungroupSelected(memberIds, connection.player.team());
         }else if(group){
             // 一键编组：只打 comboId，不融合；成员由服务器按 id 解析校验
             UnitComboDamage.groupSelected(memberIds, connection.player.team());

@@ -216,7 +216,8 @@ public class UnitComboBind{
             }else{
                 for(Unit o : singles){
                     t.button(unitLine(o), () -> {
-                        UnitComboDamage.combineWith(u, o);
+                        // 必须走服务器：comboId 是同步字段，客户端本地改只会造出"服务端不承认的幽灵组合"
+                        UnitComboDamage.requestCombineWith(u, o);
                         rebuildDialog();
                     }).growX().padBottom(3f).row();
                 }
@@ -230,7 +231,7 @@ public class UnitComboBind{
             }else{
                 for(Unit rep : reps){
                     t.button(groupLine(rep), () -> {
-                        UnitComboDamage.combineWith(u, rep);
+                        UnitComboDamage.requestCombineWith(u, rep);
                         rebuildDialog();
                     }).growX().padBottom(3f).row();
                 }
@@ -238,7 +239,7 @@ public class UnitComboBind{
         }).width(420f).height(Math.min(320f, 60f + 30f * (UnitComboDamage.countUngroupedNear(u, UnitComboDamage.joinRadius) + UnitComboDamage.groupRepsNear(u, UnitComboDamage.joinRadius).size))).row();
 
         dialog.cont.button("退出当前组合", () -> {
-            UnitComboDamage.ungroup(u);
+            UnitComboDamage.requestUngroup(u);
             dialog.hide();
         }).disabled(b -> !grouped).size(260f, 48f).padTop(8f).row();
 

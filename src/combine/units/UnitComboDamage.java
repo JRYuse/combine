@@ -1,6 +1,7 @@
 package combine.units;
 
 import arc.func.Prov;
+import arc.struct.IntSeq;
 import arc.struct.ObjectMap;
 import arc.struct.Seq;
 import combine.units.entities.ComboUnit;
@@ -261,6 +262,70 @@ public class UnitComboDamage{
         }else{
             groupSelected(units);
         }
+    }
+
+    /**
+     * 请求"把 u 编入 target 所在组合"（手动组合菜单里的那一排按钮）。
+     *
+     * <p><b>必须走服务器</b>：comboId 是镜像实体上的同步字段，只有服务端写的值才会被同步给所有客户端。
+     * 客户端直接调 {@link #combineWith} 只是本地改了一份，服务端下一份快照就把它盖回去 ——
+     * 就是模组注释里说的"服务器不承认的本地幽灵"，玩家看到的组合（承伤共享、连线）其实是假的。
+     *
+     * @return 单机/主机是否成功（联机时结果由服务器结算，这里恒 true 表示已发出请求）
+     */
+    public static boolean requestCombineWith(Unit u, Unit target){
+        if(u == null || target == null) return false;
+        if(!Vars.net.client()) return combineWith(u, target);
+        // 成员 = 两边的组合并集（各自成组就都带上），服务器再按 id 重新校验
+        IntSeq ids = new IntSeq();
+        collectIds(u, ids);
+        collectIds(target, ids);
+        if(ids.size < 2) return false;
+        MegaOrderPacket p = MegaOrderPacket.of(false, u);
+        p.group = true;
+        p.memberIds = ids.toArray();
+        Vars.net.send(p, true);
+        return true;
+    }
+
+    /** 请求"退出当前组合"：联机走服务器（同 {@link #requestCombineWith} 的理由）。 */
+    public static void requestUngroup(Unit u){
+        if(u == null) return;
+        if(!Vars.net.client()){
+            ungroup(u);
+            return;
+        }
+        MegaOrderPacket p = MegaOrderPacket.of(false, u);
+        p.ungroup = true;
+        // 只让 u 退出：同组其他成员留在组合里（和单机的 ungroup 语义一致）
+        p.memberIds = new int[]{u.id()};
+        Vars.net.send(p, true);
+    }
+
+    /** 把 u 所在组合的全部成员 id 收进 out（u 未组合时只收它自己）。 */
+    private static void collectIds(Unit u, IntSeq out){
+        double gid = comboId(u);
+        if(gid == 0.0){
+            if(!out.contains(u.id())) out.add(u.id());
+            return;
+        }
+        for(Unit o : Groups.unit){
+            if(o.team() == u.team() && comboId(o) == gid && o.isValid() && !out.contains(o.id())) out.add(o.id());
+        }
+    }
+
+    /** 服务端结算"退出组合"请求：按 id 解析成员（校验存在、与请求者同队），逐个清零 comboId。 */
+    public static int ungroupSelected(int[] ids, mindustry.game.Team team){
+        if(ids == null || Vars.net.client()) return 0;
+        int n = 0;
+        for(int id : ids){
+            Unit u = Groups.unit.getByID(id);
+            if(u != null && u.isAdded() && u.team() == team){
+                comboId(u, 0.0);
+                n++;
+            }
+        }
+        return n;
     }
 
     /**
