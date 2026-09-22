@@ -185,27 +185,21 @@ public class MegaUnitType extends UnitType {
     }
 
     /**
-     * 本体贴图。
+     * 本体贴图：**优先画整只单位图**（原版 {@code unit-<名字>-full}，腿/履带/武器都画在里面），
+     * 只有拿不到真整图时才退到躯干 region / UI 图标。
      *
-     * <p>一般用代表成员的**整只单位图**（{@code unit-<名字>-full}）——只有躯干 region 时，
-     * 腿类/履带类单位合体后看着像"缺部件的半成品"（用户要求改成画整图）。
-     *
-     * <p>**机甲除外**：原版机甲的整图里腿是"缩在身体底下的图标姿态"，直接画出来看着就是
-     * 没腿（用户报的"组合巨兽 mech 的脚怎么又不画了"）。机甲一律用躯干 region，
-     * 腿交给 {@link #drawAttachments} 按体型画（会走动、跟着放大）。
+     * <p>整图里部件已经画好了，所以走这条路时 {@link #drawAttachments} 不用再补一遍
+     *（见 {@link #fullArt}：模组单位常见的"fullIcon 被兜底成躯干 region"不算整图，
+     * 那种情况仍然要用自己画的那套腿/履带 —— 用户报的"mech 的脚怎么又不画了"就是它）。
      *
      * <p>巨兽类型自己没有任何贴图，所以每一层都要兜底，否则 {@code Draw.rect(null)}
      * 什么都不画（"不绘制单位身体"的另一半）。
      */
-    static TextureRegion bodyRegion(UnitType dom, boolean mech) {
+    static TextureRegion bodyRegion(UnitType dom) {
         if (dom == null) return null;
-        if (!mech) {
-            TextureRegion full = fullArt(dom);
-            if (full != null) return full;
-        }
-        TextureRegion torso = torsoArt(dom);
-        if (torso != null) return torso;
-        return fullArt(dom);
+        TextureRegion full = fullArt(dom);
+        if (full != null) return full;
+        return torsoArt(dom);
     }
 
     /**
@@ -325,18 +319,22 @@ public class MegaUnitType extends UnitType {
 
         MegaUnitEntity mu = unit instanceof MegaUnitEntity m ? m : null;
         UnitType dom = mu != null && mu.dominant != null ? mu.dominant : null;
-        // 机甲走"躯干 + 自己画的机甲腿"（整图里机甲的腿缩在身体底下，画出来像没腿）
-        boolean mech = mu != null && mu.attKind == MegaUnitEntity.ATT_MECH;
-        TextureRegion region = bodyRegion(dom, mech);
+        TextureRegion region = bodyRegion(dom);
         // 【兜底：成员还没解析出来时也要看得见】代表类型来自成员构成（快照/存档刚建立、
         // 或对端模组不一致导致成员解析失败时是空的）—— 以前这里什么都画不出来，
         // 单位直接"隐身"（用户报的"客户端组合不同单位会导致单位不可见"）。
         // 退回到巨兽类型自己的占位贴图（注册时给的 dagger/flare/risso 图标）。
         if (region == null && this.region != null && Core.atlas.isFound(this.region))
             region = this.region;
-        // 【整图里部件已经画好了】用的是真·unit-<名字>-full 时，腿/履带/武器都在图里，
-        // 再叠一遍自己拼的那套部件就会出**两套腿**；机甲和"没有整图"的情况则要自己补部件。
-        boolean bakedParts = dom != null && region != null && region == fullArt(dom);
+        // 【什么时候不用自己补部件】用的是真·unit-<名字>-full，而且这个种类在整图里
+        // **确实把部件画全了**（腿类/履带/飞行都画全了；模组单位常常没有 -full，
+        // fullIcon 会被兜底成躯干 region，这时不算整图）。
+        //
+        // 【机甲例外：整图画了腿也要再画一遍】原版机甲整图里的腿是"缩在身体底下的图标姿态"
+        // （dagger/fortress 的 -full 里那两条腿几乎贴在躯干下面），只画整图看着就是没腿
+        //（用户报的"组合巨兽 mech 的脚怎么又不画了"），所以机甲一律再叠一层按体型画的机甲腿。
+        boolean mech = mu != null && mu.attKind == MegaUnitEntity.ATT_MECH;
+        boolean bakedParts = !mech && dom != null && region != null && region == fullArt(dom);
         float s = mu == null ? 1f : mu.bodyScale();
         boolean isPayload = !unit.isAdded();
         float z = isPayload ? Draw.z()

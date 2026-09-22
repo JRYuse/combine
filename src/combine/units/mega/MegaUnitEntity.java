@@ -415,9 +415,9 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         // 代表成员的贴图（客户端才有 atlas；服务端没有贴图，跳过）
         TextureRegion body = null, icon = null;
         if(!mindustry.Vars.headless){
-            // 身体 = 代表成员的贴图：一般用**整只单位图**（unit-<名字>-full：躯干 + 腿/履带 + 武器）；
-            // 机甲用躯干 region（整图里机甲的腿缩在身体底下，直接画像没腿 —— 腿由绘制侧按体型画）。
-            body = MegaUnitType.bodyRegion(dom, attachmentKind(dom) == ATT_MECH);
+            // 身体 = 代表成员的**整只单位图**（unit-<名字>-full：躯干 + 腿/履带 + 武器）；
+            // 模组单位没有 -full 时（fullIcon 被兜底成躯干 region）才退到躯干，腿自己画。
+            body = MegaUnitType.bodyRegion(dom);
             // 图标 = 原版 UI 图（面板/小地图/指挥面板用 unit-<名字>-ui）
             icon = dom.uiIcon != null && Core.atlas.isFound(dom.uiIcon) ? dom.uiIcon : body;
             // region 必须设：原版不少地方直接读 type.region（clipSize 就是其一），
