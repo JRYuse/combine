@@ -551,6 +551,7 @@ public class CombinedStorageBlock extends StorageBlock {
         from.remove(item, amount);
       }
     }
+    to.stopFlow(); // 见 ComboNet.moveItems 的说明：内部搬池子不算流量
   }
 
   private static boolean sameItems(ItemModule a, ItemModule b) {

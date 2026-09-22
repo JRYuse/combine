@@ -727,6 +727,8 @@ public class CombinedDrill extends Block {
                 for (CombinedDrillBuild member : group())
                     if (member.isValid())
                         member.items = leader.items;
+                if (leader.items != null) leader.items.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
+                if (leader.items != null) leader.items.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
             }
             if (leader.liquids != null) {
                 processedLiquids.add(leader.liquids);
@@ -748,6 +750,8 @@ public class CombinedDrill extends Block {
                 for (CombinedDrillBuild member : group())
                     if (member.isValid())
                         member.liquids = leader.liquids;
+                if (leader.liquids != null) leader.liquids.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
+                if (leader.liquids != null) leader.liquids.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
             }
         }
 

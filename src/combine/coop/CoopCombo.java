@@ -1408,6 +1408,7 @@ public class CoopCombo {
         from.remove(liquid, amount);
       }
     }
+    to.stopFlow(); // 见 ComboNet.moveItems 的说明：内部搬池子不算流量
   }
 
   /** 面板/调试用：这台机器所在的协作组合有几台。 */

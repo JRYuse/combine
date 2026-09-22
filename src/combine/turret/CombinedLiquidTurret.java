@@ -330,6 +330,7 @@ public class CombinedLiquidTurret extends LiquidTurret {
         for (CombinedLiquidTurretBuild m : group())
           if (m.isValid())
             m.liquids = leader.liquids;
+    if (leader.liquids != null) leader.liquids.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
       }
     }
 

@@ -193,6 +193,7 @@ public class CombinedFracker extends Fracker {
                 for (CombinedFrackerBuild m : group())
                     if (m.isValid())
                         m.liquids = leader.liquids;
+                if (leader.liquids != null) leader.liquids.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
             }
 
             // 物品同样：组内共用一份模块，容量 = Σ 单台容量（Fracker 吃料从这里扣）
@@ -219,6 +220,7 @@ public class CombinedFracker extends Fracker {
                 for (CombinedFrackerBuild m : group())
                     if (m.isValid())
                         m.items = leader.items;
+                if (leader.items != null) leader.items.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
             }
         }
 
@@ -314,19 +316,15 @@ public class CombinedFracker extends Fracker {
         }
 
         /** 读档/合并/拆分后可能留下超容的存量：每帧夹回各自上限（和组合仓库/核心一个口径）。 */
+        /**
+         * 【已停用】原来这里每帧把液体/物品按"组容量"硬删（set(liquid, cap)）。
+         * 组容量随成员增减变化，一拆成员、或某轮容量算小了，超出的存量就被真删掉 ——
+         * 用户报的"物资莫名其妙清空"就是这个；而且和本模组其它地方"宁可超容也不丢"的
+         * 约定不一致（容量只该拦住新液体进入，见 acceptLiquid/handleLiquid）。
+         * 实测：两台组合泵的池子灌 1000 水，下一帧就被削成组容量 40。
+         */
+        @Deprecated
         public void clampPoolToCaps() {
-            if (items != null) {
-                int cap = Math.max(comboTotalItemCap, 0);
-                for (Item item : content.items())
-                    if (items.get(item) > cap)
-                        items.set(item, cap);
-            }
-            if (liquids != null) {
-                float cap = Math.max(comboTotalLiquidCap, 0f);
-                for (Liquid liquid : content.liquids())
-                    if (liquids.get(liquid) > cap)
-                        liquids.set(liquid, cap);
-            }
         }
         @Override
         public boolean acceptLiquid(Building source, Liquid liquid) {

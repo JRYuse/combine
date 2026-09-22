@@ -1071,6 +1071,12 @@ public class ComboNet {
         return total;
     }
 
+    // 【别把"内部搬池子"记成流量】LiquidModule.add/ItemModule.add 会把搬运量记进
+    // 流量窗口（cacheSums += amount），面板（含 MindustryX 的流量行）就会显示
+    // "每秒几千的水进账"，其实只是把两份池子并成一份、总量一点没变 ——
+    // 用户报的"莫名其妙显示进了水实则没有，储罐也没和抽水机连管"。
+    // stopFlow() 让这份模块的流量窗口从头重新统计（下一次真实进液再算）。
+
     private static void moveItems(ItemModule from, ItemModule to){
         if(from == null || to == null || from == to) return;
         for(Item item : content.items()){
@@ -1080,6 +1086,7 @@ public class ComboNet {
                 from.remove(item, amt);
             }
         }
+        to.stopFlow();
     }
 
     private static void moveLiquids(LiquidModule from, LiquidModule to){
@@ -1091,6 +1098,7 @@ public class ComboNet {
                 from.remove(liquid, amt);
             }
         }
+        to.stopFlow();
     }
 
     // -------------------- 节点热量网络 --------------------

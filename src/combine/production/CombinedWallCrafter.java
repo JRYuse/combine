@@ -286,6 +286,7 @@ public class CombinedWallCrafter extends WallCrafter {
                 for (CombinedWallCrafterBuild m : group())
                     if (m.isValid())
                         m.items = leader.items;
+                if (leader.items != null) leader.items.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
             }
         }
 
