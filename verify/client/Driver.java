@@ -198,6 +198,44 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::duoReport, 34f);
                 Timer.schedule(() -> shot("duo_fight2"), 40f);
                 Timer.schedule(() -> { Log.info("[drv] duo 模式结束 frames=@", frames); Core.app.exit(); }, 46f);
+            }else if(mode.equals("legs")){
+                // 用户报：组合巨兽（成员是腿类单位）没画腿，腿也要按比例放大。
+                installFrameCounter();
+                installCameraLock();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupLegsScene, 5f);
+                Timer.schedule(Driver::legsMerge, 12f);
+                Timer.schedule(Driver::legsReport, 20f);
+                // 参照 spiroct 紧跟着巨兽，同一张图里对比腿的比例（融合半径 160，必须融合后再放）
+                Timer.schedule(Driver::legsRefSpawn, 21f);
+                Timer.schedule(() -> shot("legs_mega"), 24f);
+                Timer.schedule(Driver::legsReport, 28f);
+                Timer.schedule(() -> {
+                    Log.info("[drv] legs 参照: ref=@ 位置=(@,@) 腿数=@", legsRef == null ? "null" : legsRef.type.name,
+                        legsRef == null ? 0 : (int)legsRef.x, legsRef == null ? 0 : (int)legsRef.y,
+                        legsRef instanceof mindustry.gen.Legsc l ? l.legs().length : -1);
+                    logLegSpan("巨兽", legsMega);
+                    logLegSpan("参照spiroct", legsRef);
+                }, 30f);
+                Timer.schedule(() -> { Log.info("[drv] legs 模式结束 frames=@", frames); Core.app.exit(); }, 36f);
+            }else if(mode.equals("mech")){
+                // 机甲类成员（dagger/fortress…）合体：机甲腿也是原版分开画的（drawMech），
+                // 一样要按体型放大——和 legs 模式同一套场景，只是把成员换成机甲。
+                installFrameCounter();
+                installCameraLock();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupLegsScene, 5f);
+                Timer.schedule(Driver::legsMerge, 12f);
+                Timer.schedule(Driver::legsRefSpawn, 21f);
+                Timer.schedule(() -> shot("mech_mega"), 24f);
+                Timer.schedule(() -> {
+                    Log.info("[drv] mech 巨兽: attKind=@ 部件状态: 行走相位=@ baseRotation=@ hitSize=@",
+                        field(legsMega, "attKind"), field(legsMega, "mechWalkTime"),
+                        field(legsMega, "legBaseRotation"), legsMega == null ? -1f : legsMega.hitSize());
+                    Log.info("[drv] mech 参照: @ hitSize=@", legsRef == null ? "null" : legsRef.type.name,
+                        legsRef == null ? -1f : legsRef.hitSize());
+                }, 28f);
+                Timer.schedule(() -> { Log.info("[drv] mech 模式结束 frames=@", frames); Core.app.exit(); }, 36f);
             }else if(mode.equals("userpanel")){
                 // 用户报："组合**工厂**物品面板…清空所有物资"。直接读用户存档，挑几台装满货的
                 // 组合工厂把信息面板弹出来截图，并把面板里的文字（Bar 的 label）打进日志。
@@ -631,6 +669,141 @@ public class Driver extends Mod{
      * 面板里的单位图标走的是 content.unit(unit.type.id).uiIcon —— 派生类型共用基础巨兽的占位 id，
      * 所以这里顺手把"面板实际会用的那个类型/图标"打出来对账。
      */
+    // ---------------- 腿类单位（spiroct 等）合体：腿 ----------------
+    static Unit legsMega, legsA, legsB, legsRef;
+    static int legsOx = -1, legsOy = -1;
+
+    static void setupLegsScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.state.rules.fog = false;
+            Vars.state.rules.staticFog = false;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<130;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            int ox = -1, oy = -1;
+            outer:
+            for(int y=45;y<120;y++){
+                for(int x=40;x<190;x++){
+                    boolean ok = true;
+                    for(int dy=-3;dy<=3 && ok;dy++) for(int dx=-4;dx<=4;dx++){
+                        Tile t = Vars.world.tile(x+dx, y+dy);
+                        if(t == null || t.floor() == null || t.floor().isLiquid || t.block() != Blocks.air){ ok = false; break; }
+                    }
+                    if(ok){ ox = x; oy = y; break outer; }
+                }
+            }
+            if(ox < 0){ Log.err("[drv] legs: 没找到陆地"); return; }
+            legsOx = ox; legsOy = oy;
+            Building core = placeBL(Blocks.coreShard, ox + 18, oy + 10);
+            if(core != null && core.items != null) for(Item it : Vars.content.items()) core.items.set(it, 5000);
+            Core.camera.position.set(ox * 8f, oy * 8f);
+            Timer.schedule(Driver::legsSpawn, 2f);
+        }catch(Throwable t){ Log.err("[drv] setupLegsScene failed", t); }
+    }
+
+    static void legsSpawn(){
+        try{
+            float cx = legsOx * 8f, cy = legsOy * 8f;
+            if("mech".equals(mode)){
+                // mech 模式：换成一中一小两台机甲（成员构成不同、hitSize 不同，缩放才看得出来）
+                legsA = UnitTypes.dagger.create(Team.sharded);
+                legsA.set(cx - 20f, cy);
+                legsA.add();
+                legsB = UnitTypes.fortress.create(Team.sharded);
+                legsB.set(cx + 20f, cy);
+                legsB.add();
+                Log.info("[drv] mech 场景: dagger + fortress 已就位");
+                return;
+            }
+            legsA = UnitTypes.spiroct.create(Team.sharded);
+            legsA.set(cx - 20f, cy);
+            legsA.add();
+            legsB = UnitTypes.arkyid.create(Team.sharded);
+            legsB.set(cx + 20f, cy);
+            legsB.add();
+            Log.info("[drv] legs 场景: spiroct + arkyid 已就位（腿=@/@ 段）",
+                UnitTypes.spiroct.legCount, UnitTypes.arkyid.legCount);
+        }catch(Throwable t){ Log.err("[drv] legsSpawn failed", t); }
+    }
+
+    /** 融合**之后**再放一只参照 spiroct 到巨兽旁边（融合半径内的会被卷进去，所以必须后放）。 */
+    static void legsRefSpawn(){
+        try{
+            if(legsMega == null || !legsMega.isValid()){ Log.err("[drv] legsRefSpawn: 巨兽没了"); return; }
+            // 挪到场景开头挑好的那块空地（离核心 18 格），免得巨兽正好站在核心上、贴图互相糊住
+            legsMega.set(legsOx * 8f, legsOy * 8f);
+            // 相机：关掉"跟随玩家单位"，让 installCameraLock 每帧把镜头钉在巨兽身上；
+            // 缩放调大（1.3）保证整只巨兽连同放大后的腿都在画面里。
+            Core.settings.put("detach-camera", true);
+            Vars.renderer.setScale(1.3f);
+            Core.camera.position.set(legsMega.x, legsMega.y);
+            legsRef = ("mech".equals(mode) ? UnitTypes.fortress : UnitTypes.spiroct).create(Team.sharded);
+            legsRef.set(legsMega.x - 110f, legsMega.y);
+            legsRef.add();
+            var under = Vars.world.buildWorld(legsMega.x, legsMega.y);
+            Log.info("[drv] legs 参照物已放: 位置=(@,@) 巨兽脚下建筑=@ 相机=(@,@)",
+                (int)legsRef.x, (int)legsRef.y, under == null ? "无" : under.block.name,
+                (int)Core.camera.position.x, (int)Core.camera.position.y);
+        }catch(Throwable t){ Log.err("[drv] legsRefSpawn failed", t); }
+    }
+
+    static void legsMerge(){
+        try{
+            Object merged = legsA == null ? null
+                : combineCall("combine.units.UnitComboMerge", "merge", new Class<?>[]{Unit.class}, legsA);
+            if(merged instanceof Unit u) legsMega = u;
+            Log.info("[drv] legs 融合结果=@", merged);
+        }catch(Throwable t){ Log.err("[drv] legsMerge failed", t); }
+    }
+
+    /** 打一只腿类单位的"腿展"（每根腿的 base 相对身体中心的距离），用来对账缩放比例。 */
+    static void logLegSpan(String tag, Unit u){
+        if(u == null || !(u instanceof mindustry.gen.Legsc l)){ Log.info("[drv] @ 不是腿类单位", tag); return; }
+        StringBuilder sb = new StringBuilder();
+        for(int i = 0; i < l.legs().length; i++){
+            var leg = l.legs()[i];
+            sb.append(String.format(" %.1f", arc.math.Mathf.dst(u.x, u.y, leg.base.x, leg.base.y)));
+        }
+        Log.info("[drv] @ 腿展(中心到脚)=@ hitSize=@ 腿数=@", tag, sb.toString(), u.hitSize(), l.legs().length);
+    }
+
+    static void legsReport(){
+        try{
+            if(legsMega == null || !legsMega.isValid()){ Log.info("[drv] legs: 巨兽没了"); return; }
+            Unit u = legsMega;
+            camTarget = u;
+            Core.camera.position.set(u.x, u.y);
+            Object dom = field(u.getClass(), u, "dominant");
+            Log.info("[drv] legs 巨兽: type=@ hitSize=@ 代表类型=@(hitSize=@) 贴图缩放=@ dom.legRegion=@ dom.legCount=@",
+                u.type.name, u.hitSize(), dom instanceof UnitType ? ((UnitType)dom).name : "-",
+                dom instanceof UnitType ? ((UnitType)dom).hitSize : -1f,
+                dom instanceof UnitType ? (u.hitSize() / ((UnitType)dom).hitSize) : -1f,
+                dom instanceof UnitType ? regionName(((UnitType)dom).legRegion) : "-",
+                dom instanceof UnitType ? ((UnitType)dom).legCount : -1);
+            Log.info("[drv] legs 巨兽是不是 Legsc=" + (u instanceof mindustry.gen.Legsc)
+                + " 成员数=" + memberCount(u));
+            try{
+                Object att = field(u.getClass(), u, "attKind");
+                Object legs = field(u.getClass(), u, "legs");
+                int n = legs instanceof Object[] a ? a.length : -1;
+                StringBuilder sb = new StringBuilder();
+                if(legs instanceof Object[] a){
+                    for(int i = 0; i < Math.min(n, 6); i++){
+                        var l = (mindustry.entities.Leg)a[i];
+                        sb.append(" [").append(i).append(" base=").append((int)l.base.x).append(",").append((int)l.base.y)
+                          .append(" joint=").append((int)l.joint.x).append(",").append((int)l.joint.y).append("]");
+                    }
+                }
+                Log.info("[drv] legs 部件: attKind=@ legs.length=@ 单位位置=(@,@) 腿=@", att, n, (int)u.x, (int)u.y, sb.toString());
+            }catch(Throwable t){ Log.err("[drv] legs 部件报告失败", t); }
+        }catch(Throwable t){ Log.err("[drv] legsReport failed", t); }
+    }
+
     // ---------------- dagger + vela（地面组合）：武器 + 碰撞箱 ----------------
     static Unit duoMega, duoDagger, duoVela, duoEnemy, duoAlly;
     static int duoOx = -1, duoOy = -1;

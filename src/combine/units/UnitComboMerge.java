@@ -84,9 +84,9 @@ public class UnitComboMerge{
         megaGround.localizedName = megaAir.localizedName = megaNaval.localizedName = "组合巨兽";
         if(!Vars.headless){
             try{
-                megaGround.fullIcon = megaGround.uiIcon = UnitTypes.dagger.fullIcon;
-                megaAir.fullIcon = megaAir.uiIcon = UnitTypes.flare.fullIcon;
-                megaNaval.fullIcon = megaNaval.uiIcon = UnitTypes.risso.fullIcon;
+                megaGround.region = megaGround.fullIcon = megaGround.uiIcon = UnitTypes.dagger.fullIcon;
+                megaAir.region = megaAir.fullIcon = megaAir.uiIcon = UnitTypes.flare.fullIcon;
+                megaNaval.region = megaNaval.fullIcon = megaNaval.uiIcon = UnitTypes.risso.fullIcon;
             }catch(Throwable ignored){
             }
         }

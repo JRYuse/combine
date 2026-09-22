@@ -3,9 +3,13 @@ package combine.units.mega;
 import arc.Core;
 import arc.graphics.g2d.Draw;
 import arc.graphics.g2d.TextureRegion;
+import arc.math.Angles;
 import arc.math.Mathf;
+import arc.util.Tmp;
 import mindustry.graphics.Layer;
 import mindustry.graphics.Pal;
+import mindustry.gen.Legsc;
+import mindustry.gen.Tankc;
 import mindustry.gen.Unit;
 import mindustry.type.UnitType;
 
@@ -14,12 +18,13 @@ import mindustry.type.UnitType;
  * （数量最多；并列取血量最少）的贴图，并按综合 hitSize 缩放
  * （缩放系数由 {@link MegaUnitEntity#drawScale} 提供，双端各自从成员构成推导，无需同步）。
  *
- * <p>三个变体（地面/飞行/海军）由 {@link combine.units.UnitComboMerge} 创建：
+ * <p>
+ * 三个变体（地面/飞行/海军）由 {@link combine.units.UnitComboMerge} 创建：
  * 飞行变体 {@code flying = true}；海军变体的语义在 {@link MegaUnitEntity} 里
  * （碰撞判定按水面处理）。生命/护甲/碰撞半径/武器/能力都是融合那一刻
  * 写在实体实例上的（见 MegaUnitEntity.refreshDerived），类型的同名字段只是兜底默认值。
  */
-public class MegaUnitType extends UnitType{
+public class MegaUnitType extends UnitType {
 
     /**
      * 这只巨兽会不会升空（成员里有飞行单位）。
@@ -35,7 +40,8 @@ public class MegaUnitType extends UnitType{
 
     /**
      * 引擎比例（相对 hitSize）。默认用 flare 那套：
-     * flare hitSize 9、engineOffset 5.75、engineSize 2.5 → 位置 0.639×hitSize、大小 0.278×hitSize。
+     * flare hitSize 9、engineOffset 5.75、engineSize 2.5 → 位置 0.639×hitSize、大小
+     * 0.278×hitSize。
      * 成员里有飞行单位时，{@link MegaUnitEntity} 会按那台单位自己的引擎参数改写这两个比例
      * （身体贴图就是按同一套缩放画的，引擎跟着同源才不会一个巨大一个迷你）。
      */
@@ -46,23 +52,24 @@ public class MegaUnitType extends UnitType{
      *
      * 巨兽类型是模组 init 期 late 注册的，这两个方法**从没跑过**，而其中两个字段是"无效默认值"：
      * <ul>
-     *     <li>{@code flyingLayer = -1}：混合编组里有飞行成员（比如 mace + oct）时，
-     *         {@code MegaUnitEntity.moveMode()} 会让 elevation 逼近 1，绘制走 "elevation &gt; 0.5 → flyingLayer"，
-     *         于是 {@code Draw.z(-1)} —— 比地板层还低，整个单位被地形盖住。
-     *         表现就是用户报的"mace 和 oct 组合后不绘制单位身体"（贴图其实一直在画，只是画在了地板下面）。</li>
-     *     <li>{@code clipSize = -1}：视口裁剪（{@code EntityGroup.draw}）按它算包围盒，
-     *         负尺寸等于"只剩中心点"，单位贴着屏幕边就会被整块剔掉。</li>
+     * <li>{@code flyingLayer = -1}：混合编组里有飞行成员（比如 mace + oct）时，
+     * {@code MegaUnitEntity.moveMode()} 会让 elevation 逼近 1，绘制走 "elevation &gt; 0.5 →
+     * flyingLayer"，
+     * 于是 {@code Draw.z(-1)} —— 比地板层还低，整个单位被地形盖住。
+     * 表现就是用户报的"mace 和 oct 组合后不绘制单位身体"（贴图其实一直在画，只是画在了地板下面）。</li>
+     * <li>{@code clipSize = -1}：视口裁剪（{@code EntityGroup.draw}）按它算包围盒，
+     * 负尺寸等于"只剩中心点"，单位贴着屏幕边就会被整块剔掉。</li>
      * </ul>
      * 另外 {@code lightRadius = -1} 会让巨兽没有灯光。hitSize 会在融合时按成员重算，
      * 所以这个方法在构造期和每次推导之后都要调一次。
      */
-    public void applyLateDefaults(){
-        if(lowAltitude){
+    public void applyLateDefaults() {
+        if (lowAltitude) {
             flyingLayer = Layer.flyingUnitLow;
-        }else if(flyingLayer < 0f){
+        } else if (flyingLayer < 0f) {
             flyingLayer = Layer.flyingUnit;
         }
-        if(lightRadius < 0f){
+        if (lightRadius < 0f) {
             lightRadius = Math.max(60f, hitSize * 2.3f);
         }
         clipSize = Math.max(Math.max(clipSize, lightRadius * 1.1f), hitSize * 2.4f);
@@ -72,25 +79,28 @@ public class MegaUnitType extends UnitType{
     /**
      * 按体型生成引擎。
      *
-     * 原版是在 {@link UnitType#init()} 里按 {@code engineSize/engineOffset} 建 {@code engines} 的，
+     * 原版是在 {@link UnitType#init()} 里按 {@code engineSize/engineOffset} 建
+     * {@code engines} 的，
      * 而巨兽类型是 late 注册、init() 从没跑过 —— {@code engines} 永远是空表，
      * 于是"会飞的巨兽"一点尾焰都没有。这里按 hitSize × 比例算出尺寸与位置
      * （比例默认取自 flare；有飞行成员时由 MegaUnitEntity 换成那台单位的参数）。
      */
-    public void rebuildEngines(){
+    public void rebuildEngines() {
         engines.clear();
         // 不会升空的巨兽不需要引擎（地面时 elevation=0，引擎本来就画不出来）
-        if(!flying && !hoverEngines) return;
+        if (!flying && !hoverEngines)
+            return;
 
         engineOffset = hitSize * engineOffsetRatio;
         engineSize = hitSize * engineSizeRatio;
-        if(engineOffset <= 0.01f || engineSize <= 0.01f) return;
+        if (engineOffset <= 0.01f || engineSize <= 0.01f)
+            return;
 
         // 和 flare / oct 一样居中一个引擎（引擎是圆，跟着 elevation 缩放，不会越界）
         engines.add(new UnitEngine(0f, -engineOffset, engineSize, -90f));
     }
 
-    public MegaUnitType(String name){
+    public MegaUnitType(String name) {
         super(name);
         constructor = MegaUnitEntity::new;
         // 兜底数值（融合时会被按成员重算的实例值覆盖）
@@ -106,6 +116,7 @@ public class MegaUnitType extends UnitType{
         drawCell = false;
         drawItems = false;
         drawMinimap = false;
+        hidden = true;
         // 巨兽类型是模组 init 期 late 注册的，UnitType.load() 从不执行：
         // wreckRegions 停在 null，而 createWreck/createScorch 默认 true——
         // PayloadUnit.destroy() 会遍历 type.wreckRegions.length，巨兽死亡瞬间直接 NPE。
@@ -130,7 +141,7 @@ public class MegaUnitType extends UnitType{
     }
 
     /** 幽灵武器实例，见构造器注释。包级私有以便模拟/测试断言用。 */
-    static mindustry.type.Weapon newWeapon(){
+    static mindustry.type.Weapon newWeapon() {
         mindustry.type.Weapon w = new mindustry.type.Weapon("combine-ghost-weapon");
         w.bullet = new mindustry.entities.bullet.BulletType(1f, 0f);
         w.bullet.lifetime = 10000f;
@@ -144,54 +155,177 @@ public class MegaUnitType extends UnitType{
      * 巨兽类型自己没有任何贴图（{@code region} 恒为 null），所以这里必须逐个兜底，
      * 否则 {@code Draw.rect(null)} 直接什么都不画（"不绘制单位身体"的另一半）。
      */
-    static TextureRegion bodyRegion(UnitType dom){
-        if(dom != null){
-            if(dom.fullIcon != null && Core.atlas.isFound(dom.fullIcon)) return dom.fullIcon;
-            if(dom.region != null && Core.atlas.isFound(dom.region)) return dom.region;
-            if(dom.uiIcon != null && Core.atlas.isFound(dom.uiIcon)) return dom.uiIcon;
+    static TextureRegion bodyRegion(UnitType dom) {
+        if (dom != null) {
+            // 先要**躯干贴图**：fullIcon 是带方形底板的 UI 图标（直接画就是一个方块，
+            // 而且不含腿/机甲腿这些原版分开画的部件），所以只在没有 region 时才拿它兜底。
+            if (dom.region != null && Core.atlas.isFound(dom.region))
+                return dom.region;
+            if (dom.fullIcon != null && Core.atlas.isFound(dom.fullIcon))
+                return dom.fullIcon;
+            if (dom.uiIcon != null && Core.atlas.isFound(dom.uiIcon))
+                return dom.uiIcon;
         }
         return null;
     }
 
+    /**
+     * 把**身体部件**（腿 / 机甲腿 / 履带 / 爬虫身）画上去。
+     *
+     * 原版的 drawBody 只画 region 那张躯干图；腿之类由 drawLegs/drawMech/drawTank/drawCrawl
+     * 单独画，且直接读"单位自己的部件状态"——巨兽实体不是原版那些腿/履带/爬虫实体，
+     * 这些部件一直没被画出来（用户报的"组合 Legs 单位没画腿，腿也要比例放大"）。
+     *
+     * 现在状态由巨兽自己维护（见 MegaUnitEntity.updateAttachments），这里只负责按代表类型的
+     * 部件种类分派到原版那几套画法；缩放靠临时把 {@code Draw.scl} 乘上巨兽的缩放系数——
+     * 原版这些绘制里所有尺寸都走 {@code region.scl()}（= region.scale × Draw.scl）和
+     * {@code Lines.stroke(... × region.scl())}，所以乘一次 Draw.scl，腿长/腿粗/脚掌/关节/
+     * 履带/节段就一起等比放大了。
+     *
+     * 机甲腿用本类的 {@link #drawMechOf}（原版 drawMech 的拷贝）：Mechc 接口**故意不实现**，
+     * 见 MegaUnitEntity 里关于 "机甲飞行时禁止开火" 特判的注释。
+     */
+    static void drawAttachments(Unit unit, MegaUnitEntity mu, UnitType dom, float z, float sc) {
+        if (dom == null || mu == null || mu.attKind == MegaUnitEntity.ATT_NONE)
+            return;
+        float prevScl = Draw.scl;
+        Draw.scl = prevScl * sc;
+        try {
+            switch (mu.attKind) {
+                case MegaUnitEntity.ATT_LEGS -> {
+                    Draw.z(z - 0.02f);
+                    drawLegsOf(dom, unit);
+                }
+                case MegaUnitEntity.ATT_MECH -> {
+                    Draw.z(z - 0.02f);
+                    drawMechOf(dom, unit, mu);
+                }
+                case MegaUnitEntity.ATT_TANK -> {
+                    Draw.z(z - 0.02f);
+                    drawTankOf(dom, unit);
+                }
+                case MegaUnitEntity.ATT_CRAWL -> {
+                    Draw.z(z);
+                    dom.drawCrawl(mu);
+                }
+                default -> {
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            Draw.scl = prevScl;
+            Draw.reset();
+        }
+    }
+
+    /**
+     * 原版 {@code UnitType.drawMech} 的等价实现（尺寸走 region.scl()，所以跟着 Draw.scl 等比放大）。
+     * walkExtend 的两套语义照抄 MechComp：scaled=true 返回 0..4 的相位、false 返回 -stride..2×stride 的位移。
+     */
+    static void drawMechOf(UnitType dom, Unit unit, MegaUnitEntity mu) {
+        Draw.reset();
+
+        float e = unit.elevation;
+        float stride = Math.max(dom.mechStride, 0.01f);
+        float raw = mu.mechWalkTime % (stride * 4f);
+        float scaled = raw / stride;
+        float extension = raw;
+        if (extension > stride * 3f) extension -= stride * 4f;
+        else if (extension > stride * 2f) extension = stride * 2f - extension;
+        else if (extension > stride) extension = stride * 2f - extension;
+
+        float sin = Mathf.lerp(Mathf.sin(scaled, 2f / Mathf.PI, 1f), 0f, e);
+        extension = Mathf.lerp(extension, 0f, e);
+        float boostTrns = e * 2f;
+        float baseRotation = mu.baseRotation();
+
+        mindustry.world.blocks.environment.Floor floor = unit.isFlying()
+                ? mindustry.content.Blocks.air.asFloor() : unit.floorOn();
+        if (floor.isLiquid)
+            Draw.color(arc.graphics.Color.white, floor.mapColor, 0.5f);
+
+        for (int i : Mathf.signs) {
+            Draw.mixcol(Tmp.c1.set(dom.mechLegColor).lerp(arc.graphics.Color.white, Mathf.clamp(unit.hitTime)),
+                    Math.max(Math.max(0f, i * extension / stride), unit.hitTime));
+
+            Draw.rect(dom.legRegion,
+                    unit.x + Angles.trnsx(baseRotation, extension * i - boostTrns, -boostTrns * i),
+                    unit.y + Angles.trnsy(baseRotation, extension * i - boostTrns, -boostTrns * i),
+                    dom.legRegion.width * dom.legRegion.scl() * i,
+                    dom.legRegion.height * dom.legRegion.scl() * (1f - Math.max(-sin * i, 0f) * 0.5f),
+                    baseRotation - 90f + 35f * i * e);
+        }
+
+        Draw.mixcol(arc.graphics.Color.white, unit.hitTime);
+
+        if (unit.lastDrownFloor != null) {
+            Draw.color(arc.graphics.Color.white, Tmp.c1.set(unit.lastDrownFloor.mapColor).mul(0.83f), unit.drownTime * 0.9f);
+        } else {
+            Draw.color(arc.graphics.Color.white);
+        }
+
+        Draw.rect(dom.baseRegion, unit.x, unit.y, baseRotation - 90f);
+        Draw.mixcol();
+    }
+
+    /** 原版 drawLegs/drawTank 的形参带 `T extends Unit & X` 交叉上界，用泛型辅助方法转一次。 */
+    @SuppressWarnings("unchecked")
+    private static <T extends Unit & Legsc> void drawLegsOf(UnitType type, Unit u) {
+        type.drawLegs((T) u);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Unit & Tankc> void drawTankOf(UnitType type, Unit u) {
+        type.drawTank((T) u);
+    }
+
     @Override
-    public void draw(Unit unit){
-        if(unit.inFogTo(mindustry.Vars.player.team())) return;
+    public void draw(Unit unit) {
+        if (unit.inFogTo(mindustry.Vars.player.team()))
+            return;
 
         MegaUnitEntity mu = unit instanceof MegaUnitEntity m ? m : null;
         UnitType dom = mu != null && mu.dominant != null ? mu.dominant : null;
         TextureRegion region = bodyRegion(dom);
-        float s = mu == null ? 1f : Mathf.clamp(mu.drawScale, 0.5f, 8f);
+        float s = mu == null ? 1f : mu.bodyScale();
         boolean isPayload = !unit.isAdded();
         float z = isPayload ? Draw.z()
-            : (unit.elevation > 0.5f || (flying && unit.dead) ? (flyingLayer < 0f ? Layer.flyingUnitLow : flyingLayer)
-            : groundLayer + Mathf.clamp(unit.hitSize / 4000f, 0f, 0.01f));
+                : (unit.elevation > 0.5f || (flying && unit.dead)
+                        ? (flyingLayer < 0f ? Layer.flyingUnitLow : flyingLayer)
+                        : groundLayer + Mathf.clamp(unit.hitSize / 4000f, 0f, 0.01f));
 
         // 空中阴影（按代表类型的阴影贴图、按缩放系数放大）
-        if(!isPayload && (unit.isFlying() || shadowElevation > 0)){
+        if (!isPayload && (unit.isFlying() || shadowElevation > 0)) {
             TextureRegion sh = dom != null && dom.shadowRegion != null && Core.atlas.isFound(dom.shadowRegion)
-                ? dom.shadowRegion : shadowRegion;
-            if(sh != null && Core.atlas.isFound(sh)){
+                    ? dom.shadowRegion
+                    : shadowRegion;
+            if (sh != null && Core.atlas.isFound(sh)) {
                 float e = Mathf.clamp(unit.elevation, shadowElevation, 1f) * shadowElevationScl * (1f - unit.drownTime);
                 Draw.z(Math.min(Layer.darkness, z - 1f));
                 Draw.color(Pal.shadow, Pal.shadow.a * unit.shadowAlpha);
                 Draw.rect(sh, unit.x + shadowTX * e, unit.y + shadowTY * e,
-                    sh.width * s * Draw.scl, sh.height * s * Draw.scl, unit.rotation - 90);
+                        sh.width * s * Draw.scl, sh.height * s * Draw.scl, unit.rotation - 90);
                 Draw.color();
             }
         }
+
+        // 【身体部件：腿/机甲腿/履带/爬虫身】原版顺序在机身之前（腿在机身下面）
+        if (!isPayload)
+            drawAttachments(unit, mu, dom, z, s);
 
         // 【先引擎、后机身】——和原版 UnitType.draw 同一个顺序（引擎 → Draw.z(z) → drawBody）：
         // 引擎是画在机身**下面**的，机身盖住它朝内那半圈，看上去才是"喷口从机身尾部喷出来"。
         // 反过来（机身先、引擎后）就是用户看到的"引擎糊在单位身上"。
         Draw.z(z);
-        if(engines.size > 0) drawEngines(unit);
+        if (engines.size > 0)
+            drawEngines(unit);
 
         // 本体：代表类型贴图，按缩放系数
         Draw.z(z);
         applyColor(unit);
-        if(region != null && Core.atlas.isFound(region)){
+        if (region != null && Core.atlas.isFound(region)) {
             Draw.rect(region, unit.x, unit.y,
-                region.width * s * Draw.scl, region.height * s * Draw.scl, unit.rotation - 90);
+                    region.width * s * Draw.scl, region.height * s * Draw.scl, unit.rotation - 90);
         }
         Draw.reset();
 
@@ -202,14 +336,15 @@ public class MegaUnitType extends UnitType{
         // 成员能力特效（力场护盾/状态光环/维修波等）——原版画在 UnitType.draw 尾部
         // （abilities → drawBody），巨兽是完全自定义绘制，必须自己接这一段，
         // 否则能力只有逻辑生效、没有任何视觉（"没有力墙显示"）
-        if(!isPayload){
-            for(mindustry.entities.abilities.Ability a : unit.abilities()){
+        if (!isPayload) {
+            for (mindustry.entities.abilities.Ability a : unit.abilities()) {
                 Draw.reset();
                 a.draw(unit);
             }
         }
 
         // 护盾（力场能力等）
-        if(unit.shieldAlpha() > 0f && drawShields) drawShield(unit);
+        if (unit.shieldAlpha() > 0f && drawShields)
+            drawShield(unit);
     }
 }

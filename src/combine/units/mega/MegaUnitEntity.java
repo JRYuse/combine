@@ -3,19 +3,32 @@ package combine.units.mega;
 import arc.Core;
 import arc.graphics.g2d.TextureRegion;
 import arc.math.Angles;
+import arc.math.Mathf;
+import arc.math.geom.Vec2;
 import arc.struct.ObjectMap;
 import arc.struct.Seq;
+import arc.util.Tmp;
 import arc.util.io.Reads;
 import arc.util.io.Writes;
 import combine.units.UnitComboMerge;
+import mindustry.Vars;
+import mindustry.content.Blocks;
+import mindustry.content.Fx;
 import mindustry.entities.EntityCollisions;
+import mindustry.entities.Leg;
 import mindustry.entities.abilities.Ability;
 import mindustry.entities.units.WeaponMount;
+import mindustry.gen.Crawlc;
+import mindustry.gen.Legsc;
+import mindustry.gen.Tankc;
 import mindustry.gen.Unit;
 import mindustry.gen.UnitEntity;
+import mindustry.graphics.InverseKinematics;
 import mindustry.io.TypeIO;
 import mindustry.type.UnitType;
 import mindustry.type.Weapon;
+import mindustry.world.Tile;
+import mindustry.world.blocks.environment.Floor;
 import mindustry.world.blocks.payloads.Payload;
 import mindustry.world.blocks.payloads.UnitPayload;
 
@@ -52,7 +65,7 @@ import mindustry.world.blocks.payloads.UnitPayload;
  * 有飞行成员就能飞、有海军成员就能游、有陆地成员就能跑，见 {@link #update()} 的高度驱动
  * 与 solidity/canDrown/onSolid 的碰撞语义。
  */
-public class MegaUnitEntity extends UnitEntity{
+public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
     /** 网络/存档用的类 ID，由 UnitComboMerge.register() 登记 EntityMapping 后回填。 */
     public static int CLASS_ID = 255;
 
@@ -60,6 +73,35 @@ public class MegaUnitEntity extends UnitEntity{
     public transient UnitType dominant;
     /** 贴图缩放 = 综合 hitSize / 代表类型 hitSize，由成员构成推导。 */
     public transient float drawScale = 1f;
+    /**
+     * 身体部件（腿/机甲腿/履带/爬虫身）的种类，按代表类型判定（{@link #attachmentKind}）。
+     * 巨兽实体不是原版的"腿类/机甲/履带/爬虫"实体，这些部件原版从来不会画，
+     * 必须自己按这个种类分派（见 {@link MegaUnitType#drawAttachments} + {@link #updateAttachments()}）。
+     */
+    public transient int attKind = ATT_NONE;
+
+    /** 部件种类常量。 */
+    public static final int ATT_NONE = 0, ATT_LEGS = 1, ATT_MECH = 2, ATT_CRAWL = 3, ATT_TANK = 4;
+
+    /**
+     * 腿（Legsc）的骨骼状态。腿段位置是<b>世界坐标</b>，每帧在 {@link #updateAttachments()} 里
+     * 按巨兽的位置/速度跑一遍 IK（原版 LegsComp.update 那套算法，长度按 {@link #bodyScale()} 放大）。
+     */
+    public transient Leg[] legs = {};
+    public transient float legTotalLength, legMoveSpace, legBaseRotation;
+    public transient Vec2 legCurMoveOffset = new Vec2();
+    /** 上次 resetLegs 用的缩放，缩放变了（成员构成变了）要重新摆一次腿的初始位置。 */
+    private transient float legResetScale = -1f;
+    private static final Vec2 StraightVec = new Vec2();
+    private transient Floor lastDeepFloor;
+
+    /** 机甲（Mechc）的行走相位：baseRotation 与腿共用 legBaseRotation，这里只累加走过的距离。 */
+    public transient float mechWalkTime;
+    /** 爬虫（Crawlc）的摆动相位（原版的 crawlTime / segmentRot）。 */
+    public transient float crawlTime = Mathf.random(100f), crawlSegmentRot;
+    /** 履带（Tankc）的滚动相位。 */
+    public transient float treadTime;
+    private transient boolean walkedState;
     /**
      * 成员移动能力（构成推导）：有飞行成员就能飞、有海军成员就能游、有陆地成员就能跑。
      * 移动模式按当前地形动态选择（{@link #moveMode()}），不再用"多数决"定死一个形态——
@@ -210,6 +252,14 @@ public class MegaUnitEntity extends UnitEntity{
         float combined = (float)Math.sqrt(sumHit2);
         hitSize(Math.max(combined, 1f));
         drawScale = combined / Math.max(dom.hitSize, 1f);
+        // 身体部件种类（腿/机甲腿/履带/爬虫身）：变了就重摆一次腿的初始姿势 / 重置相位
+        attKind = attachmentKind(dom);
+        if(attKind == ATT_LEGS){
+            float scl = bodyScale();
+            if(legs.length != dom.legCount || Math.abs(scl - legResetScale) > 0.001f) resetLegs();
+        }else if(attKind == ATT_CRAWL){
+            crawlSegmentRot = rotation;
+        }
 
         // 按构成签名换绑派生类型：采矿/建造/速度/物品上限等"原版只读 type 静态字段"
         // 的能力从此按成员构成生效；同步/存档只写占位 id，对端按成员列表重建同一类型
@@ -353,7 +403,9 @@ public class MegaUnitEntity extends UnitEntity{
         if(!mindustry.Vars.headless){
             icon = dom.uiIcon != null ? dom.uiIcon : dom.fullIcon;
             if(icon != null && Core.atlas != null && Core.atlas.isFound(icon)){
-                ct.fullIcon = ct.uiIcon = icon;
+                // region 也补上：原版不少地方直接读 type.region（clipSize 就是其一），
+                // 巨兽类型本来 region 恒为 null，排个建造计划就会 NPE 闪退
+                ct.region = ct.fullIcon = ct.uiIcon = icon;
             }else{
                 icon = null;
             }
@@ -548,6 +600,27 @@ public class MegaUnitEntity extends UnitEntity{
     }
 
     /**
+     * 视口裁剪包围盒。
+     *
+     * **必须重写**：原版 {@code UnitComp.clipSize()} 在"有建造计划"（{@code isBuilding()}）
+     * 时会读 {@code type.region.width}，而巨兽类型没有自己的贴图（{@code region} 为 null），
+     * 于是玩家一给巨兽排建造计划，渲染循环里的 {@code EntityGroup.draw} 就抛
+     * `NullPointerException: Attempt to read from field 'int TextureRegion.width' on a null object reference`
+     * 直接闪退（安卓崩溃栈：UnitEntity.clipSize → EntityGroup.draw → Renderer.draw）。
+     * 这里改成按巨兽自己的 hitSize/建造范围算，不碰 {@code region}。
+     */
+    @Override
+    public float clipSize(){
+        float size = type.clipSize > 0f ? type.clipSize : Math.max(hitSize() * 2.4f, 120f);
+        if(isBuilding())
+            return mindustry.Vars.state.rules.infiniteResources ? Float.MAX_VALUE
+                : size + type.buildRange + mindustry.Vars.tilesize * 4f;
+        if(mining())
+            return size + type.mineRange;
+        return size;
+    }
+
+    /**
      * 左上角玩家预览图标（原版 HUD 每帧调 player.icon() → unit.icon() → type.uiIcon，
      * 是类型级静态值——注册时巨兽类型被写死成 dagger/flare/risso 的图标）。
      * 实例级重写：跟代表类型走，合体构成变化即预览变化。
@@ -634,6 +707,344 @@ public class MegaUnitEntity extends UnitEntity{
         return hasGround;
     }
 
+    // ==================== 身体部件（腿/机甲腿/履带/爬虫身） ====================
+    // 原版这些部件由实体组件（LegsComp/MechComp/TankComp/CrawlComp）维护、由 UnitType 分开绘制。
+    // 巨兽是最普通的 UnitEntity，没有这些组件——这里自己实现：
+    //   · 状态（腿骨骼/行走相位/履带相位）放本实体，每帧 updateAttachments() 里更新；
+    //   · 绘制交给 MegaUnitType.drawAttachments（原版那几套画法，等比放大）。
+    // 腿/履带/爬虫三类直接实现 Legsc/Tankc/Crawlc 接口，好让原版 drawLegs/drawTank/drawCrawl
+    // 原样可用；机甲（Mechc）**故意不实现**：原版有 "player.unit() instanceof Mechc && isFlying
+    // → 禁止开火" 这类特判（NetServer.handleUnitPacket），巨兽挂上 Mechc 会让会飞的巨兽没法开火，
+    // 所以机甲腿用 MegaUnitType.drawMechOf 自己画一份。
+
+    /** 贴图/部件共用的缩放系数（和 MegaUnitType.draw 里那套保持一致）。 */
+    public float bodyScale(){
+        return Mathf.clamp(drawScale, 0.5f, 8f);
+    }
+
+    /** 代表类型属于哪一类身体部件（按原版绘制顺序判定：机甲 → 履带 → 腿 → 爬虫）。 */
+    static int attachmentKind(UnitType t){
+        if(t == null || t.constructor == null) return ATT_NONE;
+        Integer cached = attKindCache.get(t);
+        if(cached != null) return cached;
+        int k = ATT_NONE;
+        try{
+            Object sample = t.constructor.get();
+            if(sample instanceof mindustry.gen.Mechc) k = ATT_MECH;
+            else if(sample instanceof Tankc) k = ATT_TANK;
+            else if(sample instanceof Legsc) k = ATT_LEGS;
+            else if(sample instanceof Crawlc) k = ATT_CRAWL;
+        }catch(Throwable ignored){
+        }
+        attKindCache.put(t, k);
+        return k;
+    }
+
+    private static final ObjectMap<UnitType, Integer> attKindCache = new ObjectMap<>();
+
+    @Override
+    public Leg[] legs(){
+        return legs;
+    }
+
+    @Override
+    public void legs(Leg[] l){
+        legs = l;
+    }
+
+    @Override
+    public float baseRotation(){
+        return legBaseRotation;
+    }
+
+    @Override
+    public void baseRotation(float v){
+        legBaseRotation = v;
+    }
+
+    @Override
+    public float totalLength(){
+        return legTotalLength;
+    }
+
+    @Override
+    public void totalLength(float v){
+        legTotalLength = v;
+    }
+
+    @Override
+    public float moveSpace(){
+        return legMoveSpace;
+    }
+
+    @Override
+    public void moveSpace(float v){
+        legMoveSpace = v;
+    }
+
+    @Override
+    public Vec2 curMoveOffset(){
+        return legCurMoveOffset;
+    }
+
+    @Override
+    public void curMoveOffset(Vec2 v){
+        legCurMoveOffset = v;
+    }
+
+    @Override
+    public Floor lastDeepFloor(){
+        return lastDeepFloor;
+    }
+
+    @Override
+    public void lastDeepFloor(Floor f){
+        lastDeepFloor = f;
+    }
+
+    @Override
+    public float crawlTime(){
+        return crawlTime;
+    }
+
+    @Override
+    public void crawlTime(float v){
+        crawlTime = v;
+    }
+
+    @Override
+    public float segmentRot(){
+        return crawlSegmentRot;
+    }
+
+    @Override
+    public void segmentRot(float v){
+        crawlSegmentRot = v;
+    }
+
+    @Override
+    public float lastCrawlSlowdown(){
+        return 1f;
+    }
+
+    @Override
+    public void lastCrawlSlowdown(float v){
+    }
+
+    @Override
+    public float treadTime(){
+        return treadTime;
+    }
+
+    @Override
+    public void treadTime(float v){
+        treadTime = v;
+    }
+
+    @Override
+    public boolean walked(){
+        return walkedState;
+    }
+
+    @Override
+    public void walked(boolean v){
+        walkedState = v;
+    }
+
+    /** 腿的外展角度（原版 LegsComp.legAngle，长度按巨兽体型放大）。 */
+    @Override
+    public float legAngle(int index){
+        UnitType d = dominant;
+        if(d != null && d.legStraightness > 0f){
+            return Mathf.slerp(defaultLegAngle(index),
+                (index >= legs.length / 2 ? -90f : 90f) + legBaseRotation, d.legStraightness);
+        }
+        return defaultLegAngle(index);
+    }
+
+    @Override
+    public float defaultLegAngle(int index){
+        if(legs.length == 0) return legBaseRotation;
+        return legBaseRotation + 360f / legs.length * index + (360f / legs.length / 2f);
+    }
+
+    /** 腿根相对身体中心的偏移（原版 LegsComp.legOffset，长度按巨兽体型放大）。 */
+    @Override
+    public Vec2 legOffset(Vec2 out, int index){
+        UnitType d = dominant;
+        if(d == null) return out.setZero();
+        float scl = bodyScale();
+        out.trns(defaultLegAngle(index), d.legBaseOffset * scl);
+        if(d.legStraightness > 0f){
+            StraightVec.trns(defaultLegAngle(index) - legBaseRotation, d.legBaseOffset * scl);
+            StraightVec.y = Mathf.sign(StraightVec.y) * d.legBaseOffset * scl * d.legStraightLength;
+            StraightVec.rotate(legBaseRotation);
+            out.lerp(StraightVec, d.baseLegStraightness);
+        }
+        return out;
+    }
+
+    @Override
+    public void resetLegs(){
+        UnitType d = dominant;
+        resetLegs(d == null ? 0f : d.legLength * bodyScale());
+    }
+
+    @Override
+    public void resetLegs(float legLength){
+        UnitType d = dominant;
+        if(d == null || d.legCount <= 0 || legLength <= 0f){
+            legs = new Leg[0];
+            return;
+        }
+        Leg[] arr = new Leg[d.legCount];
+        legs = arr;
+        if(d.lockLegBase) legBaseRotation = rotation;
+        for(int i = 0; i < arr.length; i++){
+            Leg l = new Leg();
+            float dstRot = legAngle(i);
+            Vec2 baseOffset = legOffset(Tmp.v5, i).add(x, y);
+            l.joint.trns(dstRot, legLength / 2f).add(baseOffset);
+            l.base.trns(dstRot, legLength).add(baseOffset);
+            arr[i] = l;
+        }
+        legTotalLength = Mathf.random(100f);
+        legResetScale = bodyScale();
+    }
+
+    /** 每帧更新身体部件的动画状态（腿的 IK / 机甲行走相位 / 履带滚动 / 爬虫摆动）。 */
+    private void updateAttachments(){
+        UnitType d = dominant;
+        if(d == null || dead) return;
+        float dx = deltaX(), dy = deltaY();
+        float len = Mathf.dst(dx, dy);
+
+        if(attKind == ATT_LEGS){
+            updateLegs(d, dx, dy);
+        }else if(attKind == ATT_MECH){
+            if(len > 0.001f){
+                legBaseRotation = Angles.moveToward(legBaseRotation, Mathf.angle(dx, dy),
+                    Math.max(d.baseRotateSpeed, 0.01f) * Mathf.clamp(len / Math.max(d.speed, 0.01f) / Math.max(arc.util.Time.delta, 0.001f), 0f, 1f) * arc.util.Time.delta);
+                mechWalkTime += len;
+            }
+        }else if(attKind == ATT_CRAWL){
+            if(moving()){
+                crawlSegmentRot = Angles.moveToward(crawlSegmentRot, rotation, d.segmentRotSpeed * arc.util.Time.delta);
+            }
+            crawlSegmentRot = Angles.clampRange(crawlSegmentRot, rotation, d.segmentMaxRot);
+            crawlTime += len;
+        }else if(attKind == ATT_TANK){
+            treadTime += len;
+            walkedState = len > 0.001f;
+        }
+    }
+
+    /** 原版 LegsComp.update 的等比放大版（腿长/腿根偏移都乘上巨兽的体型缩放）。 */
+    private void updateLegs(UnitType d, float dx, float dy){
+        float scl = bodyScale();
+        float legLength = d.legLength * scl;
+        if(d.legCount <= 0 || legs.length != d.legCount || Math.abs(scl - legResetScale) > 0.001f){
+            resetLegs(legLength);
+        }
+        if(legs.length == 0) return;
+
+        float movingLen = Mathf.dst(dx, dy);
+        if(movingLen > 0.001f){
+            legBaseRotation = Angles.moveToward(legBaseRotation, Mathf.angle(dx, dy), d.rotateSpeed);
+        }
+        if(d.lockLegBase) legBaseRotation = rotation;
+
+        float moveSpeed = d.legSpeed;
+        int div = Math.max(legs.length / Math.max(d.legGroupSize, 1), 2);
+        float moveSpace = legLength / 1.6f / (div / 2f) * d.legMoveSpace;
+        if(!(moveSpace > 0.0001f)) moveSpace = Math.max(legLength, 1f);
+        legMoveSpace = moveSpace;
+
+        float trns = moveSpace * 0.85f * d.legForwardScl;
+        boolean moving = moving();
+        Vec2 moveOffset = !moving ? Tmp.v4.setZero() : Tmp.v4.trns(Mathf.angle(dx, dy), trns);
+        moveOffset = legCurMoveOffset.lerpDelta(moveOffset, 0.1f);
+        legTotalLength += d.legContinuousMove ? d.speed * speedMultiplier * arc.util.Time.delta : movingLen;
+
+        lastDeepFloor = null;
+        int deeps = 0;
+
+        for(int i = 0; i < legs.length; i++){
+            float dstRot = legAngle(i);
+            Vec2 baseOffset = legOffset(Tmp.v5, i).add(x, y);
+            Leg l = legs[i];
+
+            l.joint.sub(baseOffset).clampLength(d.legMinLength * legLength / 2f, d.legMaxLength * legLength / 2f).add(baseOffset);
+            l.base.sub(baseOffset).clampLength(d.legMinLength * legLength, d.legMaxLength * legLength).add(baseOffset);
+
+            float stageF = (legTotalLength + i * d.legPairOffset) / moveSpace;
+            int stage = (int)stageF;
+            int group = stage % div;
+            boolean move = i % div == group;
+            boolean side = i < legs.length / 2;
+            boolean backLeg = Math.abs((i + 0.5f) - legs.length / 2f) <= 0.501f;
+            if(backLeg && d.flipBackLegs) side = !side;
+            if(d.flipLegSide) side = !side;
+
+            l.moving = move;
+            l.stage = moving ? stageF % 1f : Mathf.lerpDelta(l.stage, 0f, 0.1f);
+
+            Tile tile = Vars.world.tileWorld(l.base.x, l.base.y);
+            Floor floor = tile == null ? Blocks.air.asFloor() : tile.floor();
+
+            if(tile != null && tile.isDeep()){
+                deeps++;
+                lastDeepFloor = floor;
+            }
+
+            if(l.group != group){
+                //落地那一瞬间的扬尘/踏地声（原版同款，只是位置跟着巨兽的腿走）
+                if(!move && (moving || !d.legContinuousMove) && i % div == l.group
+                    && !Vars.headless && !inFogTo(Vars.player.team())){
+                    var color = tile == null ? arc.graphics.Color.clear : tile.getFloorColor();
+                    if(floor.isLiquid && tile != null && tile.block() == Blocks.air){
+                        floor.walkEffect.at(l.base.x, l.base.y, d.rippleScale, color);
+                        floor.walkSound.at(x, y, 1f, floor.walkSoundVolume);
+                    }else{
+                        Fx.unitLandSmall.at(l.base.x, l.base.y, d.rippleScale, color);
+                        d.stepSound.at(l.base.x, l.base.y,
+                            d.stepSoundPitch + Mathf.range(d.stepSoundPitchRange), d.stepSoundVolume);
+                    }
+                    if(d.stepShake > 0f){
+                        mindustry.entities.Effect.shake(d.stepShake, d.stepShake, l.base);
+                    }
+                }
+                //巨型蜘蛛踩地的范围伤害（原版 legSplashDamage）
+                if(d.legSplashDamage > 0f && !disarmed){
+                    mindustry.entities.Damage.damage(team, l.base.x, l.base.y, d.legSplashRange,
+                        d.legSplashDamage * Vars.state.rules.unitDamage(team), false, true);
+                }
+
+                l.group = group;
+            }
+
+            //落点 → IK → 插值（原版算法）
+            Vec2 legDest = Tmp.v1.trns(dstRot, legLength * d.legLengthScl).add(baseOffset).add(moveOffset);
+            Vec2 jointDest = Tmp.v2;
+            InverseKinematics.solve(legLength / 2f, legLength / 2f, Tmp.v6.set(l.base).sub(baseOffset), side, jointDest);
+            jointDest.add(baseOffset);
+
+            if(move){
+                float moveFract = stageF % 1f;
+                l.base.lerpDelta(legDest, moveFract);
+                l.joint.lerpDelta(jointDest, moveFract / 2f);
+            }
+            l.joint.lerpDelta(jointDest, moveSpeed / 4f);
+
+            l.joint.sub(baseOffset).clampLength(d.legMinLength * legLength / 2f, d.legMaxLength * legLength / 2f).add(baseOffset);
+            l.base.sub(baseOffset).clampLength(d.legMinLength * legLength, d.legMaxLength * legLength).add(baseOffset);
+        }
+
+        if(deeps != legs.length || !floorOn().isDeep()){
+            lastDeepFloor = null;
+        }
+    }
+
     /**
      * 选择移动模式（有飞机就能飞、有海军就能游、有陆地就能跑）：
      * <ul>
@@ -701,6 +1112,9 @@ public class MegaUnitEntity extends UnitEntity{
     @Override
     public void update(){
         super.update();
+        // 身体部件（腿/机甲腿/履带/爬虫身）的动画：原版是实体组件在 super.update() 里跑的，
+        // 巨兽没有这些组件，在这里按代表类型的部件种类自己驱动（绘制见 MegaUnitType）。
+        updateAttachments();
         if(dead) return; // 死亡坠落由原版处理（fallSpeed）
         int mode = moveMode();
         float target = mode == MODE_FLY ? 1f : 0f;
