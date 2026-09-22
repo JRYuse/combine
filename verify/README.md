@@ -206,6 +206,7 @@ verify/lagnet-selftest.py --count 3000 --rate 150 --latency 200   # 压更狠一
 | `combine.dbg.DrillComboSpeedTest` | 任意（有机械钻头） | 矿机组合挖速：同一片矿 1 台 vs 相邻 3 台组合矿机跑同样 tick，产量必须按台数成倍（3 台 ≈ 3×），面板另有「整组挖速」一行 |
 | `combine.dbg.MegaStatSumTest` | 任意（有 poly 这类工程/采矿单位） | 巨兽的建造/挖矿速率按成员累加，而且是**量行为**：给单位排同一条建造计划、跑同样 5 tick，量 `ConstructBuild.progress` 的增量（1 台 poly → 2 台 → 3 台必须是 1×/2×/3×）；挖矿同理量同样 300 tick 挖到手的物品数；再按 NetClient 的路子（EntityMapping 新建 + readSync）造一份"客户端实体"，它的 `type.buildSpeed/mineSpeed` 也必须是累加值；最后验力场：连续喂两个同步快照，力场能力必须还是**同一个实例**、展开动画 `radiusScale` 不被清零（清零 = 联机时"力墙一直放大缩小"），武器装填进度也不被快照清零 |
 | `combine.dbg.MegaGhostMemberTest` | 任意（有 dagger） | 用户报的"客户端进行单位合体会变成幽灵单位"：巨兽靠实体快照出现（UDP，可能先到），成员被收进去靠 `Call.unitDespawn` 通知（可靠通道，可能后到），中间那段客户端就是"巨兽已出现、成员还站着"。测试人为造出这个竞态（把成员按**原 id** 重新放回世界）再调 `removeGhostMembers()`：幽灵必须摘干净、巨兽自己不能误删、**同 id 但类型不同**的单位（防 id 复用）不能误删。配套：成员块格式加版本字节并把成员原始 id 写进去（老存档两种旧格式都还能读，见 `MegaSyncTest` 的 H/H2） |
+| `combine.dbg.MegaPayloadTest` | 任意（有 dagger/mace + 载荷黑洞方块） | 用户报的"巨兽图标变了、无法解体、进不了载荷黑洞销毁"三条一起量：①正常巨兽的代表类型/解体/`allowedInPayloads`/`spawnedByCore`/`isAI`；②**成员表丢了的巨兽**（读快照打嗝的降级态）不能不退化成占位类型（图标不能变）、也不能"什么都没法做"；③**载荷整条路**：原版载具能不能装下它（`canPickup`）、装进去后用 `PayloadVoid` 能不能销毁；④成员块带"代表类型"后，快照往返即使成员读丢了图标也不变 |
 | `combine.dbg.MegaSurviveTest` | 任意（有核心） | 联机剧本把巨兽生到**地图外**导致"融合成功、1 秒后单位没了"：地图内融合必须活过 2 秒；地图外（含同帧融合）用来复现原版"环境死亡"清理 |
 
 **组合巨兽的贴图规则**（`mega`/`legs`/`mech` 三个真客户端模式各拍一张对比图）：

@@ -772,10 +772,11 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         }catch(Throwable t){
             // 【不能把异常抛回 NetClient.entitySnapshot】一次快照包里排在它后面的实体全读不出来
             //（玩家看到的就是"一片单位不可见"），日志还会被 "Unknown payload type / Queue too long"
-            // 刷屏。读出问题（对端实体类映射不一致、字节错位）时退化成"空成员的巨兽"：
-            // 单位还在、还能操控，损失只是这一次快照里的成员构成。
-            Log.err("[combine] 组合巨兽快照读取失败，按空成员处理", t);
-            try{ members.clear(); }catch(Throwable ignored){}
+            // 刷屏。读出问题（对端实体类映射不一致、字节错位）时**保留上一份成员构成**：
+            // readMembers 是先读进临时表、读成功才替换的，所以这里什么都不用做。
+            // 以前这里 members.clear() —— 一次打嗝就把巨兽变成空壳：图标退回占位类型、解体失效，
+            // 而且构成再也回不来（用户报的"巨兽图标变了而且无法解体"）。
+            Log.err("[combine] 组合巨兽快照读取失败，保留上一份成员构成", t);
             if(type == null) type = UnitComboMerge.megaGround;
             return;
         }
@@ -829,10 +830,15 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         try{
             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
             Writes w = new Writes(new java.io.DataOutputStream(bos));
-            // 【格式版本】1 = 每个成员多带一个"原单位 id"（见 sweepGhostMembers：客户端要用它
-            // 把还没删掉的成员实体当场摘掉）。0 是旧格式（body 直接以 i(数量) 开头）——
-            // 旧存档/旧快照里 i(n) 的最高字节恒为 0，正好被读成 version=0，天然兼容。
-            w.b(1);
+            // 【格式版本】
+            //   2 = 头部再带一个"代表成员的类型 id"：成员表万一读不出来（对端缺模组、字节错位…），
+            //       这只能靠它维持图标/体型，不至于退化成占位类型（用户报的"巨兽图标变了"）；
+            //   1 = 每个成员多带一个"原单位 id"（见 removeGhostMembers：客户端要用它把还没删掉的
+            //       成员实体当场摘掉）；
+            //   0 = 旧格式（body 直接以 i(数量) 开头）—— 旧存档/旧快照里 i(n) 的最高字节恒为 0，
+            //       正好被读成 version=0，天然兼容。
+            w.b(2);
+            w.i(dominant == null ? -1 : dominant.id);
             w.i(members.size);
             for(int i = 0; i < members.size; i++){
                 UnitPayload up = members.get(i);
@@ -857,7 +863,12 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
     }
 
     private void readMembers(Reads read){
-        members.clear();
+        // 【先读进临时表】中途读崩（对端缺模组、字节错位…）时不要动**已有的**成员构成：
+        // 同一只巨兽的构成不会自己变，上一份离真相最近；直接 clear 会把巨兽变成"没有成员的壳"——
+        // 图标退回占位类型（看着像换了单位）、解体当场失效（用户报的"图标变了而且无法解体"）。
+        Seq<UnitPayload> parsed = new Seq<>();
+        // 成员表读不出来时的兜底：块头里带的"代表成员类型"，用它维持图标/体型
+        UnitType domHint = null;
         int tag = read.ub();
         if(tag != (MEMBER_TAG & 0xFF)){
             // 【旧格式兼容】本次改动前写的是 `i(数量) + 数量 × 原版载荷`（载荷 = bool + 类型 +
@@ -881,8 +892,10 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
                 if(!(o instanceof Unit u))
                     throw new IllegalArgumentException("旧格式成员不是单位: " + classId);
                 u.read(read);
-                members.add(new UnitPayload(u));
+                parsed.add(new UnitPayload(u));
             }
+            members.clear();
+            members.addAll(parsed);
             return;
         }
         int len = read.i();
@@ -892,7 +905,14 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         Reads r = new Reads(new java.io.DataInputStream(new java.io.ByteArrayInputStream(body)));
         int version = r.ub();
         int n;
-        if(version == 1){
+        if(version >= 1){
+            if(version >= 2){
+                int domId = r.i();
+                if(domId >= 0){
+                    UnitType t = Vars.content.unit(domId);
+                    if(t != null) domHint = t;
+                }
+            }
             n = r.i();
         }else{
             // 旧格式：第一个字节其实是 i(数量) 的最高字节（大端），补上剩下三个字节
@@ -903,7 +923,8 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         for(int i = 0; i < n; i++){
             if(!r.bool())
                 continue;
-            int memberId = version == 1 ? r.i() : 0;
+            // 版本 ≥ 1 都带成员 id（版本 2 只是头部多了代表类型，成员条目与版本 1 相同）
+            int memberId = version >= 1 ? r.i() : 0;
             String key = r.str(256);
             Unit mu = unitByKey(key);
             if(mu == null){
@@ -913,8 +934,11 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
             }
             if(memberId != 0) mu.id(memberId);
             mu.read(r);
-            members.add(new UnitPayload(mu));
+            parsed.add(new UnitPayload(mu));
         }
+        members.clear();
+        members.addAll(parsed);
+        if(domHint != null) dominant = domHint;
         if(Vars.net.client()) removeGhostMembers();
     }
 
