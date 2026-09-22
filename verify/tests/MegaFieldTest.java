@@ -363,12 +363,17 @@ public class MegaFieldTest implements ApplicationListener{
             for(int x=40;x<200;x++){
                 Tile t = Vars.world.tile(x, y);
                 if(t == null || t.floor() == null || !t.floor().isLiquid || t.block() != Blocks.air) continue;
-                boolean land = false;
-                for(int dy=-8;dy<=8 && !land;dy++) for(int dx=-8;dx<=8;dx++){
-                    Tile n = Vars.world.tile(x+dx, y+dy);
-                    if(n != null && n.floor() != null && !n.floor().isLiquid && n.block() == Blocks.air){ land = true; break; }
+                // 要求：最近的陆地离这里 30~44 格 —— 原来那套"绕中心扫 maxR(≈14 格)"够不着，
+                // 新加的"按格子往外扫到 48 格"够得着。这样才能真正复现"拆不开"。
+                int nearest = -1;
+                for(int r = 1; r <= 40 && nearest < 0; r++){
+                    for(int dy = -r; dy <= r; dy++) for(int dx = -r; dx <= r; dx++){
+                        if(Math.max(Math.abs(dx), Math.abs(dy)) != r) continue;
+                        Tile n = Vars.world.tile(x+dx, y+dy);
+                        if(n != null && n.floor() != null && !n.floor().isLiquid && n.block() == Blocks.air){ nearest = r; break; }
+                    }
                 }
-                if(land){ wx = x; wy = y; break outer2; }
+                if(nearest >= 30 && nearest <= 44){ wx = x; wy = y; break outer2; }
             }
         }
         if(wx > 0){
