@@ -286,6 +286,19 @@ public class MegaSyncTest implements ApplicationListener{
             check("H 旧格式存档仍能读回成员", false);
         }
 
+        // ---- H2. 上一版（带标记、成员体没有版本字节/成员 id）的存档也得能读 ----
+        try{
+            byte[] prev = prevFormatBytes(mega);
+            Unit h2 = readBack(mega, prev, false);
+            System.out.println("[H2] 上一版格式字节=" + prev.length + " 读回="
+                + (h2 == null ? "null" : memberCount(h2) + " 成员"));
+            check("H2 上一版格式存档仍能读回成员（" + memberCount(mega) + "）",
+                h2 != null && memberCount(h2) == memberCount(mega));
+        }catch(Throwable t){
+            System.out.println("[MS] H2 兼容测试异常: " + t);
+            check("H2 上一版格式存档仍能读回成员", false);
+        }
+
         // ---- I. 贴图代表类型：数量并列时取**血量最大**的那个 ----
         // 先把测试过程中留下的散单位清掉（融合会按半径把附近的未组合单位一起收进去，
         // 混进来就不叫"数量并列"了）
@@ -350,8 +363,7 @@ public class MegaSyncTest implements ApplicationListener{
         }finally{
             for(UnitPayload p : keep) members(mega).add(p);
         }
-        // 空成员块 = 标记(1) + 长度(4) + 成员体(4：只有一个"数量=0")
-        byte[] vanilla = java.util.Arrays.copyOf(empty, Math.max(0, empty.length - 9));
+        byte[] vanilla = stripMemberBlock(empty);
 
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         java.io.DataOutputStream dos = new java.io.DataOutputStream(bos);
@@ -361,5 +373,57 @@ public class MegaSyncTest implements ApplicationListener{
         for(UnitPayload p : keep) mindustry.io.TypeIO.writePayload(w, p);
         dos.flush();
         return bos.toByteArray();
+    }
+
+    /**
+     * 上一版（带 {@code MEMBER_TAG} 标记、成员体还是 `i(数量) + 成员`、没有版本字节与成员 id）
+     * 的存档字节。用户手里现有的存档就是这个格式 —— 新代码必须照样读得回来。
+     */
+    static byte[] prevFormatBytes(Unit mega) throws Exception{
+        Seq<UnitPayload> keep = new Seq<>(members(mega));
+        members(mega).clear();
+        byte[] empty;
+        try{
+            empty = writeBytes(mega, false);
+        }finally{
+            for(UnitPayload p : keep) members(mega).add(p);
+        }
+        byte[] vanilla = stripMemberBlock(empty);
+
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        java.io.DataOutputStream dos = new java.io.DataOutputStream(bos);
+        Writes w = new Writes(dos);
+        w.b(vanilla);
+        w.b(0x4D);                     // MEMBER_TAG
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        Writes bw = new Writes(new java.io.DataOutputStream(body));
+        bw.i(keep.size);               // 老成员体：直接就是数量（最高字节 0 = 新读法里的 version 0）
+        for(UnitPayload p : keep){
+            bw.bool(true);
+            bw.str("combine-e-" + p.unit.getClass().getName());
+            p.unit.write(bw);
+        }
+        byte[] bodyBytes = body.toByteArray();
+        w.i(bodyBytes.length);
+        w.b(bodyBytes);
+        dos.flush();
+        return bos.toByteArray();
+    }
+
+    /**
+     * 去掉末尾那块成员数据（`标记(1) + 长度(4) + 成员体(len)`），留下"原版单位字节"。
+     *
+     * <p>不能按固定字节数切：成员体结构改过版本（现在开头有版本字节），长度会变。
+     * 反过来从尾部找"某个 0x4D 后面跟的长度正好对齐到数据末尾"的位置 —— 这就是成员块的起点。
+     */
+    static byte[] stripMemberBlock(byte[] bytes){
+        for(int s = bytes.length - 1; s >= 0; s--){
+            if((bytes[s] & 0xFF) != 0x4D || s + 5 > bytes.length) continue;
+            int len = ((bytes[s + 1] & 0xFF) << 24) | ((bytes[s + 2] & 0xFF) << 16)
+                | ((bytes[s + 3] & 0xFF) << 8) | (bytes[s + 4] & 0xFF);
+            if(s + 5 + len == bytes.length)
+                return java.util.Arrays.copyOf(bytes, s);
+        }
+        return bytes;
     }
 }

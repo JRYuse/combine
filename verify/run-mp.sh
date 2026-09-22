@@ -241,4 +241,80 @@ if [ -n "$MISSING" ]; then
   exit 1
 fi
 echo "[mp] PASS：服务端出现过的每种状态客户端都看到了"
+
+# 7) 逐 id 对账（抓"幽灵单位"）：两端每秒都打一行
+#      [MP-IDS] t=<秒> player=<玩家单位id> <id:成员数>...
+#    客户端多出来的 id = 服务端没有的实体（幽灵）；少的 = 没同步过去。统计摘要看不出来的
+#    "多了一只/少了一只成员"到这里就能抓住（用户报的"客户端合体变幽灵"）。
+#    · 按 t= 对齐到同一秒：客户端一退出，服务端立刻删掉玩家单位，直接比"最后一行"必然假阳性；
+#    · player= 那只在比对时剔除：它的生死时机天生比客户端早/晚，不属于要抓的"幽灵单位"。
+ids_line(){ strip_ansi < "$1" | grep -oE "\[MP-IDS\].*" | grep -oE "t=[0-9]+ player=-?[0-9]+.*" | tail -1; }
+CLIENT_LINE="$(ids_line "$CLIENT_LOG")"
+if [ -z "$CLIENT_LINE" ]; then
+  echo "[mp] 注：客户端日志里没有 [MP-IDS] 行，跳过逐 id 对账（驱动是不是没更新？）"
+else
+  CT="$(echo "$CLIENT_LINE" | sed -E 's/^t=([0-9]+).*/\1/')"
+  CPLAY="$(echo "$CLIENT_LINE" | sed -E 's/^t=[0-9]+ player=(-?[0-9]+).*/\1/')"
+  HOST_LINE=""
+  HT=""
+  for off in 0 1 2 3 4 5; do
+    line="$(strip_ansi < "$HOST_LOG" | grep -oE "\[MP-IDS\] t=$((CT + off)) player=-?[0-9]+.*" | tail -1)"
+    if [ -n "$line" ]; then HOST_LINE="${line#\[MP-IDS\] }"; HT=$((CT + off)); break; fi
+  done
+  if [ -z "$HOST_LINE" ]; then
+    echo "[mp] 注：服务端没有 t=$CT 附近的 [MP-IDS] 行，跳过逐 id 对账"
+  else
+    HPLAY="$(echo "$HOST_LINE" | sed -E 's/^t=[0-9]+ player=(-?[0-9]+).*/\1/')"
+    # 剔除玩家自己那只 + 只留 id 集合
+    ids_of(){ echo "$1" | sed -E 's/^t=[0-9]+ player=-?[0-9]+ //' | tr ' ' '\n' | grep -v '^$' \
+      | grep -vE "^(${CPLAY}|${HPLAY}):" | sort; }
+    HOST_IDS="$(ids_of "$HOST_LINE")"
+    CLIENT_IDS="$(ids_of "$CLIENT_LINE")"
+    echo "[mp] ===== 逐 id 对账（客户端 t=$CT / 服务端 t=$HT，各 $(echo "$CLIENT_IDS" | grep -c .) 个实体，已剔除玩家自己那只）====="
+    echo "$CLIENT_IDS" | sed 's/^/  client /'
+    GHOST="$(comm -13 <(echo "$HOST_IDS") <(echo "$CLIENT_IDS"))"
+    LOST="$(comm -23 <(echo "$HOST_IDS") <(echo "$CLIENT_IDS"))"
+    if [ -n "$GHOST" ]; then
+      echo "[mp] FAIL：客户端有、服务端没有的实体（= 幽灵单位）："
+      echo "$GHOST" | sed 's/^/  GHOST /'
+      exit 1
+    fi
+    if [ -n "$LOST" ]; then
+      echo "[mp] FAIL：服务端有、客户端没有的实体（= 没同步过去）："
+      echo "$LOST" | sed 's/^/  LOST /'
+      exit 1
+    fi
+    echo "[mp] PASS：两端逐 id 完全一致（没有幽灵、没有丢实体）"
+
+    # 【幽灵成员】同一个 id 不能既作为世界里的独立单位出现、又是某只巨兽的成员 ——
+    # 这正是用户报的"客户端进行单位合体会变成幽灵单位"（合体后成员没被摘掉，还站在巨兽旁边）。
+    # 逐秒扫两边的每一行：任何一刻出现都算 FAIL。
+    ghost_members(){
+      awk '{
+        n = split($0, tok, " ");
+        delete standalone; delete claimed;
+        for(i = 1; i <= n; i++){
+          t = tok[i];
+          if(t == "" || t ~ /^t=/ || t ~ /^player=/) continue;
+          split(t, p, ":");
+          standalone[p[1]] = 1;
+          if(length(p) >= 3 && p[3] != ""){
+            m = split(p[3], mem, ",");
+            for(j = 1; j <= m; j++) claimed[mem[j]] = 1;
+          }
+        }
+        for(id in claimed) if(id in standalone) print id;
+      }' | sort -u | tr '\n' ' '
+    }
+    HOST_GHOST="$(strip_ansi < "$HOST_LOG" | grep -oE "\[MP-IDS\].*" | sed 's/^\[MP-IDS\] //' | ghost_members)"
+    CLIENT_GHOST="$(strip_ansi < "$CLIENT_LOG" | grep -oE "\[MP-IDS\].*" | sed 's/^\[MP-IDS\] //' | ghost_members)"
+    if [ -n "$HOST_GHOST" ] || [ -n "$CLIENT_GHOST" ]; then
+      echo "[mp] FAIL：同一 id 既是世界里独立单位、又是巨兽成员（幽灵成员）："
+      [ -n "$HOST_GHOST" ] && echo "  服务端: $HOST_GHOST"
+      [ -n "$CLIENT_GHOST" ] && echo "  客户端: $CLIENT_GHOST"
+      exit 1
+    fi
+    echo "[mp] PASS：全程没有幽灵成员（没有任何 id 同时是独立单位与巨兽成员）"
+  fi
+fi
 echo "[mp] 截图："; ls -l "$DRV_OUT" | tail -5

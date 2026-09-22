@@ -254,6 +254,10 @@ public class Driver extends Mod{
                 Timer.schedule(() -> shot("mp_joined"), 14f);
                 // 每 0.25 秒也补一次（installCameraLock 走 HUD 帧更新，双保险）
                 Timer.schedule(Driver::lookAtMega, 20f, 0.25f, 44 * 4);
+                // 【客户端自己发起合体】服务端 t≈8 秒会在别处放两只 dagger，这里走命令面板那条
+                // 入口（UnitComboMerge.requestMergeSelected）请求合体 —— 复现"客户端合体变幽灵"。
+                // 每 5 秒试一次，最多 8 次：等客户端真的把服务端放的那两只单位同步过来再请求
+                Timer.schedule(Driver::mpRequestMerge, 20f, 5f, 8);
                 Timer.schedule(() -> shot("mp_mega"), 26f);
                 Timer.schedule(() -> shot("mp_mega2"), 50f);
                 Timer.schedule(() -> shot("mp_after_split"), 66f);
@@ -663,6 +667,8 @@ public class Driver extends Mod{
 
     /** 截图时想锁定的单位（默认是 mega 模式那台巨兽）。 */
     static Unit camTarget;
+    /** 客户端请求合体的重试次数（联机里客户端实体同步可能慢半拍）。 */
+    static int mpReqTries = 0;
 
     /** 每帧把相机钉在目标单位身上（llvmpipe 下相机跟随会跟丢，截图就看不到单位）。 */
     static void installCameraLock(){
@@ -1295,6 +1301,22 @@ public class Driver extends Mod{
             String s = mpState();
             if(!mpSeen.contains(s)) mpSeen.add(s);
             Log.info("[MP-STATE] " + s);
+            // 【逐 id 清单】run-mp.sh 拿两端**最后一行**做集合比对：客户端多出来的 id = 幽灵单位，
+            // 少掉的 = 没同步过去。和 [MP-STATE] 那种"统计摘要"不同，这里是对 id 的一对一核对。
+            StringBuilder ids = new StringBuilder();
+            for(Unit u : Groups.unit){
+                if(u.team() != Vars.player.team()) continue;
+                int members = -1;
+                try{ members = (Integer)u.getClass().getMethod("memberCount").invoke(u); }catch(Throwable ignored){}
+                // 格式必须和服务端 MpScenario 的 [MP-IDS] 完全一致（id:成员数），否则比对全是假差异
+                ids.append(u.id()).append(":").append(members);
+                // 巨兽再带上成员 id（`id:成员数:成员id,成员id`）：脚本据此检查"同一个 id 既当
+                // 独立单位、又是某只巨兽的成员"（那就是幽灵成员，用户报的"合体后变幽灵单位"）。
+                if(members > 0) ids.append(":").append(memberIds(u));
+                ids.append(" ");
+            }
+            Log.info("[MP-IDS] t=@ player=@ @", (int)(arc.util.Time.time / 60f),
+                Vars.player.unit() == null ? -1 : Vars.player.unit().id, ids);
             // 每秒把每个单位逐个打出来（排查"幽灵/看不见/成员数不对"时用）：默认关着，
             // 免得正常跑一次就刷几千行；要排查就加参数 -Ddrv.mpVerbose=1。
             if("1".equals(System.getProperty("drv.mpVerbose"))){
@@ -1375,6 +1397,68 @@ public class Driver extends Mod{
         for(Unit u : Groups.unit)
             sb.append(u.getClass().getName()).append("@").append(u.id).append(" ");
         return sb.toString();
+    }
+
+    /** 巨兽的成员 id 列表（逗号分隔）；不是巨兽就返回空串。全部走反射，驱动不依赖模组类。 */
+    static String memberIds(Unit u){
+        try{
+            Object seq = u.getClass().getMethod("members").invoke(u);
+            StringBuilder sb = new StringBuilder();
+            for(Object up : (Iterable<?>)seq){
+                if(up == null) continue;
+                Unit m = (Unit)up.getClass().getField("unit").get(up);
+                if(m == null) continue;
+                if(sb.length() > 0) sb.append(',');
+                sb.append(m.id());
+            }
+            return sb.toString();
+        }catch(Throwable t){
+            return "";
+        }
+    }
+
+    /**
+     * 客户端自己发起合体：挑两只"别人的、还没合体的"单位，走命令面板那条入口请求合体
+     * （{@code UnitComboMerge.requestMergeSelected} 在联机里只发 {@code MegaOrderPacket}，实体增删由
+     * 服务端结算）。客户端如果在这条路上也本地动手，就会留下服务端不承认的**幽灵单位** ——
+     * run-mp.sh 最后拿两端逐 id 清单做集合比对，专门抓这个。
+     */
+    static void mpRequestMerge(){
+        // 用户是"看到单位才点合体"；客户端这边单位同步可能慢半拍，所以重试几次再放弃。
+        if(mpReqTries++ > 6) return;
+        try{
+            Seq<Unit> cand = new Seq<>();
+            // 前几次先按"别人的单位"合体；第 5 次起改成**把自己也框进去**（玩家常见操作）：
+            // 玩家自己的单位被合进巨兽后，"自己那只"要由服务端删掉、客户端跟着走，
+            // 这条路上最容易留下幽灵。
+            boolean includeSelf = mpReqTries >= 5;
+            for(Unit u : Groups.unit){
+                if(u == null || !u.isAdded() || u.team() != Vars.player.team()) continue;
+                if(u.isPlayer() && !includeSelf) continue;
+                if(u.getClass().getName().equals("combine.units.mega.MegaUnitEntity")) continue;
+                cand.add(u);
+            }
+            if(cand.size < 2){
+                Log.info("[MP-REQ] 第 @ 次：可合体的单位不足 2 只（@）：@", mpReqTries, cand.size, unitSummary());
+                return;
+            }
+            Seq<Unit> sel = new Seq<>();
+            if(includeSelf && Vars.player.unit() != null && cand.contains(Vars.player.unit())){
+                sel.add(Vars.player.unit());
+                for(Unit u : cand){
+                    if(u != Vars.player.unit()){ sel.add(u); break; }
+                }
+            }else{
+                sel.add(cand.get(0));
+                sel.add(cand.get(1));
+            }
+            Class<?> c = Class.forName("combine.units.UnitComboMerge", true, ml);
+            c.getMethod("requestMergeSelected", Seq.class).invoke(null, sel);
+            Log.info("[MP-REQ] t=@s 客户端请求合体: @（@,@）", (int)(arc.util.Time.time / 60f),
+                sel.map(u -> u.id() + ":" + u.type.name), (int)sel.first().x, (int)sel.first().y);
+        }catch(Throwable t){
+            Log.err("[MP-REQ] 客户端请求合体失败", t);
+        }
     }
 
     static String mpState(){

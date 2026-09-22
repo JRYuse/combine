@@ -22,6 +22,9 @@ import mindustry.type.UnitType;
 public class MpScenario{
     static boolean installed = false, started = false;
     static int frames = 0, phase = -1;
+    /** 给"客户端自己发起合体"用的那两只单位是否已经放好（独立于 phase 那条剧本链）。 */
+    static boolean pairSpawned = false;
+    static final Seq<Unit> pairUnits = new Seq<>();
     static float stateTimer = 0f;
     static final Seq<String> seen = new Seq<>();
     static ClassLoader ml = MpScenario.class.getClassLoader();
@@ -45,6 +48,21 @@ public class MpScenario{
                 String s = state();
                 if(!seen.contains(s)) seen.add(s);
                 System.out.println("[MP-STATE] " + s + " 链路=" + link());
+                // 【逐 id 清单】run-mp.sh 拿两端的**最后一行**做集合比对：
+                // 客户端多出来的 id = 幽灵（服务端没有这个实体），少的 = 没同步过去。
+                StringBuilder ids = new StringBuilder();
+                for(Unit u : Groups.unit){
+                    if(u.team() != Team.sharded) continue;
+                    int mc = memberCount(u);
+                    ids.append(u.id()).append(":").append(mc);
+                    if(mc > 0) ids.append(":").append(memberIds(u));
+                    ids.append(" ");
+                }
+                // 末尾带 t= 秒 与玩家单位 id：脚本按 t= 对齐两端、并排除"玩家自己那只"
+                // （客户端一退出，服务端立刻把它删掉，最后一行天然对不上）
+                System.out.println("[MP-IDS] t=" + (frames / 60) + " player="
+                    + (Groups.player.size() == 0 || Groups.player.first().unit() == null ? -1 : Groups.player.first().unit().id)
+                    + " " + ids);
                 // 逐个单位的明细默认关着（一秒 4 行×单位数，正常跑一次就刷几千行）；
                 // 排查"客户端少看到哪个单位"时用服务端加 -Ddrv.mpVerbose=1 打开。
                 if("1".equals(System.getProperty("drv.mpVerbose"))){
@@ -69,7 +87,11 @@ public class MpScenario{
             if(frames % 60 != 0) return;
             int t = frames / 60;
             if(phase < 0 && t >= 5){ phase = 0; spawnAndMerge(2, true); }
-            else if(phase == 0 && t >= 20){ phase = 1; splitMega(); }
+            // 【客户端自己发起的合体】t=8 秒时在别处放两只 dagger：等客户端通过命令面板那条
+            // 入口（UnitComboMerge.requestMergeSelected）自己请求合体，复现"客户端合体变幽灵"。
+            // 用一个独立开关，别去动 phase（phase 是下面那条剧本链的状态机）。
+            if(!pairSpawned && t >= 8){ pairSpawned = true; spawnClientMergePair(); }
+            if(phase == 0 && t >= 20){ phase = 1; splitMega(); }
             else if(phase == 1 && t >= 28){ phase = 2; spawnAndMerge(3, false); }
             else if(phase == 2 && t >= 43){ phase = 3; splitMega(); }
             else if(phase == 3 && t >= 52){ phase = 4; System.out.println("[MP-HOST] 剧本结束"); }
@@ -128,6 +150,52 @@ public class MpScenario{
         return new float[]{w * 8f / 2f, h * 8f / 2f};
     }
 
+    /** 某一格周围 7×7 是不是干净陆地（放"客户端合体用"的单位前先确认，别丢水里）。 */
+    static boolean cleanAt(int x, int y){
+        for(int dy = -3; dy <= 3; dy++){
+            for(int dx = -3; dx <= 3; dx++){
+                mindustry.world.Tile t = Vars.world.tile(x + dx, y + dy);
+                if(t == null || t.floor() == null || t.floor().isLiquid || t.block() != mindustry.content.Blocks.air) return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 放两只 dagger（**不融合**）：等**客户端**通过命令面板那条入口
+     * （{@code UnitComboMerge.requestMergeSelected}）自己请求合体。
+     * 用来复现/回归"客户端自己发起合体后会留下幽灵单位"。
+     */
+    static void spawnClientMergePair(){
+        try{
+            float[] at = landSpot();
+            int mx = (int)(at[0] / 8f), my = (int)(at[1] / 8f);
+            int px = -1, py = -1;
+            outer:
+            for(int y = 45; y < 200; y++){
+                for(int x = 40; x < 250; x++){
+                    // 离剧本那堆单位远一点，免得被剧本的框选/合体顺手卷进去
+                    if(Math.abs(x - mx) < 30 && Math.abs(y - my) < 30) continue;
+                    if(cleanAt(x, y)){ px = x; py = y; break outer; }
+                }
+            }
+            if(px < 0){ System.out.println("[MP-HOST] 没找到给客户端合体用的空地"); return; }
+
+            pairUnits.clear();
+            for(int i = 0; i < 2; i++){
+                Unit u = UnitTypes.dagger.create(Team.sharded);
+                u.set(px * 8f + i * 20f, py * 8f);
+                u.add();
+                pairUnits.add(u);
+            }
+            StringBuilder sb = new StringBuilder();
+            for(Unit u : pairUnits) sb.append(u.id()).append(" ");
+            System.out.println("[MP-HOST] 已放好客户端合体用成员 id=" + sb + "（位置 " + px + "," + py + "）");
+        }catch(Throwable t){
+            System.out.println("[MP-HOST] spawnClientMergePair 失败: " + t);
+        }
+    }
+
     static void splitMega(){
         try{
             Unit mega = mega();
@@ -149,6 +217,24 @@ public class MpScenario{
 
     static int memberCount(Unit u){
         try{ return (Integer)u.getClass().getMethod("memberCount").invoke(u); }catch(Throwable t){ return -1; }
+    }
+
+    /** 巨兽的成员 id 列表（逗号分隔）；不是巨兽返回空串（脚本用它查幽灵成员）。 */
+    static String memberIds(Unit u){
+        try{
+            Object seq = u.getClass().getMethod("members").invoke(u);
+            StringBuilder sb = new StringBuilder();
+            for(Object up : (Iterable<?>)seq){
+                if(up == null) continue;
+                Unit m = (Unit)up.getClass().getField("unit").get(up);
+                if(m == null) continue;
+                if(sb.length() > 0) sb.append(',');
+                sb.append(m.id());
+            }
+            return sb.toString();
+        }catch(Throwable t){
+            return "";
+        }
     }
 
     static String state(){

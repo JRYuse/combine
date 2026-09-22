@@ -20,6 +20,7 @@ import mindustry.entities.Leg;
 import mindustry.entities.abilities.Ability;
 import mindustry.entities.units.WeaponMount;
 import mindustry.gen.Crawlc;
+import mindustry.gen.Groups;
 import mindustry.gen.Legsc;
 import mindustry.gen.Tankc;
 import mindustry.gen.Unit;
@@ -828,6 +829,10 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         try{
             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
             Writes w = new Writes(new java.io.DataOutputStream(bos));
+            // 【格式版本】1 = 每个成员多带一个"原单位 id"（见 sweepGhostMembers：客户端要用它
+            // 把还没删掉的成员实体当场摘掉）。0 是旧格式（body 直接以 i(数量) 开头）——
+            // 旧存档/旧快照里 i(n) 的最高字节恒为 0，正好被读成 version=0，天然兼容。
+            w.b(1);
             w.i(members.size);
             for(int i = 0; i < members.size; i++){
                 UnitPayload up = members.get(i);
@@ -837,6 +842,7 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
                     continue;
                 }
                 w.bool(true);
+                w.i(mu.id());
                 w.str(entityKey(mu));
                 mu.write(w);
             }
@@ -884,12 +890,20 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
             throw new IllegalArgumentException("成员块长度异常: " + len);
         byte[] body = read.b(len);
         Reads r = new Reads(new java.io.DataInputStream(new java.io.ByteArrayInputStream(body)));
-        int n = r.i();
+        int version = r.ub();
+        int n;
+        if(version == 1){
+            n = r.i();
+        }else{
+            // 旧格式：第一个字节其实是 i(数量) 的最高字节（大端），补上剩下三个字节
+            n = (version << 24) | (r.ub() << 16) | (r.ub() << 8) | r.ub();
+        }
         if(n < 0 || n > 4096)
             throw new IllegalArgumentException("成员数量异常: " + n);
         for(int i = 0; i < n; i++){
             if(!r.bool())
                 continue;
+            int memberId = version == 1 ? r.i() : 0;
             String key = r.str(256);
             Unit mu = unitByKey(key);
             if(mu == null){
@@ -897,9 +911,38 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
                 Log.warn("[combine] 组合巨兽成员类型 @ 认不出来，剩余成员丢弃", key);
                 break;
             }
+            if(memberId != 0) mu.id(memberId);
             mu.read(r);
             members.add(new UnitPayload(mu));
         }
+        if(Vars.net.client()) removeGhostMembers();
+    }
+
+    /**
+     * 【幽灵成员兜底】"巨兽出现了"和"成员被删了"走的是两条通道：巨兽靠**实体快照**（UDP），
+     * 成员的删除靠 {@code Call.unitDespawn}（可靠通道），两者到达先后没有保证 ——
+     * 客户端可能先看到巨兽、成员那一份还没删掉，画面上就是"巨兽旁边还站着自己的成员"
+     * （用户报的"客户端进行单位合体会变成幽灵单位"）。
+     *
+     * <p>巨兽的成员表是权威的：客户端读到一份新成员表后就把**同 id、同类型**的世界实体当场摘掉。
+     * 之所以要"同类型"再确认一次，是为了防 id 被复用：万一这个 id 已经被服务端分给了别的单位，
+     * 类型对不上就不动它。
+     * @return 摘掉的幽灵成员数量（测试直接调它来验这个竞态）
+     */
+    public int removeGhostMembers(){
+        int removed = 0;
+        for(int i = 0; i < members.size; i++){
+            UnitPayload up = members.get(i);
+            Unit m = up == null ? null : up.unit;
+            if(m == null || m.id() == 0) continue;
+            Unit ghost = Groups.unit.getByID(m.id());
+            if(ghost != null && ghost != this && ghost.type == m.type){
+                ghost.remove();
+                removed++;
+                Log.info("[combine] 摘掉幽灵成员 @（已属于组合巨兽 @）", m.id(), id);
+            }
+        }
+        return removed;
     }
 
     /** 成员实体的跨端名字（用类全名，见 writeMembers 说明）。 */
