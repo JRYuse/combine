@@ -8,6 +8,7 @@ import arc.math.geom.Vec2;
 import arc.struct.ObjectMap;
 import arc.struct.Seq;
 import arc.util.Tmp;
+import arc.util.Log;
 import arc.util.io.Reads;
 import arc.util.io.Writes;
 import combine.units.UnitComboMerge;
@@ -421,6 +422,12 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
             }else{
                 icon = null;
             }
+            // 【还得有贴图可画】代表成员那张图找不到时退到占位类型（dagger/flare/risso）的图，
+            // 否则这一档巨兽在客户端什么都画不出来 = 单位不可见（用户报的"组合不同单位后看不见"）。
+            if(ct.region == null && UnitComboMerge.megaGround != null && UnitComboMerge.megaGround.region != null
+                && Core.atlas.isFound(UnitComboMerge.megaGround.region)){
+                ct.region = ct.fullIcon = ct.uiIcon = UnitComboMerge.megaGround.region;
+            }
         }
 
         ct.health = Math.max(sumMax, 1f);
@@ -663,16 +670,24 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
     @Override
     public void writeSync(Writes write){
         super.writeSync(write);
-        write.i(members.size);
-        for(int i = 0; i < members.size; i++){
-            TypeIO.writePayload(write, members.get(i));
-        }
+        writeMembers(write);
     }
 
     @Override
     public void readSync(Reads read){
-        super.readSync(read);
-        readMembers(read);
+        try{
+            super.readSync(read);
+            readMembers(read);
+        }catch(Throwable t){
+            // 【不能把异常抛回 NetClient.entitySnapshot】一次快照包里排在它后面的实体全读不出来
+            //（玩家看到的就是"一片单位不可见"），日志还会被 "Unknown payload type / Queue too long"
+            // 刷屏。读出问题（对端实体类映射不一致、字节错位）时退化成"空成员的巨兽"：
+            // 单位还在、还能操控，损失只是这一次快照里的成员构成。
+            Log.err("[combine] 组合巨兽快照读取失败，按空成员处理", t);
+            try{ members.clear(); }catch(Throwable ignored){}
+            if(type == null) type = UnitComboMerge.megaGround;
+            return;
+        }
         refreshDerived();
     }
 
@@ -680,28 +695,158 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
     @Override
     public void write(Writes write){
         super.write(write);
-        write.i(members.size);
-        for(int i = 0; i < members.size; i++){
-            TypeIO.writePayload(write, members.get(i));
-        }
+        writeMembers(write);
     }
 
     @Override
     public void read(Reads read){
-        super.read(read);
-        readMembers(read);
+        try{
+            super.read(read);
+            readMembers(read);
+        }catch(Throwable t){
+            // 【存档绝不能炸】SaveVersion.readWorldEntities 是逐个实体 chunk 读的，异常抛出去
+            // 就是整个存档读不进去（用户报的"存档内有组合单位直接炸档"）。这里吞掉：
+            // 残躯当场判死（下一个 tick 就被清掉），其余实体照常读。
+            Log.err("[combine] 组合巨兽存档数据读取失败，按空成员处理", t);
+            try{ members.clear(); }catch(Throwable ignored){}
+            if(type == null) type = UnitComboMerge.megaGround;
+            try{ health(0f); }catch(Throwable ignored){}
+            return;
+        }
         refreshDerived();
     }
 
+    /** 成员块标记（'M'）。老版本写的是"数量 + 载荷"，没有这个标记 —— 读到别的值就当没有成员。 */
+    private static final byte MEMBER_TAG = 0x4D;
+    /** 成员块上限（防坏数据要一大块内存）。 */
+    private static final int MAX_MEMBER_BODY = 4 << 20;
+
+    /**
+     * 成员块：标记 + 长度 + 成员体。
+     *
+     * 【为什么要长度前缀】快照是一条读取流里**连着好几个实体**：成员体里读错一位，
+     * 后面所有实体这一帧全废（用户报的"一片单位不可见 + 刷屏报错"）。先把成员序列化到内存、
+     * 把长度写在前面，外面就永远只按长度前进 —— 里面读崩了最多丢这一只巨兽的成员。
+     *
+     * 【为什么成员按"名字"写】载荷原本只写单位实体类的 **classId**，而 id 是
+     * {@code EntityMapping.register} 按"第一个空槽"分配的：装了别的自定义实体模组时，
+     * 两端的 id 顺序可能不同，成员就会按错误的类去读（存档炸档、快照错位）。
+     * 这里写"实体类全名"（两端各自按名字查自己的表），换模组/换顺序都能对上。
+     */
+    private void writeMembers(Writes write){
+        byte[] body;
+        try{
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            Writes w = new Writes(new java.io.DataOutputStream(bos));
+            w.i(members.size);
+            for(int i = 0; i < members.size; i++){
+                UnitPayload up = members.get(i);
+                Unit mu = up == null ? null : up.unit;
+                if(mu == null){
+                    w.bool(false);
+                    continue;
+                }
+                w.bool(true);
+                w.str(entityKey(mu));
+                mu.write(w);
+            }
+            body = bos.toByteArray();
+        }catch(Throwable t){
+            Log.err("[combine] 组合巨兽成员序列化失败（本次按无成员写出）", t);
+            body = new byte[4]; // count = 0
+        }
+        write.b(MEMBER_TAG);
+        write.i(body.length);
+        write.b(body);
+    }
+
     private void readMembers(Reads read){
-        int n = read.i();
         members.clear();
+        int tag = read.ub();
+        if(tag != (MEMBER_TAG & 0xFF)){
+            // 【旧格式兼容】本次改动前写的是 `i(数量) + 数量 × 原版载荷`（载荷 = bool + 类型 +
+            // classId + 单位存档字节）。标记这一位读到的其实是那个 count 的最低字节，
+            // 把剩下的三个字节补上就能按老格式读回来 —— 用户手里已经存了巨兽的存档不能一升级就废掉。
+            // 大端：这一位是 count 的最高字节
+            int n = (tag << 24) | (read.ub() << 16) | (read.ub() << 8) | read.ub();
+            if(n < 0 || n > 4096)
+                throw new IllegalArgumentException("旧格式成员数量异常: " + n);
+            for(int i = 0; i < n; i++){
+                if(!read.bool())
+                    continue;
+                int kind = read.ub();
+                if(kind != 0) // 0 = 单位载荷（成员只可能是单位）
+                    throw new IllegalArgumentException("旧格式成员载荷类型异常: " + kind);
+                int classId = read.ub();
+                arc.func.Prov<?> prov = mindustry.gen.EntityMapping.map(classId);
+                if(prov == null)
+                    throw new IllegalArgumentException("旧格式成员实体类找不到: " + classId);
+                Object o = prov.get();
+                if(!(o instanceof Unit u))
+                    throw new IllegalArgumentException("旧格式成员不是单位: " + classId);
+                u.read(read);
+                members.add(new UnitPayload(u));
+            }
+            return;
+        }
+        int len = read.i();
+        if(len < 0 || len > MAX_MEMBER_BODY)
+            throw new IllegalArgumentException("成员块长度异常: " + len);
+        byte[] body = read.b(len);
+        Reads r = new Reads(new java.io.DataInputStream(new java.io.ByteArrayInputStream(body)));
+        int n = r.i();
+        if(n < 0 || n > 4096)
+            throw new IllegalArgumentException("成员数量异常: " + n);
         for(int i = 0; i < n; i++){
-            Payload p = TypeIO.readPayload(read);
-            if(p instanceof UnitPayload up){
-                members.add(up);
+            if(!r.bool())
+                continue;
+            String key = r.str(256);
+            Unit mu = unitByKey(key);
+            if(mu == null){
+                // 名字认不出来（缺模组/版本不同）：剩下的成员只能一起丢，但流是安全的
+                Log.warn("[combine] 组合巨兽成员类型 @ 认不出来，剩余成员丢弃", key);
+                break;
+            }
+            mu.read(r);
+            members.add(new UnitPayload(mu));
+        }
+    }
+
+    /** 成员实体的跨端名字（用类全名，见 writeMembers 说明）。 */
+    public static String entityKey(Unit u){
+        return "combine-e-" + u.getClass().getName();
+    }
+
+    /** 按 {@link #entityKey} 的名字在自己的实体表里找同类：找到就返回一个新实例（未入世界）。 */
+    public static Unit unitByKey(String key){
+        if(key == null || !key.startsWith("combine-e-"))
+            return null;
+        arc.func.Prov<?> cached = mindustry.gen.EntityMapping.nameMap.get(key);
+        if(cached != null){
+            Object o = cached.get();
+            if(o instanceof Unit u) return u;
+        }
+        String cls = key.substring("combine-e-".length());
+        for(int i = 0; i < mindustry.gen.EntityMapping.idMap.length; i++){
+            arc.func.Prov<?> cand = mindustry.gen.EntityMapping.idMap[i];
+            if(cand == null)
+                continue;
+            Object sample;
+            try{
+                sample = cand.get();
+            }catch(Throwable t){
+                continue;
+            }
+            if(sample instanceof Unit u && u.getClass().getName().equals(cls)){
+                // 缓存名字 -> 构造器，下次直接命中
+                try{
+                    mindustry.gen.EntityMapping.nameMap.put(key, cand);
+                }catch(Throwable ignored){
+                }
+                return u;
             }
         }
+        return null;
     }
 
     /** 是否有飞行成员（能飞）。 */

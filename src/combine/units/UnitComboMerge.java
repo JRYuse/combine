@@ -4,6 +4,7 @@ import arc.math.Mathf;
 import arc.math.geom.Vec2;
 import arc.struct.ObjectMap;
 import arc.struct.Seq;
+import arc.util.Log;
 import arc.util.Tmp;
 import combine.units.mega.MegaUnitEntity;
 import combine.units.mega.MegaUnitType;
@@ -12,6 +13,7 @@ import mindustry.content.Fx;
 import mindustry.gen.Sounds;
 import mindustry.content.UnitTypes;
 import mindustry.entities.EntityGroup;
+import mindustry.gen.Call;
 import mindustry.gen.EntityMapping;
 import mindustry.gen.Groups;
 import mindustry.gen.Unit;
@@ -91,8 +93,15 @@ public class UnitComboMerge{
             }
         }
 
-        // 登记巨兽实体类：网络同步重建与存档读取都按 classId 走 EntityMapping
-        MegaUnitEntity.CLASS_ID = EntityMapping.register("MegaUnitEntity", MegaUnitEntity::new);
+        // 登记巨兽实体类：网络同步重建与存档读取都按 classId 走 EntityMapping。
+        //
+        // 【不要用 EntityMapping.register】它是"取第一个空槽"：装了别的"自定义实体"模组时，
+        // 谁先注册谁占低位，两端只要模组集合/加载顺序有一点不同，我们的 id 就和对面不一样 ——
+        // 客户端会把快照按**别的类**去读（Unknown payload type / Queue too long 刷屏、
+        // 一片单位不可见、存档炸档，用户报的就是这些）。
+        // 这里固定用一个高位槽（离 register 的低位分配很远），两端永远一致；
+        // 名字照样登记进 nameMap/customIdMap，存档按名字重映射，旧档一样能对上。
+        MegaUnitEntity.CLASS_ID = registerEntity("MegaUnitEntity", MegaUnitEntity::new);
 
         // 客户端请求包（融合/解体指令）；与 ContentCheckPacket 一样两端都要注册，
         // 注册顺序由同一份 mod 代码保证两端一致
@@ -160,6 +169,28 @@ public class UnitComboMerge{
         }else{
             merge(u);
         }
+    }
+
+    /** 巨兽实体的固定槽位（见 {@link #registerEntity}）。 */
+    public static final int MEGA_ENTITY_SLOT = 250;
+
+    /**
+     * 登记自定义实体：**固定在 {@link #MEGA_ENTITY_SLOT}**，两端 id 不再受别的模组注册顺序影响。
+     * 万一那一格已被别的模组占了（要堆满 250 个自定义实体才会发生），就往上找第一个空位 ——
+     * 这时名字映射还在，存档仍能按名字重映射。
+     */
+    public static int registerEntity(String name, arc.func.Prov<mindustry.gen.Entityc> prov){
+        int slot = MEGA_ENTITY_SLOT;
+        while(slot < EntityMapping.idMap.length && EntityMapping.idMap[slot] != null)
+            slot++;
+        if(slot >= EntityMapping.idMap.length){
+            slot = MEGA_ENTITY_SLOT;
+            Log.warn("[combine] 自定义实体槽位几乎占满，强占 @ 给 @（两端模组集合一致时仍然可用）", slot, name);
+        }
+        EntityMapping.idMap[slot] = prov;
+        EntityMapping.nameMap.put(name, prov);
+        EntityMapping.customIdMap.put(slot, name);
+        return slot;
     }
 
     /** 请求解体：同 {@link #requestMerge(Unit)}。 */
@@ -292,7 +323,12 @@ public class UnitComboMerge{
             sumShield += Math.max(m.shield(), 0f);
             if(m.isAdded()){
                 m.team().data().updateCount(m.type, 1);
-                m.remove();
+                // 【必须通知客户端】原版 Unit.remove() 只删本地：联机时客户端会把这名成员留成
+                // **幽灵单位**（用户报的"客户端组合不清除，直接生成大的"）。幽灵还占着那个 id，
+                // 服务端之后复用同一个 id 发别的实体快照时，客户端会拿幽灵的类去读**别的类**的字节：
+                // "Unknown payload type / Queue too long" 整片刷屏、剩下的单位这一帧全读不出来
+                // = 用户报的"单位不可见"。走 Call.unitDespawn（服务端删本地 + 发 UnitDespawnCallPacket）。
+                Call.unitDespawn(m);
             }
             mega.addMember(m);
         }
@@ -416,7 +452,9 @@ public class UnitComboMerge{
 
         if(mega.memberCount() == 0){
             mega.clearMembers();
-            mega.remove();
+            // 同 merge：删巨兽也要通知客户端，否则客户端留着"幽灵巨兽"，它占的 id 被服务端
+            // 复用后会引发整片快照错位（见 mergeMembers 里的说明）
+            Call.unitDespawn(mega);
         }else{
             // 部分解体：按剩余成员刷新巨兽，血量按剩余成员比例重新折算
             float sumHp = 0f;

@@ -72,6 +72,11 @@ public class MegaUnitType extends UnitType {
         if (lightRadius < 0f) {
             lightRadius = Math.max(60f, hitSize * 2.3f);
         }
+        // 【探雾范围】原版是 UnitType.init() 里写的（`fogRadius = max(58*3, hitSize*2)/8`），
+        // 巨兽类型 late 注册、init() 从没跑过 —— fogRadius 停在 -1 时 FogControl 直接
+        // `if(unit.type.fogRadius <= 0f) continue;`，巨兽一点雾都不探（用户报的"几乎没有"）。
+        // 每按体型重算一次（派生类型是按成员构成新建的，值跟着体型走）。
+        fogRadius = Math.max(58f * 3f, hitSize * 2f) / 8f;
         clipSize = Math.max(Math.max(clipSize, lightRadius * 1.1f), hitSize * 2.4f);
         rebuildEngines();
     }
@@ -115,7 +120,10 @@ public class MegaUnitType extends UnitType {
         // 没有自己的贴图，这些绘制开关关掉（绘制全在 draw() 里自定义）
         drawCell = false;
         drawItems = false;
-        drawMinimap = false;
+        // 【小地图】原版 MinimapRenderer 每个单位都判 `!unit.type.drawMinimap` 就跳过；
+        // 巨兽类型这里关掉过，于是**任何一方的小地图都没有它**（用户报的"合体的单位不会在
+        // 小地图出现"）。图标走 MegaUnitEntity.icon()（= 代表成员的 uiIcon），不会画空贴图。
+        drawMinimap = true;
         hidden = true;
         // 巨兽类型是模组 init 期 late 注册的，UnitType.load() 从不执行：
         // wreckRegions 停在 null，而 createWreck/createScorch 默认 true——
@@ -287,6 +295,12 @@ public class MegaUnitType extends UnitType {
         MegaUnitEntity mu = unit instanceof MegaUnitEntity m ? m : null;
         UnitType dom = mu != null && mu.dominant != null ? mu.dominant : null;
         TextureRegion region = bodyRegion(dom);
+        // 【兜底：成员还没解析出来时也要看得见】代表类型来自成员构成（快照/存档刚建立、
+        // 或对端模组不一致导致成员解析失败时是空的）—— 以前这里什么都画不出来，
+        // 单位直接"隐身"（用户报的"客户端组合不同单位会导致单位不可见"）。
+        // 退回到巨兽类型自己的占位贴图（注册时给的 dagger/flare/risso 图标）。
+        if (region == null && this.region != null && Core.atlas.isFound(this.region))
+            region = this.region;
         float s = mu == null ? 1f : mu.bodyScale();
         boolean isPayload = !unit.isAdded();
         float z = isPayload ? Draw.z()

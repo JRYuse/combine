@@ -1536,6 +1536,33 @@ public class CombinedDrill extends Block {
                 table.add("[darkGray]无").left();
                 table.row();
             }
+            // 【整组挖速】用户报"矿机组合挖速没变化"：以前面板每一台只显示**本机**那一份
+            // （矿种 × 钻速 × 覆盖格数），组合多少台数字都一样。这里补一行整组合计：
+            // 每台各自挖、共用一口池子，整组产量就是 Σ 各成员那一份。
+            if (group().size > 1) {
+                float speed = groupDrillSpeed();
+                if (speed > 0.001f) {
+                    table.add("[lightgray]整组挖速: " + Strings.fixed(speed, 1) + "/s（" + group().size + " 台）[]").left();
+                    table.row();
+                }
+            }
+        }
+
+        /** 整组产量（件/秒）：Σ 各成员自己的那一份（自己的矿种 × 自己的钻速 × 覆盖格数）。 */
+        public float groupDrillSpeed() {
+            float sum = 0f;
+            for (CombinedDrillBuild m : group()) {
+                if (m == null || !m.isValid())
+                    continue;
+                CombinedDrill mb2 = (CombinedDrill) m.block;
+                if (mb2.mode == Mode.beam) {
+                    if (m.lastItem != null && m.facingAmount > 0)
+                        sum += 60f / mb2.getDrillTime(m.lastItem) * m.facingAmount;
+                } else if (m.dominantItem != null && m.dominantItems > 0) {
+                    sum += 60f / mb2.getDrillTime(m.dominantItem) * m.dominantItems;
+                }
+            }
+            return sum;
         }
 
         public void buildLocalIO(Table table) {
