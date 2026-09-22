@@ -286,6 +286,40 @@ public class MegaSyncTest implements ApplicationListener{
             check("H 旧格式存档仍能读回成员", false);
         }
 
+        // ---- I. 贴图代表类型：数量并列时取**血量最大**的那个 ----
+        // 先把测试过程中留下的散单位清掉（融合会按半径把附近的未组合单位一起收进去，
+        // 混进来就不叫"数量并列"了）
+        Seq<Unit> snapshotUnits = new Seq<>();
+        for(Unit u : Groups.unit) snapshotUnits.add(u);
+        for(Unit u : snapshotUnits){
+            if(u.team() == Team.sharded && u != mega && !isMega(u)) u.remove();
+        }
+        run(5);
+        System.out.println("[MS] I 血量: dagger=" + UnitTypes.dagger.health + " mace=" + UnitTypes.mace.health);
+        Unit i1 = UnitTypes.dagger.create(Team.sharded);
+        i1.set(mega.x - 600f, mega.y + 400f);
+        i1.add();
+        Unit i2 = UnitTypes.mace.create(Team.sharded);
+        i2.set(mega.x - 570f, mega.y + 400f);
+        i2.add();
+        run(5);
+        Unit im = (Unit)invoke(mergeCls, "merge", new Class<?>[]{Unit.class}, null, i1);
+        run(10);
+        if(im == null){
+            check("I 融合成功（dagger + mace）", false);
+        }else{
+            UnitType dom = (UnitType)im.getClass().getField("dominant").get(im);
+            UnitType want = UnitTypes.dagger.health >= UnitTypes.mace.health ? UnitTypes.dagger : UnitTypes.mace;
+            System.out.println("[MS] I 成员=" + memberTypes(im) + " 各 1 只并列 → dominant=" + (dom == null ? "null" : dom.name)
+                + "（血量最大应为 " + want.name + "）");
+            check("I 数量并列时取血量最大的代表类型（" + want.name + "）", dom == want);
+            UnitType biggest = UnitTypes.dagger.health >= UnitTypes.mace.health ? UnitTypes.dagger : UnitTypes.mace;
+            check("I 推导出的类型 body 贴图用的是整只单位图（客户端才有 atlas）",
+                Vars.headless || im.type.region == null || im.type.region == biggest.fullIcon || im.type.region == biggest.region);
+            invoke(mergeCls, "split", new Class<?>[]{Unit.class}, null, im);
+            run(10);
+        }
+
         System.out.println("[MS] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
         System.exit(fail==0?0:1);
       }catch(Throwable t){ t.printStackTrace(); System.exit(2); }

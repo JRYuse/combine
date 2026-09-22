@@ -158,19 +158,20 @@ public class MegaUnitType extends UnitType {
     }
 
     /**
-     * 本体贴图：优先用成员代表类型的整图（{@code fullIcon}，塞普罗原版单位这里是
-     * {@code unit-<名字>-full} 整图），找不到再退到身体贴图 / UI 图标。
-     * 巨兽类型自己没有任何贴图（{@code region} 恒为 null），所以这里必须逐个兜底，
-     * 否则 {@code Draw.rect(null)} 直接什么都不画（"不绘制单位身体"的另一半）。
+     * 本体贴图：用成员代表类型的**整只单位图** {@code fullIcon}（原版单位这里是
+     * {@code unit-<名字>-full}：躯干 + 腿/机甲腿/履带 + 武器全都画在里面），
+     * 找不到再退到躯干 region / UI 图标。
+     *
+     * <p>以前这里先取 {@code region}（只有躯干那一张），于是腿类/机甲类单位合体后
+     * 身体看着像"缺部件的半成品"（用户要求改成画整图）。巨兽类型自己没有任何贴图，
+     * 所以每一层都要兜底，否则 {@code Draw.rect(null)} 什么都不画（"不绘制单位身体"的另一半）。
      */
     static TextureRegion bodyRegion(UnitType dom) {
         if (dom != null) {
-            // 先要**躯干贴图**：fullIcon 是带方形底板的 UI 图标（直接画就是一个方块，
-            // 而且不含腿/机甲腿这些原版分开画的部件），所以只在没有 region 时才拿它兜底。
-            if (dom.region != null && Core.atlas.isFound(dom.region))
-                return dom.region;
             if (dom.fullIcon != null && Core.atlas.isFound(dom.fullIcon))
                 return dom.fullIcon;
+            if (dom.region != null && Core.atlas.isFound(dom.region))
+                return dom.region;
             if (dom.uiIcon != null && Core.atlas.isFound(dom.uiIcon))
                 return dom.uiIcon;
         }
@@ -301,6 +302,9 @@ public class MegaUnitType extends UnitType {
         // 退回到巨兽类型自己的占位贴图（注册时给的 dagger/flare/risso 图标）。
         if (region == null && this.region != null && Core.atlas.isFound(this.region))
             region = this.region;
+        // 【整图里部件已经画好了】用的是 unit-<名字>-full 时，腿/机甲腿/履带/武器都在图里，
+        // 再叠一遍自己拼的那套部件就会出**两套腿**。只有退到"躯干 region"那条路才需要补部件。
+        boolean bakedParts = dom != null && region != null && region == dom.fullIcon;
         float s = mu == null ? 1f : mu.bodyScale();
         boolean isPayload = !unit.isAdded();
         float z = isPayload ? Draw.z()
@@ -324,7 +328,7 @@ public class MegaUnitType extends UnitType {
         }
 
         // 【身体部件：腿/机甲腿/履带/爬虫身】原版顺序在机身之前（腿在机身下面）
-        if (!isPayload)
+        if (!isPayload && !bakedParts)
             drawAttachments(unit, mu, dom, z, s);
 
         // 【先引擎、后机身】——和原版 UnitType.draw 同一个顺序（引擎 → Draw.z(z) → drawBody）：

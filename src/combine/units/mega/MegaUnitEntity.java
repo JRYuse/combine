@@ -58,7 +58,7 @@ import mindustry.world.blocks.payloads.UnitPayload;
  *         直接装进本实体自己的 mounts 数组，原版武器更新/绘制循环原样接管；</li>
  *     <li>能力 = 全部成员类型能力的副本，装进本实体自己的 abilities 数组，
  *         原版能力更新循环原样接管；</li>
- *     <li>贴图代表类型 = 数量最多的成员类型（并列取 type.health 最少），见 {@link UnitComboMerge}。</li>
+ *     <li>贴图代表类型 = 数量最多的成员类型（数量并列时取 type.health **最大**的），见 {@link UnitComboMerge}。</li>
  * </ul>
  *
  * <p>推导只在成员构成变化时发生（用构成签名缓存），网络同步快照和存档读取后各推导一次。
@@ -70,7 +70,7 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
     /** 网络/存档用的类 ID，由 UnitComboMerge.register() 登记 EntityMapping 后回填。 */
     public static int CLASS_ID = 255;
 
-    /** 贴图代表类型（数量最多；并列取血量最少），由成员构成推导。 */
+    /** 贴图代表类型（数量最多；数量并列时取血量最大的），由成员构成推导。 */
     public transient UnitType dominant;
     /** 贴图缩放 = 综合 hitSize / 代表类型 hitSize，由成员构成推导。 */
     public transient float drawScale = 1f;
@@ -233,10 +233,11 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
             sumMax += Math.max(t.health, 1f);
             sumArmor += t.armor;
 
-            // 贴图代表类型：数量最多；并列取 type.health 最少
+            // 贴图代表类型：数量最多；数量并列时取 type.health **最大**的那个（用户要求：
+            // 两种单位各占一半时显示更"壮"的那只，而不是血少的那只）。
             int c = tally.get(t, 0) + 1;
             tally.put(t, c);
-            if(dom == null || c > domCount || (c == domCount && t.health < dom.health)){
+            if(dom == null || c > domCount || (c == domCount && t.health > dom.health)){
                 dom = t;
                 domCount = c;
             }
@@ -411,17 +412,20 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         // 占位 id：快照/存档写它，对端解析出基础巨兽类型后由成员列表重建本类型
         ct.id = UnitComboMerge.megaGround.id;
         ct.localizedName = "组合巨兽";
-        // 代表成员的图标（客户端才有 atlas；服务端没有贴图，跳过）
-        TextureRegion icon = null;
+        // 代表成员的贴图（客户端才有 atlas；服务端没有贴图，跳过）
+        TextureRegion body = null, icon = null;
         if(!mindustry.Vars.headless){
-            icon = dom.uiIcon != null ? dom.uiIcon : dom.fullIcon;
-            if(icon != null && Core.atlas != null && Core.atlas.isFound(icon)){
-                // region 也补上：原版不少地方直接读 type.region（clipSize 就是其一），
-                // 巨兽类型本来 region 恒为 null，排个建造计划就会 NPE 闪退
-                ct.region = ct.fullIcon = ct.uiIcon = icon;
-            }else{
-                icon = null;
-            }
+            // 身体 = 代表成员的**整只单位图**（unit-<名字>-full：躯干 + 腿/机甲腿/履带 + 武器），
+            // 画出来才是"一整只单位"，不是只剩躯干（用户要求）。
+            body = dom.fullIcon != null && Core.atlas.isFound(dom.fullIcon) ? dom.fullIcon
+                 : (dom.region != null && Core.atlas.isFound(dom.region) ? dom.region : null);
+            // 图标 = 原版 UI 图（面板/小地图/指挥面板用 unit-<名字>-ui）
+            icon = dom.uiIcon != null && Core.atlas.isFound(dom.uiIcon) ? dom.uiIcon : body;
+            // region 必须设：原版不少地方直接读 type.region（clipSize 就是其一），
+            // 巨兽类型本来 region 恒为 null，排个建造计划就会 NPE 闪退
+            ct.region = body;
+            ct.fullIcon = body != null ? body : icon;
+            ct.uiIcon = icon;
             // 【还得有贴图可画】代表成员那张图找不到时退到占位类型（dagger/flare/risso）的图，
             // 否则这一档巨兽在客户端什么都画不出来 = 单位不可见（用户报的"组合不同单位后看不见"）。
             if(ct.region == null && UnitComboMerge.megaGround != null && UnitComboMerge.megaGround.region != null
@@ -583,7 +587,8 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
             // 新建出来的巨兽出生就带着 elevation=1（原版按 type.flying 给出生高度），
             // 头几十 tick 被当成飞行单位算地形系数。飞行/海军语义由派生类型自己带着。
             if(icon != null){
-                placeholder.fullIcon = icon;
+                // 占位类型的 fullIcon 保持"整只单位图"的语义，uiIcon 是面板/小地图用的 UI 图
+                placeholder.fullIcon = body != null ? body : icon;
                 placeholder.uiIcon = icon;
             }
         }
