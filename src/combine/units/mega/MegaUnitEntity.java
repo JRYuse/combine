@@ -265,6 +265,18 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         // 的能力从此按成员构成生效；同步/存档只写占位 id，对端按成员列表重建同一类型
         type = compTypeFor(sig, dom, tally, sumMax, sumArmor, combined);
 
+        // 控制器兜底：原版是 setType() 里 "controller == null 就用 type.controller 造一个"，
+        // 而派生类型是**直接换 type 字段**（不经过 setType），派生类型又是 late 注册的。
+        // 控制器为 null 的单位在指挥模式里会被原版每帧踢出框选集
+        // （DesktopInput: selectedUnits.removeAll(u -> !u.allowCommand())），
+        // 表现就是"巨兽变成点不动任何指令的幽灵单位、只能附身操控"。
+        if(controller() == null){
+            try{
+                resetController();
+            }catch(Throwable ignored){
+            }
+        }
+
         rebuildMounts();
 
         // 记录推导结果快照，供下次跳过条件比对（识别 setType 重置）
