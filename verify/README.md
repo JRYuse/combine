@@ -135,6 +135,7 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 | `combine.dbg.ModStorageCoreTest` | 需要"别的模组写的仓库"（`verify/make-modstorage-fixture.sh` 造一个） | 模组仓库挨着核心照样扩容、且不被组合压掉 |
 | `combine.dbg.CoreCapacityTest` | 任意 | 造/拆容器不丢不涨、存读档一分不差、仓库链读档不涨 |
 | `combine.dbg.UnitBarTest` | 任意 | 组合单位工厂/升级厂有原版那些 bar（含单位数量/上限） |
+| `combine.dbg.ClientSnapshotWipeTest` | 任意（有组合工厂 + 物品） | 联机快照不再清空物资：取「跟随者」的 `writeSync` 字节（= 服务端发的 block snapshot）再 `readSync`（= 客户端悬停看物品时做的），整组共用池子必须一份不少（旧行为：快照里是空模块 → `ItemModule.read` 直接清空整组） |
 | `combine.dbg.ComboFireSupportTest` | 任意（有 dagger + vela） | 组合火力共享：同组单位不会替队友发射治疗类武器（vela 的治疗激光）；借出方空闲、借入方开火时，带治疗的弹体必须为 0 |
 | `combine.dbg.MegaFieldTest` | 任意（有 mace + oct） | 组合巨兽：血上限=成员之和、力场合并成 1 份（上限=成员之和 → 力墙条不超 100%）、`flyingLayer`/`clipSize` 不是 late-init 留下的 -1（否则悬浮时画在地板下面=不显示） |
 | `combine.dbg.GeneratorPoolKeepTest` | 任意（有 combustion-generator） | 组合发电机满池后拆掉一台成员：池子不被按容量截断（容量只拦新物品进入）、世界物品总量守恒 |
