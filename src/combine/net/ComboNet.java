@@ -733,6 +733,10 @@ public class ComboNet {
     }
 
     private static void splitItemsAcrossComponents(Seq<Seq<Building>> comps){
+        ObjectSet<Building> allMembers = new ObjectSet<>();
+        for(Seq<Building> comp : comps)
+            for(Building m : comp)
+                if(m != null) allMembers.add(m);
         IdentityHashMap<ItemModule, IntSet> owners = new IdentityHashMap<>();
         // 核心的池子（核心自己、或"并进核心"的组合仓库）**不能拆**：
         // 它们本来就是故意共用同一份模块的。按分量拆会把它复制成好几份
@@ -771,6 +775,18 @@ public class ComboNet {
             }
 
             ItemModule old = entry.getKey();
+            // 【池子被组外也在用】核心库存 / 组合节点接进来的别的组合体也引用着这份模块时，
+            // 按容量"复制一份"给各分量就是凭空多一份（原模块还在别人手里）——
+            // 用户报的"拆工厂时核心里的东西全没了/翻倍"就是这个。
+            // 这份池子不属于这些分量：分量里的成员换成空模块，池子留给真正的所有者。
+            if(ComboReflect.itemPoolSharedOutside(old, allMembers)){
+                for(int i = 0; i < comps.size; i++){
+                    for(Building m : comps.get(i)){
+                        if(m.items == old) m.items = new ItemModule();
+                    }
+                }
+                continue;
+            }
             int n = ownerComps.size;
             int[] compIdx = new int[n];
             int[] caps = new int[n];
@@ -806,6 +822,10 @@ public class ComboNet {
     }
 
     private static void splitLiquidsAcrossComponents(Seq<Seq<Building>> comps){
+        ObjectSet<Building> allMembers = new ObjectSet<>();
+        for(Seq<Building> comp : comps)
+            for(Building m : comp)
+                if(m != null) allMembers.add(m);
         IdentityHashMap<LiquidModule, IntSet> owners = new IdentityHashMap<>();
         IdentityHashMap<LiquidModule, Boolean> coreOwned = new IdentityHashMap<>();
         for(int i = 0; i < comps.size; i++){
@@ -838,6 +858,15 @@ public class ComboNet {
             }
 
             LiquidModule old = entry.getKey();
+            // 【池子被组外也在用】同物品：不是这些分量独有的池子不能"复制一份"分给各分量。
+            if(ComboReflect.liquidPoolSharedOutside(old, allMembers)){
+                for(int i = 0; i < comps.size; i++){
+                    for(Building m : comps.get(i)){
+                        if(m.liquids == old) m.liquids = new LiquidModule();
+                    }
+                }
+                continue;
+            }
             int n = ownerComps.size;
             int[] compIdx = new int[n];
             float[] caps = new float[n];

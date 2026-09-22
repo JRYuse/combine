@@ -43,8 +43,8 @@ import static mindustry.Vars.world;
  * 空模块（=「a 中所有物品进入核心」），再按缩小后的容量把核心库存截断
  * （=「超出核心容量的部分截断」）。
  *
- * 全程只改核心自己的 storageCapacity 字段与仓库的 linkedCore/items，不替换原版核心。
- */
+   * 全程只改核心自己的 storageCapacity 字段与仓库的 linkedCore/items，不替换原版核心。
+  */
 public class CombinedStorageBlock extends StorageBlock {
 
   // ==================== 机制驱动 ====================
@@ -486,6 +486,18 @@ public class CombinedStorageBlock extends StorageBlock {
         continue;
 
       ItemModule old = entry.key;
+      // 【这口池子是不是本组独有的】并仓状态和这一轮重算不是同一时刻：仓库手里的模块可能
+      // 还是**核心库存那一份**（网络层把整张网络的池子指成了核心的那份）。按容量"拆一份"
+      // 给各组等于从核心库存里复制一份出去 —— 核心没动、仓库这边多出一份同样的物品，
+      // 下次并回核心就翻倍（用户报的"拆工厂时核心里面的东西全没了"的另一面）。
+      // 池子被参与拆分的这些组之外的建筑引用时，一律不动它。
+      Seq<Building> members = new Seq<>();
+      for (Seq<CombinedStorageBuild> user : users)
+        for (CombinedStorageBuild s : user)
+          if (s != null) members.add(s);
+      if (ComboReflect.itemPoolSharedOutside(old, members))
+        continue;
+
       int n = users.size;
       int[] caps = new int[n];
       int totalCap = 0;

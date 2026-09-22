@@ -700,10 +700,15 @@ public class CombinedCrafter extends GenericCrafter {
                 newLeader = this;
             ItemModule poolItems = newLeader.items;
             LiquidModule poolLiquids = newLeader.liquids;
+            // 【池子可能不只本组在用】核心库存 / 组合节点接过来的别的组合体也在引用它时，
+            // 本地拆分一律不动这口池子（退出成员拿空模块，由 ComboNet 按网络重新分配）。
+            // 否则就是从核心库存里搬东西给退出的工厂 —— 用户报的"拆工厂时核心里的东西全没了"。
+            boolean poolOurs = !ComboReflect.itemPoolSharedOutside(poolItems, oldGroup);
+            boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(poolLiquids, oldGroup);
             for (CombinedCrafterBuild b : oldGroup) {
                 if (!b.isValid())
                     continue;
-                if (poolItems != null && b.items != null && b.items != poolItems) {
+                if (poolOurs && poolItems != null && b.items != null && b.items != poolItems) {
                     for (Item item : content.items()) {
                         int amt = b.items.get(item);
                         if (amt > 0) {
@@ -712,7 +717,7 @@ public class CombinedCrafter extends GenericCrafter {
                         }
                     }
                 }
-                if (poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
+                if (liquidPoolOurs && poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
                     for (Liquid liquid : content.liquids()) {
                         float amt = b.liquids.get(liquid);
                         if (amt > 0.001f) {
@@ -835,7 +840,7 @@ public class CombinedCrafter extends GenericCrafter {
                 for (Liquid liquid : content.liquids())
                     if (oldLiquids.get(liquid) > 0.001f && !involvedLiquids.contains(liquid)) involvedLiquids.add(liquid);
 
-            if (oldItems != null && oldTotalItemCap > 0 && kickedTotalItemCap > 0) {
+            if (poolOurs && oldItems != null && oldTotalItemCap > 0 && kickedTotalItemCap > 0) {
                 int[] kickedAllocated = new int[kicked.size];
                 for (Item item : involvedItems) {
                     int total = oldItems.get(item);
@@ -860,7 +865,7 @@ public class CombinedCrafter extends GenericCrafter {
                 }
             }
 
-            if (oldLiquids != null && oldTotalLiquidCap > 0.001f && kickedTotalLiquidCap > 0.001f) {
+            if (liquidPoolOurs && oldLiquids != null && oldTotalLiquidCap > 0.001f && kickedTotalLiquidCap > 0.001f) {
                 float[] kickedAllocated = new float[kicked.size];
                 for (Liquid liquid : involvedLiquids) {
                     float total = oldLiquids.get(liquid);
@@ -885,13 +890,13 @@ public class CombinedCrafter extends GenericCrafter {
                 }
             }
 
-            if (oldItems != null) {
+            if (poolOurs && oldItems != null) {
                 for (CombinedCrafterBuild b : newGroup) {
                     if (b.isValid())
                         b.items = oldItems;
                 }
             }
-            if (oldLiquids != null) {
+            if (liquidPoolOurs && oldLiquids != null) {
                 for (CombinedCrafterBuild b : newGroup) {
                     if (b.isValid())
                         b.liquids = oldLiquids;
@@ -926,6 +931,15 @@ public class CombinedCrafter extends GenericCrafter {
                     }
                 }
             }
+            // 【池子归属】组里有人拿着"组外也在用"的那份模块（核心库存/网络池）时，
+            // 组长必须换成那一份再并池：否则会把核心库存复制进组长自己的模块里
+            //（核心没动、工厂也多一份同样的物品），网络层随后把这多出来的一份并回核心 —— 库存凭空翻倍。
+            ObjectSet<ItemModule> sharedItemPools = ComboReflect.itemPoolsSharedOutside(group());
+            ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(group());
+            ItemModule sharedItems = sharedItemPools.isEmpty() ? null : sharedItemPools.first();
+            if (sharedItems != null) leader.items = sharedItems;
+            LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
+            if (sharedLiquids != null) leader.liquids = sharedLiquids;
 
             ObjectSet<ItemModule> processedItems = new ObjectSet<>();
             ObjectSet<LiquidModule> processedLiquids = new ObjectSet<>();
@@ -934,7 +948,9 @@ public class CombinedCrafter extends GenericCrafter {
                 processedItems.add(leader.items);
                 for (CombinedCrafterBuild member : group()) {
                     if (member != leader && member.isValid() && member.items != null
-                            && !processedItems.contains(member.items)) {
+                            && !processedItems.contains(member.items)
+                            // 组外也在用的模块不能"全额并入"（并入不清空源模块 = 凭空多一份）
+                            && !sharedItemPools.contains(member.items)) {
                         processedItems.add(member.items);
                         for (Item item : content.items()) {
                             int amt = member.items.get(item);
@@ -960,7 +976,8 @@ public class CombinedCrafter extends GenericCrafter {
                 processedLiquids.add(leader.liquids);
                 for (CombinedCrafterBuild member : group()) {
                     if (member != leader && member.isValid() && member.liquids != null
-                            && !processedLiquids.contains(member.liquids)) {
+                            && !processedLiquids.contains(member.liquids)
+                            && !sharedLiquidPools.contains(member.liquids)) {
                         processedLiquids.add(member.liquids);
                         for (Liquid liquid : content.liquids()) {
                             float amt = member.liquids.get(liquid);
@@ -1020,6 +1037,10 @@ public class CombinedCrafter extends GenericCrafter {
             boolean wasLeader = isLeader();
             ItemModule oldItems = this.items;
             LiquidModule oldLiquids = this.liquids;
+            // 【别动不属于本组的池子】核心库存/别的组合体也在用的那份模块：既不能按容量
+            // "分一份给幸存者"（那是从核心库存里搬东西），也不能复制一份（核心库存会凭空翻倍）。
+            boolean poolOurs = !ComboReflect.itemPoolSharedOutside(oldItems, members);
+            boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(oldLiquids, members);
 
             if (!wasLeader) {
                 if (items != null) {
@@ -1084,7 +1105,7 @@ public class CombinedCrafter extends GenericCrafter {
                     for (Liquid liquid : content.liquids())
                         if (oldLiquids.get(liquid) > 0.001f && !involvedLiquids.contains(liquid)) involvedLiquids.add(liquid);
 
-                if (oldItems != null && totalItemCap > 0) {
+                if (poolOurs && oldItems != null && totalItemCap > 0) {
                     int[] allocated = new int[survivors.size];
                     for (Item item : involvedItems) {
                         int total = oldItems.get(item);
@@ -1106,7 +1127,7 @@ public class CombinedCrafter extends GenericCrafter {
                     }
                 }
 
-                if (oldLiquids != null && totalLiquidCap > 0.001f) {
+                if (liquidPoolOurs && oldLiquids != null && totalLiquidCap > 0.001f) {
                     float[] allocated = new float[survivors.size];
                     for (Liquid liquid : involvedLiquids) {
                         float total = oldLiquids.get(liquid);

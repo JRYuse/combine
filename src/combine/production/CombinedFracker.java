@@ -176,12 +176,20 @@ public class CombinedFracker extends Fracker {
                         break;
                     }
             }
+            // 【池子归属】组里有人拿着"组外也在用"的那份模块（核心库存/网络池）时，
+            // 组长必须换成那一份再并池：否则会把网络池复制进组长自己的模块里
+            //（池子没动、这边也多一份同样的物品/液体），网络层随后把这多出来的一份并回去 —— 凭空翻倍。
+            ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(group());
+            LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
+            if (sharedLiquids != null) leader.liquids = sharedLiquids;
             ObjectSet<LiquidModule> processed = new ObjectSet<>();
             if (leader.liquids != null) {
                 processed.add(leader.liquids);
                 for (CombinedFrackerBuild m : group()) {
                     if (m != leader && m.isValid() && m.liquids != null
-                            && !processed.contains(m.liquids)) {
+                            && !processed.contains(m.liquids)
+                            // 组外也在用的模块不能"全额并入"（并入不清空源模块 = 凭空多一份）
+                            && !sharedLiquidPools.contains(m.liquids)) {
                         processed.add(m.liquids);
                         for (Liquid liquid : content.liquids()) {
                             float amt = m.liquids.get(liquid);
@@ -204,11 +212,15 @@ public class CombinedFracker extends Fracker {
                         break;
                     }
             }
+            ObjectSet<ItemModule> sharedItemPools = ComboReflect.itemPoolsSharedOutside(group());
+            ItemModule sharedItems = sharedItemPools.isEmpty() ? null : sharedItemPools.first();
+            if (sharedItems != null) leader.items = sharedItems;
             ObjectSet<ItemModule> processedItems = new ObjectSet<>();
             if (leader.items != null) {
                 processedItems.add(leader.items);
                 for (CombinedFrackerBuild m : group()) {
-                    if (m != leader && m.isValid() && m.items != null && !processedItems.contains(m.items)) {
+                    if (m != leader && m.isValid() && m.items != null && !processedItems.contains(m.items)
+                            && !sharedItemPools.contains(m.items)) {
                         processedItems.add(m.items);
                         for (Item item : content.items()) {
                             int amt = m.items.get(item);

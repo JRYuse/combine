@@ -313,9 +313,13 @@ public class CombinedTurret extends Turret {
       if (newLeader == null)
           newLeader = this;
       LiquidModule poolLiquids = newLeader.liquids;
+      // 【池子可能不只本组在用】核心库存 / 组合节点接过来的别的组合体也在引用它时，
+      // 本地拆分一律不动这口池子（退出成员拿空模块，由 ComboNet 按网络重新分配）。
+      // 否则就是从核心库存里搬东西给退出的工厂 —— 用户报的"拆工厂时核心里的东西全没了"。
+      boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(poolLiquids, oldGroup);
       for (CombinedTurretBuild b : oldGroup) {
           if (!b.isValid()) continue;
-          if (poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
+          if (liquidPoolOurs && poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
               for (Liquid liquid : content.liquids()) {
                   float amt = b.liquids.get(liquid);
                   if (amt > 0.001f) { poolLiquids.add(liquid, amt); b.liquids.remove(liquid, amt); }
@@ -346,7 +350,7 @@ public class CombinedTurret extends Turret {
       for (int i = 0; i < kicked.size; i++)
         newLiquidMods[i] = new LiquidModule();
 
-      if (oldLiquids != null && oldTotalLiqCap > 0.001f && kickedTotalLiqCap > 0.001f) {
+      if (liquidPoolOurs && oldLiquids != null && oldTotalLiqCap > 0.001f && kickedTotalLiqCap > 0.001f) {
         for (Liquid liquid : content.liquids()) {
           float total = oldLiquids.get(liquid);
           if (total <= 0.001f)
@@ -366,7 +370,7 @@ public class CombinedTurret extends Turret {
           oldLiquids.remove(liquid, kickedTotalShare - remaining);
         }
       }
-      if (oldLiquids != null)
+      if (liquidPoolOurs && oldLiquids != null)
         for (CombinedTurretBuild b : newGroup)
           if (b.isValid())
             b.liquids = oldLiquids;
@@ -383,11 +387,19 @@ public class CombinedTurret extends Turret {
             break;
           }
       }
+      // 【池子归属】组里有人拿着"组外也在用"的那份模块（核心库存/网络池）时，
+      // 组长必须换成那一份再并池：否则会把网络池复制进组长自己的模块里
+      //（池子没动、这边也多一份同样的液体），网络层随后把这多出来的一份并回去 —— 凭空翻倍。
+      ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(group());
+      LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
+      if (sharedLiquids != null) leader.liquids = sharedLiquids;
       ObjectSet<LiquidModule> processed = new ObjectSet<>();
       if (leader.liquids != null) {
         processed.add(leader.liquids);
         for (CombinedTurretBuild m : group()) {
-          if (m != leader && m.isValid() && m.liquids != null && !processed.contains(m.liquids)) {
+          if (m != leader && m.isValid() && m.liquids != null && !processed.contains(m.liquids)
+              // 组外也在用的模块不能"全额并入"（并入不清空源模块 = 凭空多一份）
+              && !sharedLiquidPools.contains(m.liquids)) {
             processed.add(m.liquids);
             for (Liquid liquid : content.liquids()) {
               float amt = m.liquids.get(liquid);
@@ -444,6 +456,9 @@ public class CombinedTurret extends Turret {
       Seq<CombinedTurretBuild> members = new Seq<>(group());
       boolean wasLeader = isLeader();
       LiquidModule oldLiquids = this.liquids;
+      // 【别动不属于本组的池子】核心库存/别的组合体也在用的那份模块：既不能按容量
+      // "分一份给幸存者"（那是从核心库存里搬东西），也不能复制一份（核心库存会凭空翻倍）。
+      boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(oldLiquids, members);
       if (!wasLeader && oldLiquids != null) {
         boolean shared = false;
         for (CombinedTurretBuild m : members)
@@ -469,7 +484,7 @@ public class CombinedTurret extends Turret {
         LiquidModule[] liquidMods = new LiquidModule[survivors.size];
         for (int i = 0; i < survivors.size; i++)
           liquidMods[i] = new LiquidModule();
-        if (oldLiquids != null && totalLiqCap > 0.001f) {
+        if (liquidPoolOurs && oldLiquids != null && totalLiqCap > 0.001f) {
           for (Liquid liquid : content.liquids()) {
             float total = oldLiquids.get(liquid);
             if (total <= 0.001f)

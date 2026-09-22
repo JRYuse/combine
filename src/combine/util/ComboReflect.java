@@ -552,6 +552,108 @@ public class ComboReflect {
         return table != null && liquid.id < table.length && table[liquid.id];
     }
 
+    // -------------------- "这口池子是不是本组独有的" --------------------
+
+    /**
+     * 这份物品模块是不是**组外**的建筑也在用（核心库存、被组合节点接进来的别的组合体……）。
+     *
+     * 【为什么要有这个判断】各 Combined* 方块自己的"本地组合"在成员退组时会按容量
+     * 从"本组的池子"里分一份给退出的成员。可组合节点接成一张网络之后，这口池子可能
+     * 根本不属于本组 —— 典型就是**核心库存那一份**（并仓仓库 + 组合节点把工厂接进来，
+     * ComboNet 会让整张网络共用核心的那份模块）。
+     * 这时再"按容量分一份给退出的工厂"，就是从核心库存里直接搬东西到那台工厂手里：
+     * 核心当场掉库存，等玩家把那台工厂拆掉，那份物品就跟着工厂的模块一起没了
+     *（用户报的"把核心贴容器的组合和工厂用节点链接起来，拆工厂的时候核心里面的东西全没了"）。
+     *
+     * 所以本地拆分只在"池子完全属于本组"时才动手；池子被组外引用时一律不动它，
+     * 交给 {@link ComboNet} 按网络统一分配（它认识核心池，会把退出成员换成空模块）。
+     */
+    public static boolean itemPoolSharedOutside(ItemModule pool, Iterable<? extends Building> group){
+        if(pool == null) return false;
+        ObjectSet<Building> mine = new ObjectSet<>();
+        if(group != null)
+            for(Building b : group)
+                if(b != null) mine.add(b);
+        for(Building b : ComboNet.allComboBuildings()){
+            if(b.items == pool && !mine.contains(b)) return true;
+        }
+        return false;
+    }
+
+    /** 同上，液体版。 */
+    public static boolean liquidPoolSharedOutside(LiquidModule pool, Iterable<? extends Building> group){
+        if(pool == null) return false;
+        ObjectSet<Building> mine = new ObjectSet<>();
+        if(group != null)
+            for(Building b : group)
+                if(b != null) mine.add(b);
+        for(Building b : ComboNet.allComboBuildings()){
+            if(b.liquids == pool && !mine.contains(b)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 组里"组外也在用"的那份物品模块（核心库存 / 网络共享池），没有就返回 null。
+     *
+     * 本地组合并池时必须围着它做：组长手里要是自己那份私有模块，就**换成它**再并，
+     * 否则会把核心库存"复制"一份到组长的私有模块里（核心没动、工厂也多了一份同样的物品），
+     * 之后网络层再把这多出来的一份并回核心 —— 库存凭空翻倍。
+     */
+    public static ItemModule sharedItemPool(Iterable<? extends Building> group){
+        ObjectSet<ItemModule> all = itemPoolsSharedOutside(group);
+        return all.isEmpty() ? null : all.first();
+    }
+
+    /** 同上，液体版。 */
+    public static LiquidModule sharedLiquidPool(Iterable<? extends Building> group){
+        ObjectSet<LiquidModule> all = liquidPoolsSharedOutside(group);
+        return all.isEmpty() ? null : all.first();
+    }
+
+    /**
+     * 组里所有"组外也在用"的物品模块（一次全图扫描算出来）。
+     *
+     * 组里的每个成员都要判一次"这份模块是不是别人的"，逐个调用 {@link #itemPoolSharedOutside}
+     * 会是"成员数 × 全图扫描"；并池路径在放方块时会连着跑好几遍，这里一次算完。
+     */
+    public static ObjectSet<ItemModule> itemPoolsSharedOutside(Iterable<? extends Building> group){
+        ObjectSet<ItemModule> out = new ObjectSet<>();
+        if(group == null) return out;
+        ObjectSet<Building> mine = new ObjectSet<>();
+        ObjectSet<ItemModule> mods = new ObjectSet<>();
+        for(Building b : group){
+            if(b == null) continue;
+            mine.add(b);
+            if(b.items != null) mods.add(b.items);
+        }
+        if(mods.isEmpty()) return out;
+        for(Building b : ComboNet.allComboBuildings()){
+            if(b == null || mine.contains(b) || b.items == null) continue;
+            if(mods.contains(b.items)) out.add(b.items);
+        }
+        return out;
+    }
+
+    /** 同上，液体版。 */
+    public static ObjectSet<LiquidModule> liquidPoolsSharedOutside(Iterable<? extends Building> group){
+        ObjectSet<LiquidModule> out = new ObjectSet<>();
+        if(group == null) return out;
+        ObjectSet<Building> mine = new ObjectSet<>();
+        ObjectSet<LiquidModule> mods = new ObjectSet<>();
+        for(Building b : group){
+            if(b == null) continue;
+            mine.add(b);
+            if(b.liquids != null) mods.add(b.liquids);
+        }
+        if(mods.isEmpty()) return out;
+        for(Building b : ComboNet.allComboBuildings()){
+            if(b == null || mine.contains(b) || b.liquids == null) continue;
+            if(mods.contains(b.liquids)) out.add(b.liquids);
+        }
+        return out;
+    }
+
     private static boolean[] consumedTable(Building self, boolean items){
         if(self == null || state == null) return null;
         if(consumeTick != state.updateId){
