@@ -202,7 +202,7 @@ public class Driver extends Mod{
                 // 用户报：组合巨兽（成员是腿类单位）没画腿，腿也要按比例放大。
                 installFrameCounter();
                 installCameraLock();
-                Timer.schedule(Driver::hideDialogs, 3f);
+                keepDialogsHidden();
                 Timer.schedule(Driver::setupLegsScene, 5f);
                 Timer.schedule(Driver::legsMerge, 12f);
                 Timer.schedule(Driver::legsReport, 20f);
@@ -223,7 +223,7 @@ public class Driver extends Mod{
                 // 一样要按体型放大——和 legs 模式同一套场景，只是把成员换成机甲。
                 installFrameCounter();
                 installCameraLock();
-                Timer.schedule(Driver::hideDialogs, 3f);
+                keepDialogsHidden();
                 Timer.schedule(Driver::setupLegsScene, 5f);
                 Timer.schedule(Driver::legsMerge, 12f);
                 Timer.schedule(Driver::legsRefSpawn, 21f);
@@ -1210,6 +1210,15 @@ public class Driver extends Mod{
                 }
             }
         }catch(Throwable t){ Log.err("[drv] hideDialogs failed", t); }
+    }
+
+    /**
+     * 场景阶段**每秒**清一次弹窗。
+     * 客户端的"检查更新"弹窗是启动后隔几秒才弹出来的（软渲染下时机不固定），
+     * 只在场景开头清一次会正好被它盖住截图（照片里全是版本列表，看不到单位）。
+     */
+    static void keepDialogsHidden(){
+        Timer.schedule(Driver::hideDialogs, 2f, 1f, 60);
     }
 
     static void step1(){

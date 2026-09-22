@@ -415,16 +415,16 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         // 代表成员的贴图（客户端才有 atlas；服务端没有贴图，跳过）
         TextureRegion body = null, icon = null;
         if(!mindustry.Vars.headless){
-            // 身体 = 代表成员的**整只单位图**（unit-<名字>-full：躯干 + 腿/机甲腿/履带 + 武器），
-            // 画出来才是"一整只单位"，不是只剩躯干（用户要求）。
-            body = dom.fullIcon != null && Core.atlas.isFound(dom.fullIcon) ? dom.fullIcon
-                 : (dom.region != null && Core.atlas.isFound(dom.region) ? dom.region : null);
+            // 身体 = 代表成员的贴图：一般用**整只单位图**（unit-<名字>-full：躯干 + 腿/履带 + 武器）；
+            // 机甲用躯干 region（整图里机甲的腿缩在身体底下，直接画像没腿 —— 腿由绘制侧按体型画）。
+            body = MegaUnitType.bodyRegion(dom, attachmentKind(dom) == ATT_MECH);
             // 图标 = 原版 UI 图（面板/小地图/指挥面板用 unit-<名字>-ui）
             icon = dom.uiIcon != null && Core.atlas.isFound(dom.uiIcon) ? dom.uiIcon : body;
             // region 必须设：原版不少地方直接读 type.region（clipSize 就是其一），
             // 巨兽类型本来 region 恒为 null，排个建造计划就会 NPE 闪退
             ct.region = body;
-            ct.fullIcon = body != null ? body : icon;
+            TextureRegion full = MegaUnitType.fullArt(dom);
+            ct.fullIcon = full != null ? full : (body != null ? body : icon);
             ct.uiIcon = icon;
             // 【还得有贴图可画】代表成员那张图找不到时退到占位类型（dagger/flare/risso）的图，
             // 否则这一档巨兽在客户端什么都画不出来 = 单位不可见（用户报的"组合不同单位后看不见"）。
