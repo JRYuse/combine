@@ -422,6 +422,10 @@ public class MegaUnitEntity extends UnitEntity{
             }
             // 有飞行成员 → 会升空 → 按 hitSize 生成引擎（见 MegaUnitType.rebuildEngines）
             ct.hoverEngines = fl;
+            // 【用户要求】合体时只要有飞行成员，组合巨兽就"是"飞行单位：
+            // 类型上 flying=true（不只靠 elevation 动态判），这样原版所有按 type.flying 分派的
+            // 逻辑（影高/图层、太空环境、防空索敌、寻路代价、绘制里的飞行层）一致按飞行处理。
+            ct.flying = fl;
             if(n){
                 // 纯船编组：照原版 init() 对山东（WaterMovec）的那几条来
                 //   naval：影响 CommandAI 的通行判定（船默认只认水路）
@@ -503,6 +507,10 @@ public class MegaUnitEntity extends UnitEntity{
             placeholder.defaultCommand = ct.defaultCommand;
             placeholder.canBoost = ct.canBoost;
             placeholder.canHeal = ct.canHeal;
+            // 【注意不要同步 flying/naval 到占位类型】占位类型是所有派生类型共用、且是
+            // 新建巨兽时的"出生类型"：把上一次推导的 flying 留在上面，会让下一次（比如两艘船）
+            // 新建出来的巨兽出生就带着 elevation=1（原版按 type.flying 给出生高度），
+            // 头几十 tick 被当成飞行单位算地形系数。飞行/海军语义由派生类型自己带着。
             if(icon != null){
                 placeholder.fullIcon = icon;
                 placeholder.uiIcon = icon;
@@ -696,6 +704,15 @@ public class MegaUnitEntity extends UnitEntity{
         if(dead) return; // 死亡坠落由原版处理（fallSpeed）
         int mode = moveMode();
         float target = mode == MODE_FLY ? 1f : 0f;
+        // 【会飞的巨兽必须一直悬空】原版对 canBoost 单位每帧都会按"助跑/落地"重设 elevation
+        // （updateBoosting 里 shouldBoost = boost || onSolid() || (isFlying() && !canLand())，
+        //  而 canLand() 在深水上会返回 true），于是刚升空的巨兽会被一点点拉回地面，
+        // isFlying() 变 false —— 用户报的"合体时有飞行单位却不是飞行单位"就是这么来的。
+        // 有飞行成员就直接钉在 1，不给原版那套抢高度的机会。
+        if(hasFlyer){
+            elevation = 1f;
+            return;
+        }
         if(elevation != target){
             elevation = arc.math.Mathf.approachDelta(elevation, target, 0.05f);
         }

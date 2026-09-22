@@ -301,6 +301,9 @@ public class UnitComboMerge{
         mega.refreshDerived(true);
         mega.health(Math.min(sumHp, mega.maxHealth()));
         mega.shield(sumShield);
+        // 合体瞬间就把高度定好：有飞行成员的巨兽直接升空（否则头几十 tick 还是"落地"状态，
+        // 走地面/水面的碰撞与地形系数，看着像"合体了却不是飞行单位"）
+        mega.elevation(mega.hasFlyer() ? 1f : 0f);
         mega.add();
 
         Fx.unitDrop.at(mega.x, mega.y);
@@ -345,6 +348,23 @@ public class UnitComboMerge{
                 if(canPlace(m, Tmp.v1.x, Tmp.v1.y)){ out.set(Tmp.v1.x, Tmp.v1.y); return true; }
             }
         }
+        // 【兜底：按格子一圈圈往外扫】上面那几圈只绕"首选点/巨兽中心"找 maxR 那么远
+        // （≈ 巨兽半径 + 成员半径 + 几十像素）。会飞的巨兽经常悬在大片水面上、或者卡在山脉/建筑群里，
+        // 地面成员（比如 dagger/vela）在那点范围里一个合法落脚点都没有 ——
+        // 表现就是用户报的"拆不开了"：每按一次解体只能放出会飞的成员，地面那个永远留在里面。
+        // 这里再从巨兽所在格开始，一圈一圈往外扫到 48 格，取最近的可放置点。
+        int cx = mindustry.core.World.toTile(mega.x), cy = mindustry.core.World.toTile(mega.y);
+        int startR = Math.max(2, (int)(maxR / mindustry.Vars.tilesize));
+        for(int r = startR; r <= 48; r++){
+            for(int dx = -r; dx <= r; dx++){
+                for(int dy = -r; dy <= r; dy++){
+                    if(Math.max(Math.abs(dx), Math.abs(dy)) != r) continue;
+                    float wx = (cx + dx) * mindustry.Vars.tilesize + mindustry.Vars.tilesize / 2f;
+                    float wy = (cy + dy) * mindustry.Vars.tilesize + mindustry.Vars.tilesize / 2f;
+                    if(canPlace(m, wx, wy)){ out.set(wx, wy); return true; }
+                }
+            }
+        }
         return false;
     }
 
@@ -367,13 +387,18 @@ public class UnitComboMerge{
         int n = pays.size;
         int i = 0;
         boolean any = false;
+        // 放不出去的成员（附近没有合法落脚点：悬在大水面上、卡在山脉/建筑群里……）
+        Seq<Unit> stuck = new Seq<>();
 
         for(UnitPayload up : pays){
             if(up == null || up.unit == null) continue;
             Unit m = up.unit;
             float ang = i * 360f / n;
             Tmp.v1.trns(ang, mega.hitSize() + m.hitSize);
-            if(!findDropPos(mega, m, mega.x + Tmp.v1.x, mega.y + Tmp.v1.y, Tmp.v2)) continue; // 无处可放：留在巨兽体内
+            if(!findDropPos(mega, m, mega.x + Tmp.v1.x, mega.y + Tmp.v1.y, Tmp.v2)){
+                stuck.add(m); // 无处可放：留在巨兽体内
+                continue;
+            }
             m.set(Tmp.v2.x, Tmp.v2.y);
             m.rotation(mega.rotation());
             m.health(Math.min(m.maxHealth(), Math.max(1f, m.health() * ratio)));
@@ -404,6 +429,18 @@ public class UnitComboMerge{
 
         Fx.unitDrop.at(mega.x, mega.y);
         Sounds.unitCreateBig.at(mega.x, mega.y, 1.1f, 0.9f);
+        // 有成员放不出去时给个明确提示：以前是静默留在体内，玩家只会觉得"拆不开"（用户报的）
+        if(stuck.size > 0 && !Vars.headless && Vars.ui != null){
+            StringBuilder names = new StringBuilder();
+            for(Unit m : stuck){
+                if(names.length() > 0) names.append('、');
+                names.append(m.type.localizedName);
+            }
+            try{
+                Vars.ui.showInfoFade("[orange]以下成员附近没有可放置的位置（水面/墙上），仍留在巨兽体内：" + names);
+            }catch(Throwable ignored){
+            }
+        }
         return true;
     }
 

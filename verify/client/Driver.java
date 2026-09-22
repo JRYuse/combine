@@ -186,6 +186,18 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::shipReport, 20f);
                 Timer.schedule(() -> shot("ship_mega"), 24f);
                 Timer.schedule(() -> { Log.info("[drv] shipmega 模式结束 frames=@", frames); Core.app.exit(); }, 30f);
+            }else if(mode.equals("duo")){
+                // 用户报：dagger + vela 组合后"会发射 vela 治疗武器的子弹"、"碰撞箱好像变了"。
+                // 场景：dagger+vela 合体 → 打开碰撞箱显示 → 旁边放一个敌方单位逼它开火 → 截图。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupDuoScene, 5f);
+                Timer.schedule(Driver::duoMerge, 12f);
+                Timer.schedule(Driver::duoReport, 20f);
+                Timer.schedule(() -> shot("duo_fight"), 30f);
+                Timer.schedule(Driver::duoReport, 34f);
+                Timer.schedule(() -> shot("duo_fight2"), 40f);
+                Timer.schedule(() -> { Log.info("[drv] duo 模式结束 frames=@", frames); Core.app.exit(); }, 46f);
             }else if(mode.equals("userpanel")){
                 // 用户报："组合**工厂**物品面板…清空所有物资"。直接读用户存档，挑几台装满货的
                 // 组合工厂把信息面板弹出来截图，并把面板里的文字（Bar 的 label）打进日志。
@@ -619,6 +631,141 @@ public class Driver extends Mod{
      * 面板里的单位图标走的是 content.unit(unit.type.id).uiIcon —— 派生类型共用基础巨兽的占位 id，
      * 所以这里顺手把"面板实际会用的那个类型/图标"打出来对账。
      */
+    // ---------------- dagger + vela（地面组合）：武器 + 碰撞箱 ----------------
+    static Unit duoMega, duoDagger, duoVela, duoEnemy, duoAlly;
+    static int duoOx = -1, duoOy = -1;
+
+    static void setupDuoScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.state.rules.fog = false;
+            Vars.state.rules.staticFog = false;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<130;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            // 关掉"设置里的绘制碰撞箱" → 画出 hitbox（看碰撞箱到底多大、和身体对不对得上）
+            Core.settings.put("drawhitboxes", true);
+            int ox = -1, oy = -1;
+            outer:
+            for(int y=45;y<120;y++){
+                for(int x=40;x<190;x++){
+                    boolean ok = true;
+                    for(int dy=-2;dy<=2 && ok;dy++) for(int dx=-3;dx<=3;dx++){
+                        Tile t = Vars.world.tile(x+dx, y+dy);
+                        if(t == null || t.floor() == null || t.floor().isLiquid || t.block() != Blocks.air){ ok = false; break; }
+                    }
+                    if(ok){ ox = x; oy = y; break outer; }
+                }
+            }
+            if(ox < 0){ Log.err("[drv] duo: 没找到陆地"); return; }
+            duoOx = ox; duoOy = oy;
+            Building core = placeBL(Blocks.coreShard, ox + 16, oy + 10);
+            if(core != null && core.items != null) for(Item it : Vars.content.items()) core.items.set(it, 5000);
+            Core.camera.position.set(ox * 8f, oy * 8f);
+            Timer.schedule(Driver::duoSpawn, 2f);
+        }catch(Throwable t){ Log.err("[drv] setupDuoScene failed", t); }
+    }
+
+    static void duoSpawn(){
+        try{
+            float cx = duoOx * 8f, cy = duoOy * 8f;
+            duoDagger = UnitTypes.dagger.create(Team.sharded);
+            duoDagger.set(cx - 20f, cy);
+            duoDagger.add();
+            duoVela = UnitTypes.vela.create(Team.sharded);
+            duoVela.set(cx + 20f, cy);
+            duoVela.add();
+            // 敌方靶子：贴近一点（60 单位）逼它开火；看它到底发的是光束还是子弹、打谁
+            duoEnemy = UnitTypes.dagger.create(Team.crux);
+            duoEnemy.set(cx + 60f, cy);
+            duoEnemy.add();
+            // 自己人：故意打残（40% 血）—— vela 的维修光束（RepairBeamWeapon）本来只治它
+            duoAlly = UnitTypes.dagger.create(Team.sharded);
+            duoAlly.set(cx, cy + 40f);
+            duoAlly.add();
+            duoAlly.health(duoAlly.maxHealth() * 0.4f);
+            Core.camera.position.set(cx + 40f, cy);
+            Log.info("[drv] duo 场景: dagger+vela 已就位，敌方靶子 @,@ 伤员 @,@（血 @%）",
+                (int)duoEnemy.x, (int)duoEnemy.y, (int)duoAlly.x, (int)duoAlly.y, (int)(duoAlly.healthf() * 100));
+        }catch(Throwable t){ Log.err("[drv] duoSpawn failed", t); }
+    }
+
+    static void duoMerge(){
+        try{
+            Object merged = duoDagger == null ? null
+                : combineCall("combine.units.UnitComboMerge", "merge", new Class<?>[]{Unit.class}, duoDagger);
+            if(merged instanceof Unit u){
+                duoMega = u;
+                camTarget = u;
+                installCameraLock();
+                // 直接按住扳机（controllable 武器只有玩家扣扳机才开火；autoTarget 的维修光束
+                // 会用自己的索敌覆盖 mount.shoot，所以这里只影响那些"要玩家瞄"的武器）
+                installTrigger(u, duoEnemy);
+                Log.info("[drv] duo 融合后立刻: 类=@ 成员=@ 挂座=@ 能力=@ 有武器=@", u.getClass().getName(),
+                    memberCount(u), u.mounts() == null ? -1 : u.mounts().length, u.abilities() == null ? -1 : u.abilities().length, u.hasWeapons());
+            }
+        }catch(Throwable t){ Log.err("[drv] duoMerge failed", t); }
+    }
+
+    /** 每帧替目标单位按住扳机并对准 target（截图用：逼它开火，好看清武器到底发什么）。 */
+    static void installTrigger(Unit u, Unit target){
+        var t = new arc.scene.ui.layout.Table();
+        t.touchable = arc.scene.event.Touchable.disabled;
+        t.update(() -> {
+            if(u == null || !u.isAdded()) return;
+            float tx = target != null && target.isValid() ? target.x : u.x + 100f;
+            float ty = target != null && target.isValid() ? target.y : u.y;
+            if(u.mounts() == null) return;
+            for(var m : u.mounts()){
+                m.aimX = tx;
+                m.aimY = ty;
+                m.shoot = true;
+                m.rotate = true;
+            }
+        });
+        Vars.ui.hudGroup.addChild(t);
+    }
+
+    static int memberCount(Unit u){
+        try{ return (Integer)u.getClass().getMethod("memberCount").invoke(u); }catch(Throwable t){ return -1; }
+    }
+
+    static void duoReport(){
+        try{
+            if(duoMega == null || !duoMega.isValid()){ Log.info("[drv] duo: 巨兽没了"); return; }
+            Unit u = duoMega;
+            camTarget = u;
+            Core.camera.position.set(u.x, u.y);
+            Object dom = field(u.getClass(), u, "dominant");
+            Log.info("[drv] duo 巨兽: type=@ flying=@ 综合hitSize=@ 代表类型=@(hitSize=@) 贴图缩放=@",
+                u.type.name, u.type.flying, u.hitSize(), dom instanceof UnitType ? ((UnitType)dom).name : "-",
+                dom instanceof UnitType ? ((UnitType)dom).hitSize : -1f,
+                dom instanceof UnitType ? (u.hitSize() / ((UnitType)dom).hitSize) : -1f);
+            Log.info("[drv] duo 稳定后: 类=@ 成员=@ 挂座=@ 能力=@ 有武器=@", u.getClass().getName(), memberCount(u),
+                u.mounts() == null ? -1 : u.mounts().length, u.abilities() == null ? -1 : u.abilities().length, u.hasWeapons());
+            int idx = 0;
+            if(u.mounts() != null) for(var m : u.mounts()){
+                Log.info("[drv]   挂座@ 武器=@ mount=@ bullet=@ 目标=@", idx++,
+                    m.weapon.getClass().getSimpleName(), m.getClass().getSimpleName(),
+                    m.weapon.bullet == null ? "null" : m.weapon.bullet.getClass().getSimpleName(),
+                    m.target == null ? "null" : m.target.getClass().getSimpleName());
+            }
+            if(duoEnemy != null)
+                Log.info("[drv] duo 敌方靶子: 血=@/@ 在=@,@ 巨兽在=@,@ 玩家单位=@", duoEnemy.health(), duoEnemy.maxHealth(),
+                    (int)duoEnemy.x, (int)duoEnemy.y, (int)u.x, (int)u.y,
+                    Vars.player.unit() == null ? "null" : Vars.player.unit().type.name);
+            if(duoAlly != null)
+                Log.info("[drv] duo 伤员: 血=@%@", (int)(duoAlly.healthf() * 100));
+            for(var m : u.mounts())
+                Log.info("[drv] duo 挂座目标: 武器=@ target=@ shoot=@", m.weapon.getClass().getSimpleName(),
+                    m.target == null ? "null" : m.target.getClass().getSimpleName(), m.shoot);
+        }catch(Throwable t){ Log.err("[drv] duoReport failed", t); }
+    }
+
     // ---------------- 组合巨兽：两艘船在深水里合体（水阻） ----------------
     static int shipOx = -1, shipOy = -1;
     static Unit shipMegaUnit, rissoA, rissoB, shipRef;

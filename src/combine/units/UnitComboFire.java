@@ -99,7 +99,17 @@ public class UnitComboFire{
 
             if(w.bullet == null) continue;
             if(w instanceof mindustry.type.weapons.RepairBeamWeapon) continue; // 维修光束只修己方建筑/单位，不代打
-            if(w.bullet.heals() && w.bullet.damage <= 0f) continue;      // 纯治疗弹同理（vela 激光等伤害/治疗双用武器仍可代打）
+            // 【治疗类武器一律不代打】包括"伤害+治疗双用"的（vela 的主力激光就是 healPercent + collidesTeam）：
+            // 借给别的单位后，那台单位会顶着自己的位置/目标发射这束治疗武器 ——
+            // 表现就是用户报的"dagger 和 vela 普通组合后会发射 vela 治疗武器的子弹"，
+            // 而且那束激光的命中范围（碰撞箱）跟借入方自己的武器完全不是一回事。
+            // 想用治疗武器就自己开火；代打只搬纯输出武器。
+            // 【治疗类武器一律不代打】包括「伤害+治疗双用」的（vela 的主力激光就是 healPercent + collidesTeam）：
+            // 借给别的单位后，那台单位会顶着自己的位置/目标发射这束治疗武器 ——
+            // 表现就是用户报的「dagger 和 vela 普通组合后会发射 vela 治疗武器的子弹」，
+            // 而且那束激光的命中范围（碰撞箱）跟借入方自己的武器完全不是一回事。
+            // 想用治疗武器就自己开火；代打只搬纯输出武器。
+            if(w.bullet.heals()) continue;
             if(w.shoot.firstShotDelay > 0f && !w.continuous) continue; // 充能型不支持（持续型单独走光束逻辑）
             if(w.bullet.killShooter && mount.totalShots > 0 && !w.continuous) continue;
 

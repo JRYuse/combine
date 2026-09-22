@@ -83,7 +83,8 @@ verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑�
 派生类型共用基础巨兽的占位 id，占位图标原来写死成 dagger、指令也只有 [移动, 组合]，
 所以 poly 这类工程单位合体后 自动重建/辅助建造/治疗建筑/挖矿 会消失）
 （截图 `*_mega_world.png` / `*_mega_hud.png` / `*_mega_panel.png` / `*_mega_command.png`，
-日志里报 dominant/drawScale/力场上限/bar 比例/引擎参数/面板图标与代表成员图标是否同一个、指令表是不是并集、两艘同型船合体速度有没有砍半/水阻按不按船那套算）；
+日志里报 dominant/drawScale/力场上限/bar 比例/引擎参数/面板图标与代表成员图标是否同一个、指令表是不是并集、两艘同型船合体速度有没有砍半/水阻按不按船那套算、
+会飞的巨兽是不是一直悬空 + 悬在水面上拆不拆得开）；
 `pool` = 4 台并排的组合发电机共享一口池子、灌满燃料 → 开信息面板截图 → 拆掉一台成员再看：
 面板里要能看到池子里的燃料、拆成员不能按容量销毁库存
 （截图 `*_pool_panel_full.png` / `*_pool_panel_after.png`，日志里报组容量/池总量/世界总量）；
@@ -134,6 +135,7 @@ verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 ja
 | `combine.dbg.ModStorageCoreTest` | 需要"别的模组写的仓库"（`verify/make-modstorage-fixture.sh` 造一个） | 模组仓库挨着核心照样扩容、且不被组合压掉 |
 | `combine.dbg.CoreCapacityTest` | 任意 | 造/拆容器不丢不涨、存读档一分不差、仓库链读档不涨 |
 | `combine.dbg.UnitBarTest` | 任意 | 组合单位工厂/升级厂有原版那些 bar（含单位数量/上限） |
+| `combine.dbg.ComboFireSupportTest` | 任意（有 dagger + vela） | 组合火力共享：同组单位不会替队友发射治疗类武器（vela 的治疗激光）；借出方空闲、借入方开火时，带治疗的弹体必须为 0 |
 | `combine.dbg.MegaFieldTest` | 任意（有 mace + oct） | 组合巨兽：血上限=成员之和、力场合并成 1 份（上限=成员之和 → 力墙条不超 100%）、`flyingLayer`/`clipSize` 不是 late-init 留下的 -1（否则悬浮时画在地板下面=不显示） |
 | `combine.dbg.GeneratorPoolKeepTest` | 任意（有 combustion-generator） | 组合发电机满池后拆掉一台成员：池子不被按容量截断（容量只拦新物品进入）、世界物品总量守恒 |
 | `combine.dbg.GeneratorNuclearTest` | 任意（有 thorium-reactor） | 核模式发电效率 = 燃料 / 核反应堆总容量（≤1），组合进大容量建筑不再要巨量燃料 |

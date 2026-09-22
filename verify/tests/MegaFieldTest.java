@@ -26,6 +26,10 @@ public class MegaFieldTest implements ApplicationListener{
     static void check(String n, boolean ok){ System.out.println("[MF] " + (ok?"PASS ":"FAIL ") + n); if(ok) pass++; else fail++; }
     static void run(int f){ for(int i=0;i<f;i++){ arc.util.Time.delta=1f; Vars.logic.update(); } }
 
+    static int memberCount(Unit u){
+        try{ return (Integer)u.getClass().getMethod("memberCount").invoke(u); }catch(Throwable t){ return -1; }
+    }
+
     static Building place(Block b, int x, int y, Team team){
         int size = Math.max(b.size, 1);
         int ax = x + (size - 1) / 2, ay = y + (size - 1) / 2;
@@ -48,6 +52,21 @@ public class MegaFieldTest implements ApplicationListener{
             if(a instanceof mindustry.entities.abilities.ForceFieldAbility) n++;
         return n;
     }
+    /** 巨兽/对照单位脚下那一格是不是同一类水面（挑基准地形时用）。 */
+    static boolean openWater(Tile mid, int radius, boolean deep){
+        for(int dy = -radius; dy <= radius; dy++) for(int dx = -radius; dx <= radius; dx++){
+            Tile t = Vars.world.tile(mid.x + dx, mid.y + dy);
+            if(t == null || t.floor() == null || !t.floor().isLiquid || t.block() != Blocks.air) return false;
+            if(deep ? !t.floor().isDeep() : !t.floor().shallow) return false;
+        }
+        return true;
+    }
+
+    static String floorName(Unit u){
+        Tile t = Vars.world.tileWorld(u.x, u.y);
+        return t == null || t.floor() == null ? "null" : t.floor().name;
+    }
+
     static float memberFieldMax(UnitType t){
         float sum = 0f;
         for(var a : t.abilities)
@@ -159,6 +178,8 @@ public class MegaFieldTest implements ApplicationListener{
         System.out.println("[MF] 引擎: 个数=" + engines + " engineOffset=" + eo + " engineSize=" + es
             + " hitSize=" + mega.hitSize() + "（oct 比例 @" + refOffset + " / @" + refSize + "）");
         check("有飞行成员的巨兽有引擎（原来恒为 0）", engines > 0);
+        // 用户要求：合体时有飞行成员，巨兽就"是"飞行单位（type.flying = true）
+        check("有飞行成员时巨兽 type.flying = true（用户要求的飞行单位语义）", mega.type.flying);
         check("居中一个引擎（同 flare / oct 的画法）", engines == 1);
         check("引擎位置随体型放大（engineOffset ≈ hitSize × 46/66 = " + (mega.hitSize() * refOffset) + "）",
             Math.abs(eo - mega.hitSize() * refOffset) < 0.01f);
@@ -186,6 +207,7 @@ public class MegaFieldTest implements ApplicationListener{
             System.out.println("[MF] 纯地面编组巨兽（dagger + 前面的地面单位）: 引擎=" + ge
                 + " elevation=" + groundMega.elevation);
             check("不含飞行成员的巨兽不生成引擎", ge == 0);
+            check("不含飞行成员的巨兽 type.flying = false", !groundMega.type.flying);
         }
 
         // 成员指令必须继承：poly 是工程/采矿单位，原版 init() 会给它加
@@ -246,23 +268,26 @@ public class MegaFieldTest implements ApplicationListener{
             // 【水阻】原版船（WaterMoveComp）把 floorSpeedMultiplier 整个替换成
             // (floor.shallow ? 1f : 1.3f)：水里没有水阻、深水还快 30%；
             // 巨兽继承的是普通 UnitEntity，不处理就按 UnitComp 算 —— 深水 0.2、浅水 0.5。
+            // 注意要挑**一大片**同类型水面：巨兽和对照船站在一起会互相挤开一两格，
+            // 挑边角上的格子会被挤到别的（浅水/陆地）地形上，测出来就不是同一个基准了。
             Tile deep = null, shallow = null;
             for(Tile t : Vars.world.tiles){
                 if(t == null || t.floor() == null) continue;
-                if(deep == null && t.floor().isDeep() && t.floor().drownTime > 0f && t.block() == Blocks.air) deep = t;
+                if(deep == null && t.floor().isDeep() && t.floor().drownTime > 0f && openWater(t, 5, true)) deep = t;
                 // 浅水：地形层带 shallow 标记（原版 ShallowLiquid 覆盖的浅水块）
-                if(shallow == null && t.floor().shallow && t.block() == Blocks.air) shallow = t;
+                if(shallow == null && t.floor().shallow && openWater(t, 3, false)) shallow = t;
                 if(deep != null && shallow != null) break;
             }
             Unit ref = UnitTypes.risso.create(Team.sharded);
             ref.add();
             if(deep != null){
                 shipMega.set(deep.worldx(), deep.worldy());
-                ref.set(deep.worldx(), deep.worldy());
+                ref.set(deep.worldx() + 24f, deep.worldy());
                 run(2);
                 float megaMul = shipMega.floorSpeedMultiplier();
                 float shipMul = ref.floorSpeedMultiplier();
-                System.out.println("[MF] 深水地形系数: 船合体=" + megaMul + " 原版船=" + shipMul
+                System.out.println("[MF] 深水地形系数: 船合体=" + megaMul + "（地形 " + floorName(shipMega) + "）"
+                    + " 原版船=" + shipMul + "（地形 " + floorName(ref) + "）"
                     + "（修前会按普通单位算成 " + (0.2f * shipMega.speedMultiplier()) + "）");
                 check("船合体在深水里的地形系数和原版船一致（水阻已处理，修前是 0.2）",
                     Math.abs(megaMul - shipMul) < 0.001f);
@@ -270,7 +295,7 @@ public class MegaFieldTest implements ApplicationListener{
             }
             if(shallow != null){
                 shipMega.set(shallow.worldx(), shallow.worldy());
-                ref.set(shallow.worldx(), shallow.worldy());
+                ref.set(shallow.worldx() + 20f, shallow.worldy());
                 run(2);
                 float megaMul = shipMega.floorSpeedMultiplier(), shipMul = ref.floorSpeedMultiplier();
                 System.out.println("[MF] 浅水地形系数: 船合体=" + megaMul + " 原版船=" + shipMul);
@@ -328,6 +353,60 @@ public class MegaFieldTest implements ApplicationListener{
         System.out.println("[MF] 60 tick 后: elevation=" + mega.elevation + " 盾=" + mega.shield() + "/" + fieldMax(mega));
         check("有飞行成员时会升到飞行高度（elevation>0.5 → 走 flyingLayer）", mega.elevation > 0.5f);
         check("升空后力墙 bar 仍不超上限（" + mega.shield() + "/" + fieldMax(mega) + "）", mega.shield() <= fieldMax(mega) + 0.01f);
+
+        // 【拆不开的回归】悬在水面上的巨兽：地面成员近处没有落脚点。
+        // 原来 findDropPos 只绕巨兽中心找几十像素，找不到就一直留在巨兽体内 ——
+        // 表现就是用户报的"dagger/oct/vela 合体后拆不开了"。
+        int wx = -1, wy = -1;
+        outer2:
+        for(int y=45;y<150;y++){
+            for(int x=40;x<200;x++){
+                Tile t = Vars.world.tile(x, y);
+                if(t == null || t.floor() == null || !t.floor().isLiquid || t.block() != Blocks.air) continue;
+                boolean land = false;
+                for(int dy=-8;dy<=8 && !land;dy++) for(int dx=-8;dx<=8;dx++){
+                    Tile n = Vars.world.tile(x+dx, y+dy);
+                    if(n != null && n.floor() != null && !n.floor().isLiquid && n.block() == Blocks.air){ land = true; break; }
+                }
+                if(land){ wx = x; wy = y; break outer2; }
+            }
+        }
+        if(wx > 0){
+            Unit d3 = UnitTypes.dagger.create(Team.sharded);
+            d3.set(wx * 8f - 8f, wy * 8f);
+            d3.add();
+            Unit o3 = UnitTypes.oct.create(Team.sharded);
+            o3.set(wx * 8f, wy * 8f);
+            o3.add();
+            Unit v3 = UnitTypes.vela.create(Team.sharded);
+            v3.set(wx * 8f + 8f, wy * 8f);
+            v3.add();
+            run(10);
+            Unit waterMega = null;
+            try{
+                Class<?> c = Class.forName("combine.units.UnitComboMerge", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+                Object m7 = c.getMethod("merge", Unit.class).invoke(null, d3);
+                if(m7 instanceof Unit u7) waterMega = u7;
+            }catch(Throwable ignored){}
+            if(waterMega != null){
+                run(20);
+                System.out.println("[MF] 水面上巨兽: 成员=" + memberCount(waterMega) + " 在=" + wx + "," + wy
+                    + " type.flying=" + waterMega.type.flying + " elevation=" + waterMega.elevation
+                    + " isFlying=" + waterMega.isFlying());
+                for(int i = 0; i < 40; i++) run(1);
+                System.out.println("[MF]   再跑 40 tick: elevation=" + waterMega.elevation + " isFlying=" + waterMega.isFlying());
+                check("有飞行成员的巨兽在水面上也按飞行单位处理（type.flying=true）", waterMega.type.flying);
+                check("会飞的巨兽在水面上按飞行单位处理（isFlying / elevation>0.5）", waterMega.isFlying() && waterMega.elevation > 0.5f);
+                boolean splitOk = false;
+                try{
+                    Class<?> c = Class.forName("combine.units.UnitComboMerge", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+                    splitOk = Boolean.TRUE.equals(c.getMethod("split", Unit.class).invoke(null, waterMega));
+                }catch(Throwable ignored){}
+                run(10);
+                System.out.println("[MF] 水面解体: 返回=" + splitOk + " 之后成员数=" + memberCount(waterMega));
+                check("悬在水面上的巨兽也能拆开（往外扫找岸，不再永远卡在体内）", splitOk);
+            }
+        }else System.out.println("[MF] 没找到水边地形（跳过水面解体回归）");
 
         System.out.println("[MF] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
         System.exit(fail==0?0:1);
