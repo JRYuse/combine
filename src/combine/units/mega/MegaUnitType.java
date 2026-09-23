@@ -6,6 +6,7 @@ import arc.graphics.g2d.TextureRegion;
 import arc.math.Angles;
 import arc.math.Mathf;
 import arc.util.Tmp;
+import mindustry.content.UnitTypes;
 import mindustry.graphics.Layer;
 import mindustry.graphics.Pal;
 import mindustry.gen.Legsc;
@@ -64,6 +65,7 @@ public class MegaUnitType extends UnitType {
      * 所以这个方法在构造期和每次推导之后都要调一次。
      */
     public void applyLateDefaults() {
+        borrowLaserRegions();
         if (lowAltitude) {
             flyingLayer = Layer.flyingUnitLow;
         } else if (flyingLayer < 0f) {
@@ -78,7 +80,28 @@ public class MegaUnitType extends UnitType {
         // 每按体型重算一次（派生类型是按成员构成新建的，值跟着体型走）。
         fogRadius = Math.max(58f * 3f, hitSize * 2f) / 8f;
         clipSize = Math.max(Math.max(clipSize, lightRadius * 1.1f), hitSize * 2.4f);
+        // 【挖矿光束】原版 {@code init()} 里写 `mineBeamOffset = hitSize/2`、
+        // {@code load()} 里把 mineLaserRegion/mineLaserEndRegion 设成 "minelaser" 贴图。
+        // 巨兽类型 late 注册、这两个方法从没跑过：mineBeamOffset 停在 Float.NEGATIVE_INFINITY
+        // （光束起点算成 -Inf，什么都画不出来）、激光贴图是 null。所以即使调了原版的
+        // drawMining，也看不到光束（用户报的"合体后挖矿没有挖矿光束"）。
+        // 激光贴图所有单位共用一张，从已经 load() 过的原版单位上借。
+        if (!(mineBeamOffset > 0f)) mineBeamOffset = hitSize / 2f;
+        if (mineLaserRegion == null) mineLaserRegion = borrowedMineLaser;
+        if (mineLaserEndRegion == null) mineLaserEndRegion = borrowedMineLaserEnd;
         rebuildEngines();
+    }
+
+    /** 借来的激光贴图（原版所有单位共用一张 "minelaser"）。 */
+    static TextureRegion borrowedMineLaser, borrowedMineLaserEnd;
+
+    /** 从一台已经 load() 过的原版单位上取激光贴图（贴图全局共用，谁都一样）。 */
+    static void borrowLaserRegions() {
+        try {
+            if (borrowedMineLaser == null) borrowedMineLaser = UnitTypes.dagger.mineLaserRegion;
+            if (borrowedMineLaserEnd == null) borrowedMineLaserEnd = UnitTypes.dagger.mineLaserEndRegion;
+        } catch (Throwable ignored) {
+        }
     }
 
     /**
@@ -316,6 +339,18 @@ public class MegaUnitType extends UnitType {
     public void draw(Unit unit) {
         if (unit.inFogTo(mindustry.Vars.player.team()))
             return;
+
+        boolean isPayloadUnit = !unit.isAdded();
+        // 【原版 UnitType.draw 的开头两段，必须照抄】巨兽是完全自定义绘制，漏了这两段就是：
+        //   · buildSpeed>0 的单位画不出建造计划/建造光束（点它排的计划看不见）；
+        //   · mining() 的单位画不出**挖矿光束**（用户报的"挖矿单位合体后挖矿没有挖矿光束"）。
+        // 判定条件与原版一致（载荷态不画）。
+        if (buildSpeed > 0f && !isPayloadUnit) {
+            unit.drawBuilding();
+        }
+        if (unit.mining() && !isPayloadUnit) {
+            drawMining(unit);
+        }
 
         MegaUnitEntity mu = unit instanceof MegaUnitEntity m ? m : null;
         UnitType dom = mu != null && mu.dominant != null ? mu.dominant : null;

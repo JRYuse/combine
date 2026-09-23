@@ -59,7 +59,7 @@ cp "$ROOT/build/libs/combine.jar" "$data/mods/combine.jar"
 
 echo "[mp] 编译驱动 mod（含链路模拟）"
 mkdir -p "$HERE/build/drv"
-javac -nowarn -cp "$SRC_JAR" -d "$HERE/build/drv" "$HERE/client/Driver.java" "$HERE/client/MpScenario.java" || exit 1
+javac -nowarn -cp "$SRC_JAR" -d "$HERE/build/drv" "$HERE"/client/*.java || exit 1
 cp "$HERE/client/mod.hjson" "$HERE/build/drv/"
 (cd "$HERE/build/drv" && rm -f "$HERE/build/drv.jar" && zip -q -r "$HERE/build/drv.jar" mod.hjson drv)
 cp "$HERE/build/drv.jar" "$data/mods/drv.jar"
@@ -243,34 +243,35 @@ fi
 echo "[mp] PASS：服务端出现过的每种状态客户端都看到了"
 
 # 7) 逐 id 对账（抓"幽灵单位"）：两端每秒都打一行
-#      [MP-IDS] t=<秒> player=<玩家单位id> <id:成员数>...
+#      [MP-IDS] ms=<epoch毫秒> player=<玩家单位id> <id:成员数[:成员id,成员id]>...
 #    客户端多出来的 id = 服务端没有的实体（幽灵）；少的 = 没同步过去。统计摘要看不出来的
 #    "多了一只/少了一只成员"到这里就能抓住（用户报的"客户端合体变幽灵"）。
-#    · 按 t= 对齐到同一秒：客户端一退出，服务端立刻删掉玩家单位，直接比"最后一行"必然假阳性；
+#    · 按 epoch 毫秒对齐到**同一时刻**（两端在同一台机器上）：客户端一退出，服务端立刻删掉玩家
+#      单位，直接比"最后一行"必然假阳性；两端的"游戏秒"也不是同一个钟（服务端按墙上时间排剧本、
+#      客户端按帧计时），所以只能用真实时间戳对齐；
 #    · player= 那只在比对时剔除：它的生死时机天生比客户端早/晚，不属于要抓的"幽灵单位"。
-ids_line(){ strip_ansi < "$1" | grep -oE "\[MP-IDS\].*" | grep -oE "t=[0-9]+ player=-?[0-9]+.*" | tail -1; }
+ids_line(){ strip_ansi < "$1" | grep -oE "\[MP-IDS\].*" | grep -oE "ms=[0-9]+ player=-?[0-9]+.*" | tail -1; }
 CLIENT_LINE="$(ids_line "$CLIENT_LOG")"
 if [ -z "$CLIENT_LINE" ]; then
   echo "[mp] 注：客户端日志里没有 [MP-IDS] 行，跳过逐 id 对账（驱动是不是没更新？）"
 else
-  CT="$(echo "$CLIENT_LINE" | sed -E 's/^t=([0-9]+).*/\1/')"
-  CPLAY="$(echo "$CLIENT_LINE" | sed -E 's/^t=[0-9]+ player=(-?[0-9]+).*/\1/')"
+  CMS="$(echo "$CLIENT_LINE" | sed -E 's/^ms=([0-9]+).*/\1/')"
+  CPLAY="$(echo "$CLIENT_LINE" | sed -E 's/^ms=[0-9]+ player=(-?[0-9]+).*/\1/')"
+  # 服务端选**时间上最接近客户端最后一行**的那一行（同一台机器，毫秒可直接比）
   HOST_LINE=""
-  HT=""
-  for off in 0 1 2 3 4 5; do
-    line="$(strip_ansi < "$HOST_LOG" | grep -oE "\[MP-IDS\] t=$((CT + off)) player=-?[0-9]+.*" | tail -1)"
-    if [ -n "$line" ]; then HOST_LINE="${line#\[MP-IDS\] }"; HT=$((CT + off)); break; fi
-  done
+  HOST_LINE="$(strip_ansi < "$HOST_LOG" | grep -oE "\[MP-IDS\].*" \
+    | grep -oE "ms=[0-9]+ player=-?[0-9]+.*" \
+    | awk -v cms="$CMS" '{ split($1, a, "="); d = a[2] - cms; if(d < 0) d = -d; if(best == "" || d < best){ best = d; bestline = $0 } } END { if(best <= 5000) print bestline }')"
   if [ -z "$HOST_LINE" ]; then
-    echo "[mp] 注：服务端没有 t=$CT 附近的 [MP-IDS] 行，跳过逐 id 对账"
+    echo "[mp] 注：服务端没有和客户端 ms=$CMS 相差 5 秒内的 [MP-IDS] 行，跳过逐 id 对账"
   else
-    HPLAY="$(echo "$HOST_LINE" | sed -E 's/^t=[0-9]+ player=(-?[0-9]+).*/\1/')"
+    HPLAY="$(echo "$HOST_LINE" | sed -E 's/^ms=[0-9]+ player=(-?[0-9]+).*/\1/')"
     # 剔除玩家自己那只 + 只留 id 集合
-    ids_of(){ echo "$1" | sed -E 's/^t=[0-9]+ player=-?[0-9]+ //' | tr ' ' '\n' | grep -v '^$' \
+    ids_of(){ echo "$1" | sed -E 's/^ms=[0-9]+ player=-?[0-9]+ //' | tr ' ' '\n' | grep -v '^$' \
       | grep -vE "^(${CPLAY}|${HPLAY}):" | sort; }
     HOST_IDS="$(ids_of "$HOST_LINE")"
     CLIENT_IDS="$(ids_of "$CLIENT_LINE")"
-    echo "[mp] ===== 逐 id 对账（客户端 t=$CT / 服务端 t=$HT，各 $(echo "$CLIENT_IDS" | grep -c .) 个实体，已剔除玩家自己那只）====="
+    echo "[mp] ===== 逐 id 对账（两端对齐到同一毫秒，各 $(echo "$CLIENT_IDS" | grep -c .) 个实体，已剔除玩家自己那只）====="
     echo "$CLIENT_IDS" | sed 's/^/  client /'
     GHOST="$(comm -13 <(echo "$HOST_IDS") <(echo "$CLIENT_IDS"))"
     LOST="$(comm -23 <(echo "$HOST_IDS") <(echo "$CLIENT_IDS"))"

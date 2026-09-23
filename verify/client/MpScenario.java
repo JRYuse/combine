@@ -22,6 +22,10 @@ import mindustry.type.UnitType;
 public class MpScenario{
     static boolean installed = false, started = false;
     static int frames = 0, phase = -1;
+    /** 客户端连上那一刻的墙上时间：剧本节奏按**真实秒**走，别按帧数 —— 服务端帧率会被
+     *  客户端的软渲染抢 CPU 拖慢，而客户端的 Timer 是按帧算的，两边会越漂越远
+     *  （实测服务端只跑到 t=33 时客户端已经跑满 110 秒退出了，收尾的挖矿阶段根本没轮到）。 */
+    static long startMs = 0;
     /** 给"客户端自己发起合体"用的那两只单位是否已经放好（独立于 phase 那条剧本链）。 */
     static boolean pairSpawned = false;
     static final Seq<Unit> pairUnits = new Seq<>();
@@ -60,7 +64,9 @@ public class MpScenario{
                 }
                 // 末尾带 t= 秒 与玩家单位 id：脚本按 t= 对齐两端、并排除"玩家自己那只"
                 // （客户端一退出，服务端立刻把它删掉，最后一行天然对不上）
-                System.out.println("[MP-IDS] t=" + (frames / 60) + " player="
+                // 时间戳用 **epoch 毫秒**：两端在同一台机器上，脚本按毫秒对齐"同一时刻"的实体清单
+                //（服务端按墙上时间排剧本、客户端按帧计时，两边各自的"游戏秒"不是同一个钟）。
+                System.out.println("[MP-IDS] ms=" + System.currentTimeMillis() + " player="
                     + (Groups.player.size() == 0 || Groups.player.first().unit() == null ? -1 : Groups.player.first().unit().id)
                     + " " + ids);
                 // 逐个单位的明细默认关着（一秒 4 行×单位数，正常跑一次就刷几千行）；
@@ -81,11 +87,13 @@ public class MpScenario{
             if(!started){
                 started = true;
                 frames = 0;
+                startMs = System.currentTimeMillis();
                 System.out.println("[MP-HOST] 客户端已连接，3 秒后开始剧本");
                 return;
             }
             if(frames % 60 != 0) return;
-            int t = frames / 60;
+            // 剧本节奏用墙上时间（客户端连上开始算）
+            int t = (int)((System.currentTimeMillis() - startMs) / 1000L);
             if(phase < 0 && t >= 5){ phase = 0; spawnAndMerge(2, true); }
             // 【客户端自己发起的合体】t=8 秒时在别处放两只 dagger：等客户端通过命令面板那条
             // 入口（UnitComboMerge.requestMergeSelected）自己请求合体，复现"客户端合体变幽灵"。
@@ -95,6 +103,14 @@ public class MpScenario{
             else if(phase == 1 && t >= 28){ phase = 2; spawnAndMerge(3, false); }
             else if(phase == 2 && t >= 43){ phase = 3; splitMega(); }
             else if(phase == 3 && t >= 52){ phase = 4; System.out.println("[MP-HOST] 剧本结束"); }
+            // 【挖矿光束取证】最后再合一只**矿工巨兽**并让它当场挖矿：客户端截图里应当看得见
+            // 原版那条挖矿激光（用户报的"合体后挖矿没有挖矿光束"）。
+            else if(phase == 4 && t >= 58){ phase = 5; spawnMiningMega(); }
+            // 矿工巨兽的 mineTile 会被它自己的 AI 清掉（原版 CommandAI 发现目标不在射程里就清），
+            // 这里每 tick 重新钉住，保证客户端那边**一直是挖矿状态**（截图才有光束可看）。
+            if(miningMega != null && miningMega.isAdded() && miningTile != null){
+                miningMega.mineTile(miningTile);
+            }
         }catch(Throwable t){
             Log.err("[MP-HOST] 剧本异常", t);
         }
@@ -194,6 +210,69 @@ public class MpScenario{
         }catch(Throwable t){
             System.out.println("[MP-HOST] spawnClientMergePair 失败: " + t);
         }
+    }
+
+    /** 正在挖矿的巨兽（客户端截图取证用）。 */
+    static Unit miningMega;
+    static mindustry.world.Tile miningTile;
+
+    /**
+     * 合一只矿工巨兽并让它当场挖矿：找一块"矿格旁边有干净落脚点"的地方，
+     * 用 poly（工程/采矿单位）×3 融合，然后把 {@code mineTile} 指到那格矿上。
+     *
+     * <p>客户端截图要能看见**原版那条挖矿激光**（用户报的"合体后挖矿没有挖矿光束"）。
+     */
+    static void spawnMiningMega(){
+        try{
+            int ox = -1, oy = -1, mx = -1, my = -1;
+            outer:
+            for(int y = 45; y < 200; y++){
+                for(int x = 40; x < 250; x++){
+                    mindustry.world.Tile t = Vars.world.tile(x, y);
+                    if(t == null || t.block() != mindustry.content.Blocks.air || t.drop() == null
+                        || t.drop().hardness > UnitTypes.poly.mineTier) continue;
+                    // 站到离矿 **5~8 格**的干净陆地上：poly 的 mineRange=70px（≈8.75 格）够得着，
+                    // 光束又足够长、截图里一眼能看见（太近时激光会被单位自己挡住）
+                    for(int r = 5; r <= 8 && ox < 0; r++){
+                        for(int dy = -r; dy <= r; dy++) for(int dx = -r; dx <= r; dx++){
+                            if(Math.max(Math.abs(dx), Math.abs(dy)) != r) continue;
+                            if(cleanAt(x + dx, y + dy)){ ox = x + dx; oy = y + dy; mx = x; my = y; break; }
+                        }
+                    }
+                    if(ox >= 0) break outer;
+                }
+            }
+            if(ox < 0){ System.out.println("[MP-HOST] 没找到带矿的落脚点，跳过挖矿取证"); return; }
+
+            Seq<Unit> units = new Seq<>();
+            for(int i = 0; i < 3; i++){
+                Unit u = UnitTypes.poly.create(Team.sharded);
+                u.set(ox * 8f + i * 16f, oy * 8f);
+                u.add();
+                units.add(u);
+            }
+            run2();
+            Class<?> mergeCls = Class.forName("combine.units.UnitComboMerge", true, ml);
+            miningMega = (Unit)mergeCls.getMethod("mergeSelected", Seq.class).invoke(null, units);
+            if(miningMega == null){ System.out.println("[MP-HOST] 矿工巨兽融合失败"); return; }
+            run2();
+            miningMega.set(ox * 8f, oy * 8f);
+            miningTile = Vars.world.tile(mx, my);
+            miningMega.mineTile(miningTile);
+            System.out.println("[MP-HOST] 矿工巨兽 id=" + miningMega.id() + " 成员=" + memberCount(miningMega)
+                + " itemCapacity=" + miningMega.type.itemCapacity + " mineSpeed=" + miningMega.type.mineSpeed
+                + " mineBeamOffset=" + miningMega.type.mineBeamOffset
+                + " 挖矿格=" + mx + "," + my + " 位置=" + (int)miningMega.x + "," + (int)miningMega.y);
+            System.out.println("[MP-PHASE] mining " + state());
+        }catch(Throwable t){
+            System.out.println("[MP-HOST] spawnMiningMega 失败: " + t);
+        }
+    }
+
+    /** 无参版本的 run(1)（上面几个剧本方法用不到固定帧数时用）。 */
+    static void run2(){
+        arc.util.Time.delta = 1f;
+        Vars.logic.update();
     }
 
     static void splitMega(){

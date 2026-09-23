@@ -256,11 +256,17 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::lookAtMega, 20f, 0.25f, 44 * 4);
                 // 【客户端自己发起合体】服务端 t≈8 秒会在别处放两只 dagger，这里走命令面板那条
                 // 入口（UnitComboMerge.requestMergeSelected）请求合体 —— 复现"客户端合体变幽灵"。
-                // 每 5 秒试一次，最多 8 次：等客户端真的把服务端放的那两只单位同步过来再请求
-                Timer.schedule(Driver::mpRequestMerge, 20f, 5f, 8);
+                // 每 3 秒试一次，最多 4 次（t≈13~22s）：要赶在剧本自己的 split（t=20/43s）之前，
+                // 否则客户端这次请求会把"服务端刚拆出来的瞬态"又合掉，1 秒一次的采样就抓不到那个
+                // 阶段状态了（那只说明判定的时间撞车，不是同步 bug）。
+                Timer.schedule(Driver::mpRequestMerge, 13f, 3f, 4);
                 Timer.schedule(() -> shot("mp_mega"), 26f);
                 Timer.schedule(() -> shot("mp_mega2"), 50f);
                 Timer.schedule(() -> shot("mp_after_split"), 66f);
+                // 服务端 t≈58（≈客户端 t≈62）会合一只矿工巨兽并让它挖矿：这张图用来看**挖矿光束**
+                // 收尾的"挖矿光束"取证：服务端的挖矿阶段按真实秒排（t≈58 起），而客户端 Timer 按帧算，
+                // 帧率漂移下拍不准某一秒 —— 干脆从 t=50s 起每 8 秒拍一张（连拍 6 张），总会拍到挖矿那一刻。
+                Timer.schedule(() -> shot("mp_mining"), 50f, 8f, 6);
                 Timer.schedule(Driver::mpVerdict, mpSecs - 2);
                 Timer.schedule(() -> { Log.info("[drv] mp 模式结束 frames=@", frames); Core.app.exit(); }, mpSecs);
             }else if(mode.equals("userpanel")){
@@ -677,7 +683,9 @@ public class Driver extends Mod{
         t.update(() -> {
             // camTarget 优先；其次是大模式自己造的巨兽；最后按类名找（联机模式：巨兽是服务端同步过来的，
             // 没有本地字段可指）—— 不这么兜底，联机截图会拍到"镜头跟着玩家、巨兽在画面外"。
-            Unit u = camTarget != null ? camTarget : (megaUnit != null ? megaUnit : megaUnit());
+            // 优先正在挖矿的巨兽（收尾那张"挖矿光束"取证图要拍它），其次本地大模式的巨兽，最后按类名找
+            Unit u = miningMega();
+            if(u == null) u = camTarget != null ? camTarget : (megaUnit != null ? megaUnit : megaUnit());
             if(u != null && u.isAdded()) Core.camera.position.set(u.x, u.y);
         });
         Vars.ui.hudGroup.addChild(t);
@@ -1315,7 +1323,8 @@ public class Driver extends Mod{
                 if(members > 0) ids.append(":").append(memberIds(u));
                 ids.append(" ");
             }
-            Log.info("[MP-IDS] t=@ player=@ @", (int)(arc.util.Time.time / 60f),
+            // 时间戳用 epoch 毫秒（和 MpScenario 一致），脚本按毫秒把两端对齐到同一时刻
+            Log.info("[MP-IDS] ms=@ player=@ @", System.currentTimeMillis(),
                 Vars.player.unit() == null ? -1 : Vars.player.unit().id, ids);
             // 每秒把每个单位逐个打出来（排查"幽灵/看不见/成员数不对"时用）：默认关着，
             // 免得正常跑一次就刷几千行；要排查就加参数 -Ddrv.mpVerbose=1。
@@ -1345,12 +1354,14 @@ public class Driver extends Mod{
                 Tmp.v1.set(mg.x, mg.y);
                 Core.camera.project(Tmp.v1);
                 Log.info("[MP-DRAW] 巨兽@ 位置=@,@ 屏幕=@,@ 相机=@,@ 有region=@ 有fullIcon=@ clipSize=@ flyingLayer=@ "
-                    + "elevation=@ 代表类型=@ 缩放=@ 迷雾扣住=@ 已加=@ 血=@/@ 盾=@ 玩家单位=@,@（跟随@）",
+                    + "elevation=@ 代表类型=@ 缩放=@ 迷雾扣住=@ 已加=@ 血=@/@ 盾=@ 物品容量=@ 挖矿中=@ 矿格=@ 玩家单位=@,@（跟随@）",
                     mg.id, (int)mg.x, (int)mg.y, (int)Tmp.v1.x, (int)Tmp.v1.y,
                     (int)Core.camera.position.x, (int)Core.camera.position.y,
                     mg.type.region != null, mg.type.fullIcon != null, mg.type.clipSize,
                     mg.type.flyingLayer, mg.elevation, dom, scale,
                     mg.inFogTo(Vars.player.team()), mg.isAdded(), (int)mg.health, (int)mg.maxHealth, (int)mg.shield,
+                    mg.type.itemCapacity, mg.mining(),
+                    mg.mineTile() == null ? "无" : (mg.mineTile().x + "," + mg.mineTile().y),
                     (int)Vars.player.x, (int)Vars.player.y,
                     Vars.player.unit() == null ? "无" : Vars.player.unit().type.name);
             }
@@ -1373,9 +1384,28 @@ public class Driver extends Mod{
         return null;
     }
 
+    /** 正在挖矿的巨兽（收尾的"挖矿光束"取证：镜头要钉在它身上）。 */
+    static Unit miningMega(){
+        for(Unit u : Groups.unit){
+            if(!u.getClass().getName().equals("combine.units.mega.MegaUnitEntity")) continue;
+            if(u.mining()){
+                if(!mpZoomed){
+                    mpZoomed = true;
+                    // 拉近 2 倍：挖矿激光只有几十像素长，默认视野下容易被单位自己的贴图盖住
+                    try{ Vars.renderer.setScale(2f); }catch(Throwable ignored){}
+                    Log.info("[MP-CAM] 发现挖矿中的巨兽 @，镜头拉近 2× 拍光束", u.id);
+                }
+                return u;
+            }
+        }
+        return null;
+    }
+    static boolean mpZoomed = false;
+
     static void lookAtMega(){
         try{
-            Unit u = megaUnit();
+            Unit u = miningMega();
+            if(u == null) u = megaUnit();
             if(u == null){
                 if(!mpLoggedMiss){
                     mpLoggedMiss = true;
@@ -1431,7 +1461,7 @@ public class Driver extends Mod{
             // 前几次先按"别人的单位"合体；第 5 次起改成**把自己也框进去**（玩家常见操作）：
             // 玩家自己的单位被合进巨兽后，"自己那只"要由服务端删掉、客户端跟着走，
             // 这条路上最容易留下幽灵。
-            boolean includeSelf = mpReqTries >= 5;
+            boolean includeSelf = mpReqTries >= 3;
             for(Unit u : Groups.unit){
                 if(u == null || !u.isAdded() || u.team() != Vars.player.team()) continue;
                 if(u.isPlayer() && !includeSelf) continue;

@@ -219,6 +219,32 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         return sig;
     }
 
+    /**
+     * 构成不可用（成员表读不出来）时的兜底派生：把代表类型当成"单成员构成"推一个能用的类型，
+     * 保住图标/体型/物品容量/挖矿与建造速率 —— 见 {@link #refreshDerived(boolean)} 里的说明。
+     *
+     * <p>签名单独开一段空间（{@code 0x7A0000 + 类型 id}），不会和真实构成（由成员数折叠出来的）
+     * 撞车；派生类型仍然共用基础巨兽的占位 content id，网络/存档照旧。
+     */
+    private void fallbackDerive(UnitType dom){
+        ObjectMap<UnitType, Integer> tally = new ObjectMap<>();
+        tally.put(dom, 1);
+        int sig = 0x7A0000 + dom.id;
+        type = compTypeFor(sig, dom, tally, Math.max(dom.health, 1f), dom.armor, Math.max(dom.hitSize, 1f));
+        maxHealth(Math.max(dom.health, 1f));
+        armor(dom.armor);
+        hitSize(Math.max(dom.hitSize, 1f));
+        drawScale = 1f;
+        attKind = attachmentKind(dom);
+        lastSig = sig;
+        lastHit = hitSize();
+        lastMax = maxHealth();
+        WeaponMount[] ms = mounts();
+        Ability[] ab = abilities();
+        lastMounts = ms == null ? 0 : ms.length;
+        lastAbilities = ab == null ? 0 : ab.length;
+    }
+
     /** @param force 跳过签名检查强制重建（融合瞬间用）。 */
     public void refreshDerived(boolean force){
         int sig = compositionSig();
@@ -276,7 +302,16 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
                 domCount = c;
             }
         }
-        if(count == 0 || dom == null) return;
+        if(count == 0 || dom == null){
+            // 【构成不可用时的兜底】成员表读不出来（对端缺模组、老存档、字节错位）时，以前直接
+            // return，于是 unit.type 停在**占位类型**上：itemCapacity = -1（面板"物品容量"没了、
+            // acceptsItem 恒 false → 挖不动也装不下）、mineSpeed/buildSpeed 是默认值、
+            // 挖矿光束也没有（用户报的"挖矿单位合体后没有挖矿光束、物品容量没了"）。
+            // 这里用手上还留着的代表类型（上次推导的结果，或成员块里带来的提示）按
+            // "单成员构成"推一个派生类型，至少保住图标/体型/物品容量/挖矿与建造速率。
+            if(dominant != null) fallbackDerive(dominant);
+            return;
+        }
 
         hasFlyer = fly;
         hasNaval = nav;

@@ -43,7 +43,9 @@ done
 
 # 1) 驱动 mod（自动开页面 / 开面板 / 截图）
 echo "[verify] 编译驱动 mod..."
-javac -nowarn -cp "$SRC_JAR" -d "$HERE/build/drv" "$HERE/client/Driver.java" || exit 1
+# 编译 client/ 下**所有**驱动源码（Driver 会引用 MpScenario 等服务端剧本类；
+# 只编 Driver.java 会报 "cannot find symbol: MpScenario"，然后拿旧 classes 打包 = 假结果）
+javac -nowarn -cp "$SRC_JAR" -d "$HERE/build/drv" "$HERE"/client/*.java || exit 1
 cp "$HERE/client/mod.hjson" "$HERE/build/drv/"
 (cd "$HERE/build/drv" && rm -f "$HERE/build/drv.jar" && zip -q -r "$HERE/build/drv.jar" mod.hjson drv)
 cp "$HERE/build/drv.jar" "$data/mods/drv.jar"
