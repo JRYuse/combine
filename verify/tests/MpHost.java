@@ -63,6 +63,8 @@ public class MpHost implements ApplicationListener{
             Vars.state.rules.waves = false;
             Vars.state.rules.canGameOver = false;
             Vars.state.rules.fog = false;
+            // 剧本要一次造 20 只单位：默认 unitCap 会把第 9 只起直接 unitCapDeath（测试前提，不是模组问题）
+            Vars.state.rules.disableUnitCap = true;
             Vars.logic.play();
             run(20);
 
@@ -122,7 +124,11 @@ public class MpHost implements ApplicationListener{
             splitMega();
         }else if(phase == 4 && t >= 34){
             phase = 5;
-            System.out.println("[MP-HOST] 剧本结束");
+            // 【用户报的 bug】一次合 20 只：客户端还能不能看到这只大单位（快照包 ~3.4KB）
+            spawnAndMerge(20, true);
+        }else if(phase == 5 && t >= 50){
+            phase = 6;
+            System.out.println("[MP-HOST] 大编组阶段结束（20 只合体）");
         }
     }
 

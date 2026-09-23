@@ -1049,8 +1049,14 @@ public class CombinedDrill extends Block {
                 for (Tile tile : facing) {
                     Item drop = tile == null ? null : tile.wallDrop();
                     // FIX(per-type)：每种矿独立余量，某种满了继续挖别的
-                    if (drop != null && items.get(drop) < comboTotalItemCap)
-                        items.add(drop, 1);
+                    // FIX[区块产出统计]: 必须走原版 offload() —— 它会先 produced(item, 1)
+                    // 计入 sector.info.handleProduction（区块产量 rawProduction）。
+                    // 之前这里直接 items.add(drop, 1)：物品进了池子，但区块"物品产出"恒为 0，
+                    // 面板/结算里这块产量一直不涨（用户报的"后台物品增长没算上"；
+                    // 同一类修复见 CombinedCrafter.craft() 与分离机分支的注释）。
+                    // 顺带：offload 里的容量判断走 getMaximumAccepted()，巨兽/组合体那边已重写成整组容量。
+                    if (drop != null && efficiency > 0f && items.get(drop) < comboTotalItemCap)
+                        offload(drop);
                 }
                 time %= drillTime;
             }

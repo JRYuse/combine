@@ -31,6 +31,8 @@ public class MpScenario{
     static long startMs = 0;
     /** 给"客户端自己发起合体"用的那两只单位是否已经放好（独立于 phase 那条剧本链）。 */
     static boolean pairSpawned = false;
+    /** 大编组（20 只）是否已经合过（见 update 里的"用户报的 bug"注释）。 */
+    static boolean bigMerged = false;
     static final Seq<Unit> pairUnits = new Seq<>();
     static float stateTimer = 0f;
     static final Seq<String> seen = new Seq<>();
@@ -111,7 +113,11 @@ public class MpScenario{
             if(frames % 60 != 0) return;
             // 剧本节奏用墙上时间（客户端连上开始算）
             int t = (int)((System.currentTimeMillis() - startMs) / 1000L);
-            if(phase < 0 && t >= 5){ phase = 0; spawnAndMerge(2, true); }
+            if(phase < 0 && t >= 5){
+                // 剧本要一次造 20 只：默认 unitCap 会把第 9 只起直接 unitCapDeath（测试前提）
+                Vars.state.rules.disableUnitCap = true;
+                phase = 0; spawnAndMerge(2, true);
+            }
             // 【客户端自己发起的合体】t=8 秒时在别处放两只 dagger：等客户端通过命令面板那条
             // 入口（UnitComboMerge.requestMergeSelected）自己请求合体，复现"客户端合体变幽灵"。
             // 用一个独立开关，别去动 phase（phase 是下面那条剧本链的状态机）。
@@ -135,6 +141,12 @@ public class MpScenario{
                 System.out.println("[MP-HOST] 已停止挖矿，物品总量进入静默期（基线 " + worldItemTotal() + "）");
             }
             else if(phase == 6 && t >= 76){ /* 连/断由**客户端**在做（见 Driver.mpNodeMess），服务端只摆基地 */ }
+            // 【用户报的 bug】一次合 20 只（快照 ~3.4KB）：客户端应当照样看得到这只大单位
+            // （看不到 = 快照没同步过去，harness 的"服务端每种状态客户端都看到"会 FAIL）。
+            // 【用户报的 bug】一次合 20 只：客户端应当照样看得到这只大单位（看不到 = 快照没同步
+            // 过去/包太大，harness 的"服务端每种状态客户端都看到"会 FAIL）。用独立开关，
+            // 别去动 phase 链（免得打乱后面挖矿/节点取证的时间点）。
+            if(!bigMerged && t >= 40){ bigMerged = true; spawnAndMerge(20, true); }
             // 矿工巨兽的 mineTile 会被它自己的 AI 清掉（原版 CommandAI 发现目标不在射程里就清），
             // 这里每 tick 重新钉住，保证客户端那边**一直是挖矿状态**（截图才有光束可看）。
             if(miningMega != null && miningMega.isAdded() && miningTile != null){
