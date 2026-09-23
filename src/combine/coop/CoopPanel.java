@@ -127,11 +127,15 @@ public class CoopPanel {
     }
     build = t;
     lastSignature = null;   // 换目标：下一帧立刻重画一次
+    side = 0;               // 换目标：上下位置重新判一次（之后保持不动，见 updatePosition）
     rebuild(true);
   }
 
   /** 上一次画出来的内容签名（null = 需要立刻重画一次）。 */
   private static String lastSignature;
+
+  /** 面板摆在被点建筑的上面(1)/下面(2)；0 = 还没定（换目标时重判）。 */
+  private static int side = 0;
 
   public static void hide() {
     build = null;
@@ -270,16 +274,22 @@ public class CoopPanel {
     StringBuilder sb = new StringBuilder(64);
     Seq<Building> members = members(build);
     sb.append(members.size).append('|');
-    if (build.items != null) {
+    // 【指纹必须和"画出来的那份池子"同源】以前读的是 build.items/liquids（这台方块**自己**
+    // 的模块），而面板画的是 ComboNet.panelItemPool/PanelLiquidPool（并池之后可能是整张网络里
+    // 别人的那一份）。两者不同源时：池子在别人手里 → 面板数字冻住不刷新；自己那份在动 →
+    // 每帧都重画一次（面板看着在抖）。现在直接按画的那两个池子算指纹。
+    mindustry.world.modules.ItemModule pool = combine.net.ComboNet.panelItemPool(build);
+    if (pool != null) {
       for (Item item : content.items()) {
-        int amount = build.items.get(item);
+        int amount = pool.get(item);
         if (amount > 0) sb.append(item.id).append(':').append(amount).append(',');
       }
     }
     sb.append('|');
-    if (build.liquids != null) {
+    mindustry.world.modules.LiquidModule lpool = combine.net.ComboNet.panelLiquidPool(build);
+    if (lpool != null) {
       for (Liquid liquid : content.liquids()) {
-        float amount = build.liquids.get(liquid);
+        float amount = lpool.get(liquid);
         if (amount > 0.001f) sb.append(liquid.id).append(':').append(Math.round(amount)).append(',');
       }
     }
@@ -289,6 +299,11 @@ public class CoopPanel {
   /**
    * 面板位置：**显示在被点击建筑的正上方** —— 水平居中、底边贴着建筑顶边（留 4px 缝）；
    * 上方放不下时翻到建筑正下方。水平方向会夹在屏幕里，免得贴着屏幕边被裁掉。
+   *
+   * 【不许上下抽搐】上下那一侧**一旦选定就保持不变**（只在这一侧真的放不下时翻面）：
+   * 以前每帧都按"当前面板高度"重判一次，而面板高度会随池子里的物品行数变（多一行/少一行），
+   * 于是"物品多一行 → 上方塞不下 → 翻到下面；下一帧少一行 → 又翻回上面"，
+   * 面板就会在建筑上下之间来回跳（用户报的"组合工厂 ui 面板抽搐"）。
    */
   private static void updatePosition() {
     try {
@@ -299,12 +314,25 @@ public class CoopPanel {
       arc.math.geom.Vec2 v = Core.input.mouseScreen(a[0], a[1]);
       float sx = v.x - Core.scene.marginLeft;
       float sy = v.y - Core.scene.marginBottom;
+      float half = build.block.size * mindustry.Vars.tilesize / 2f;
+      arc.math.geom.Vec2 v2 = Core.input.mouseScreen(build.x, build.y - half);
+      float belowY = v2.y - Core.scene.marginBottom + 4f;
+      float sceneH = Core.scene.getHeight();
+      float h = table.getHeight();
 
-      if (sy - table.getHeight() - 4f < 0f) {
-        // 建筑上方塞不下：翻到正下方（顶边贴着建筑底边）
-        float half = build.block.size * mindustry.Vars.tilesize / 2f;
-        arc.math.geom.Vec2 v2 = Core.input.mouseScreen(build.x, build.y - half);
-        placeClamped(sx, v2.y - Core.scene.marginBottom + 4f, Align.top);
+      if (side == 0) {
+        // 第一次：上方塞得下就放上面（用户要的"浮在方块正上方"），塞不下才翻到下面
+        side = (sy - h - 4f < 0f) ? 2 : 1;
+      } else if (side == 1 && sy - h - 4f < 0f && belowY + h <= sceneH) {
+        // 已经放在上面但上方真的塞不下了（相机移动/长高了）→ 翻到下面
+        side = 2;
+      } else if (side == 2 && belowY + h > sceneH && sy - h - 4f >= 0f) {
+        // 已经放在下面但下方也塞不下 → 翻回上面
+        side = 1;
+      }
+
+      if (side == 2) {
+        placeClamped(sx, belowY, Align.top);
       } else {
         placeClamped(sx, sy - 4f, Align.bottom);
       }

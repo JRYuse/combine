@@ -102,6 +102,57 @@ public class ComboNet {
         dirty = true;
     }
 
+    /** 上一次重建里"属于某张网络"的格子（pos）；用来判断一次格子变化要不要重建网络。 */
+    private static final IntSet netMemberPos = new IntSet();
+
+    /**
+     * 一格方块变了（造/拆/替换）之后：**只有可能影响组合网络的**才置脏。
+     *
+     * 【性能/用户报"服务端和客户端使用多线程建造后帧率下降十分明显"】以前这里无条件置脏，
+     * 于是"多线程建造刷一大片"时每一帧都在重建整张组合网络（全图建筑过一遍 + 建图 + 拆池 + 合池，
+     * 大基地上单次就是几毫秒到几十毫秒，实测建造中 4~5ms/tick、峰值 45ms）。
+     * 但绝大多数格子变化跟网络无关：传送带、生产线、矿机、墙……既不是连接器/节点，
+     * 也不在任何网络的成员表里，更不挨着网络成员 —— 重建结果一定和上一帧一模一样。
+     *
+     * 判据（保守优先：拿不准就置脏）：
+     *   · 这一格**原来**是网络成员（pos 在成员表里）→ 变了就得重算；
+     *   · 新方块是组合连接器/节点 → 要重算；
+     *   · 新方块是组合建筑，且自己或邻居是网络成员/连接件 → 可能刚并进网络 → 要重算。
+     */
+    public static void markTileChanged(mindustry.world.Tile tile){
+        try{
+            if(tile == null){
+                markDirty();
+                return;
+            }
+            if(netMemberPos.contains(tile.pos())){
+                markDirty();
+                return;
+            }
+            Building b = tile.build;
+            if(b == null)
+                return;
+            if(isLinker(b)){
+                markDirty();
+                return;
+            }
+            if(!ComboReflect.isComboBuild(b))
+                return;
+            if(b.proximity != null){
+                for(Building nb : b.proximity){
+                    if(nb == null) continue;
+                    if(isLinker(nb) || netMemberPos.contains(nb.pos())){
+                        markDirty();
+                        return;
+                    }
+                }
+            }
+        }catch(Throwable t){
+            // 判据出错宁可多算一遍，也不要漏掉网络变化
+            markDirty();
+        }
+    }
+
     /** 是否正在 rebuild 内部（防止 CoopCombo → ComboNet → CoopCombo 的重入）。 */
     public static boolean rebuilding(){
         return inRebuild;
@@ -682,12 +733,14 @@ public class ComboNet {
             }
             // 8) 登记"网络成员 -> 整张网络"的索引，给组合仓库那套本地并仓逻辑查（见 networkMembers）。
             netByPos.clear();
+            netMemberPos.clear();
             long netSig = 1125899906842597L;
             for(Seq<Building> members : compMembers){
                 if(members.size <= 1) continue;
                 for(Building m : members){
                     if(m != null && m.isValid()){
                         netByPos.put(m.pos(), members);
+                        netMemberPos.add(m.pos());
                         netSig = netSig * 31 + m.pos();
                     }
                 }

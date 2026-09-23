@@ -1016,6 +1016,87 @@ public class CombinedItemTurret extends ItemTurret {
       super.write(write);
     }
 
+    // ==================== 联机快照（block snapshot）：弹仓发精确值 ====================
+    //
+    // 【用户报】"客户端视角内炮台弹药时常归零然后恢复"。
+    //
+    // 联机同步走的是原版 block snapshot：服务端 `build.writeSync()` → 客户端
+    // `tile.build.readSync()`（NetClient.blockSnapshot），而 writeSync = writeBase + write()，
+    // 也就是说弹仓用的还是**原版 ItemTurretBuild 的字节**：
+    //
+    //   write(): `write.b(ammo.size); write.s(item.id); write.s(entry.amount);`
+    //   read():  `int itemAmount = Math.min(read.s(), maxAmmo);`
+    //
+    // 这两句都是给**单台**炮塔写的，组合体的弹仓不是这个口径：
+    //   · 数量写成 **short**：整组囤到 32768 以上就溢出成负数 → 客户端 `totalAmmo` 变负
+    //     → 弹药条直接显示 0（等打掉几发/下一份快照又跳回去 = "归零然后恢复"）；
+    //   · 读的时候还按**单台** maxAmmo 夹：3 台 duo（单台 30）囤到 90，客户端只读出 30
+    //     —— 客户端看到的弹药永远只有一小截（实测 90 → 30；40000 → -25536）。
+    //
+    // 组合体的弹仓上限是整组的（perItemCap = Σ 各台 maxAmmo，见 pullAmmoFromPool 注释），
+    // 所以快照里必须由模组自己追加一段**精确弹仓**（int 数量、不夹单台上限），
+    // 客户端读完覆盖掉原版那一段。存档路径不受影响：那是 ComboSaveState 的
+    // writeCombo/readCombo（本来就是精确的 int）。
+    //
+    // 注意：writeSync/readSync 只被联机快照调用（NetServer.writeBlockSnapshots /
+    // requestBlockSnapshot → NetClient.blockSnapshot），地图存档走 writeAll/readAll，
+    // 所以这里追加字节不会影响"关掉模组后存档还能读"。
+
+    /** 这条弹药条目要不要进快照（和 writeCombo 同一套过滤）。 */
+    private boolean syncableAmmo(Turret.AmmoEntry e) {
+      return e instanceof ItemTurret.ItemEntry ie && ie.item != null && e.type() != null;
+    }
+
+    @Override
+    public void writeSync(Writes write) {
+      super.writeSync(write);
+      write.s(selected == null ? -1 : selected.id);
+      int count = 0;
+      for (Turret.AmmoEntry e : ammo)
+        if (syncableAmmo(e))
+          count++;
+      write.i(count);
+      for (Turret.AmmoEntry e : ammo) {
+        if (!syncableAmmo(e))
+          continue;
+        write.s(((ItemTurret.ItemEntry) e).item.id);
+        write.i(e.amount);
+      }
+    }
+
+    /**
+     * 读服务端快照：先按原版字节读（万一对端是没这段的老版本，弹仓至少不是空的），
+     * 再用模组自己的精确弹仓覆盖。
+     */
+    @Override
+    public void readSync(Reads read, byte revision) {
+      super.readSync(read, revision);
+      try {
+        short sel = read.s();
+        int count = read.i();
+        if (count < 0 || count > 4096)
+          return; // 对端数据不对：保留原版那份，别把这一包后面的方块读歪
+        ammo.clear();
+        totalAmmo = 0;
+        for (int i = 0; i < count; i++) {
+          Item item = content.item(read.s());
+          int amount = read.i();
+          if (item == null || amount <= 0)
+            continue;
+          ItemTurret owner = ownerFor(item);
+          ammo.add(AmmoEntries.create(owner == null ? (ItemTurret) block : owner, item, amount));
+          totalAmmo += amount;
+        }
+        selected = sel == -1 ? null : content.item(sel);
+        if (selected != null && !acceptsAmmo(selected))
+          selected = null;
+        comboDirty = true;
+      } catch (Throwable t) {
+        // 快照读崩会把整包里后面的建筑读歪（NetClient.blockSnapshot 是个循环），必须吞掉
+        arc.util.Log.err("[combine] 读组合炮塔联机快照失败（弹仓按原版字节显示）", t);
+      }
+    }
+
     @Override
     public void writeCombo(Writes write) {
       write.s(selected == null ? -1 : selected.id);

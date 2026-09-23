@@ -140,7 +140,10 @@ public class Main extends Mod {
       // 置脏即可：一次放置会触发多个事件，ComboNet 每帧最多重建一次（见 markDirty 注释）。
       // 这里**无条件**置脏：拆掉一台机器、放个传送带……都可能让"本地组合体/共享池"的分组变化，
       // 而 ComboNet 的全局拆池（同一份模块被多个组件共用时按容量拆开）必须有机会跑。
-      ComboNet.markDirty();
+      // 【别无条件置脏】多线程建造刷一大片时，每一格都置脏 = 每帧重建整张网络（实测建造中
+      // 4~5ms/tick、峰值 45ms，用户报的"多线程建造后帧率下降明显"）。现在交给
+      // markTileChanged 判"这一格变化到底跟组合网络有没有关系"，无关的直接跳过。
+      ComboNet.markTileChanged(e.tile);
     });
 
     // 读档窗口：WorldLoadBegin → 读档语义合并（去重）；结束前不做运行期相加
@@ -174,6 +177,10 @@ public class Main extends Mod {
 
     // 跨组合体网络（连接器/节点）：每帧最多重建一次，避免放一个连接器就重建 5~10 遍
     ComboNet.register();
+
+    // 组合墙分组：同样每帧最多重算一遍（放一格墙会触发 placed + 四周 proximity，
+    // 原先每一遍都整组 BFS 一次 —— 多线程建造刷墙时就是"帧率下降十分明显"的大头）
+    LinkWall.register();
 
     // "不组合"名单（设置界面里切换的）从 Core.settings 读回来
     CoopCombo.loadBlacklist();

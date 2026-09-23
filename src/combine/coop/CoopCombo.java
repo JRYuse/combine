@@ -226,8 +226,11 @@ public class CoopCombo {
 
   private static void addChangedTile(Tile tile) {
     if (tile == null) return;
-    dirty = true;
     changedTiles.add(tile);
+    // 【性能】不再无条件置脏：多线程建造刷一大片时，每一格都会让"所有协作组合重算一遍"
+    //（用户报的"服务端和客户端使用多线程建造后帧率下降十分明显"）。
+    // 只有这一格真的跟协作组合有关（自己/邻居是能协作的方块，或者是组合节点/连接器）才置脏。
+    if (relevant(tile)) dirty = true;
     // 【电网对账】方块增删会触发原版的拆网/并网，而共用一份 PowerModule 的组合建筑
     // 可能被原版那套"扇形拆分"漏在旧图上（读档、拆电线杆、拆组员都会遇到）。
     // 这里只要改动附近有带电建筑，就把"整张图对账"排上（见 combine.util.ComboPower）。
@@ -242,6 +245,28 @@ public class CoopCombo {
         }
       }
     }
+  }
+
+  /**
+   * 这一格变化跟"协作组合"有没有关系：自己或邻居是能协作的方块（含已登记的成员），
+   * 或者是组合节点/连接器（它们是把组合接成一张网的导线）。
+   */
+  private static boolean relevant(Tile tile) {
+    try {
+      for (int i = 0; i < 5; i++) {
+        Tile cur = i == 0 ? tile : tile.nearby(i - 1);
+        if (cur == null) continue;
+        Building b = cur.build;
+        if (b == null) continue;
+        if (tracked.contains(b)) return true;
+        if (eligible(b.block)) return true;
+        if (b instanceof ComboNode.ComboNodeBuild || b instanceof ComboConnector.ComboConnectorBuild)
+          return true;
+      }
+    } catch (Throwable ignored) {
+      return true; // 判据出错宁可多算一遍
+    }
+    return false;
   }
 
   // ==================== 资格判定 ====================

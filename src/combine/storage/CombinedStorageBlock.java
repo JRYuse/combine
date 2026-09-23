@@ -93,8 +93,43 @@ public class CombinedStorageBlock extends StorageBlock {
     // 上面在 WorldLoadEvent 先记下地图里的库存，这里把被削掉的补回来（只补不删）。
     Events.on(EventType.SaveLoadEvent.class, e -> restoreCoreItems());
     // 放置/拆除/替换方块都会触发；这里只置位，真正重算留到之后
-    Events.on(EventType.TileChangeEvent.class, e -> dirty = true);
-    Events.on(EventType.BlockBuildEndEvent.class, e -> dirty = true);
+    // 【性能】不再无条件置脏：多线程建造刷一大片时，每格都触发一次"全部仓库重算"
+    // （用户报的"服务端和客户端使用多线程建造后帧率下降十分明显"）。
+    // 只有"仓库/核心这一坨"真的变了才需要重算，见 markTileChanged。
+    Events.on(EventType.TileChangeEvent.class, e -> markTileChanged(e.tile));
+    Events.on(EventType.BlockBuildEndEvent.class, e -> markTileChanged(e.tile));
+  }
+
+  /** 这一格变化要不要重算仓库：仓库本身/核心，或者挨着它们的格子。 */
+  public static void markTileChanged(mindustry.world.Tile tile){
+    try{
+      if(tile == null){
+        dirty = true;
+        return;
+      }
+      Building b = tile.build;
+      if(b != null && isStorageLike(b)){
+        dirty = true;
+        return;
+      }
+      for(int i = 0; i < 4; i++){
+        mindustry.world.Tile cur = tile.nearby(i);
+        Building nb = cur == null ? null : cur.build;
+        if(nb != null && isStorageLike(nb)){
+          dirty = true;
+          return;
+        }
+      }
+    }catch(Throwable t){
+      dirty = true; // 判据出错宁可多算
+    }
+  }
+
+  /** 参与"仓库↔核心"并仓那一套的建筑：组合仓库（含被别的模组写的仓库）或核心。 */
+  private static boolean isStorageLike(Building b){
+    if(b == null) return false;
+    if(b instanceof CombinedStorageBuild) return true;
+    return b instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild;
   }
 
   /**

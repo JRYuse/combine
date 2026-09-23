@@ -184,6 +184,8 @@ verify/lagnet-selftest.py --count 3000 --rate 150 --latency 200   # 压更狠一
 | `combine.dbg.TechTreeTest` | 任意 | 科技树数据体检：全树无 null 造价节点、组合连接器/节点/液体卸载器在塞普罗与埃里克尔两棵树上（研究材料分星球）；并模拟别的模组留下的坏节点，验证兜底能修好 |
 | `combine.dbg.ConnectorSaveTest` | `coop-producer` | 连接器接上两组合体后同池/同电网；存读档后依然同池、物品一份不少 |
 | `combine.dbg.TurretAmmoTest` | 任意（有炮塔+容器） | 仓库↔炮塔：每种弹药都进、弹仓按台数放大、从池里扣 |
+| `combine.dbg.TurretClientAmmoTest` | 任意（有炮塔+容器+组合节点） | 用户报"客户端视角内炮台弹药时常归零然后恢复"：服务端炮塔组囤弹 → 取成员的 `writeSync` 字节（= 服务端发的 block snapshot）→ 在另一台炮塔上 `readSync`（= 客户端收快照做的事）→ 客户端看到的弹量必须和服务端**完全一致**。旧行为：原版 `ItemTurretBuild.read` 按**单台** maxAmmo 夹 + 用 short 存数量，3 台 duo 囤到 90 客户端只读出 30，囤到 40000 客户端读出 **-25536**（弹药条直接归零） |
+| `combine.dbg.MultiBuildPerfTest` | 任意（有铜墙/核心/传送带） | 用户报"服务端和客户端使用多线程建造后帧率下降十分明显"：量"空闲 / 多线程建造中 / 建造后"的每 tick 耗时（真实 delta 1/60），`-Dperf.block=wall\|conv` 选建组合墙还是传送带、`-Dperf.net=1` 打开 ComboNet 分段计时。修前：传送带 2.32ms/tick（峰值 27.7ms）、组合墙 4.10ms/tick（峰值 59.4ms）；修后：0.14ms / 1.29ms（峰值 1.8ms / 19.9ms） |
 | `combine.dbg.TurretCoolantTest` | `liquid-maker`（java 测试模组） | 冷却液选择：空选自动取效果最好的、手选生效、没货回退 |
 | `combine.dbg.SaveRoundTripTest` | 任意 | 核心+容器 存读档物品不翻倍 |
 | `combine.dbg.ModStorageCoreTest` | 需要"别的模组写的仓库"（`verify/make-modstorage-fixture.sh` 造一个） | 模组仓库挨着核心照样扩容、且不被组合压掉 |
