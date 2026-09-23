@@ -4,7 +4,6 @@ import combine.net.ComboNet;
 import combine.production.CombinedGenerator.CombinedGeneratorBuild;
 import combine.production.CombinedGenerator;
 import combine.storage.CombinedStorageBlock;
-import combine.units.IUnitCombo;
 import arc.struct.Seq;
 import arc.struct.ObjectSet;
 import arc.struct.Queue;
@@ -26,18 +25,23 @@ import static mindustry.Vars.state;
 import static mindustry.Vars.world;
 
 /**
- * 反射访问所有 Combined* / IUnitCombo 建筑共有的组合字段。
+ * 反射访问所有组合建筑共有的组合字段。
  *
  * 新建筑(连接器/节点)不属于任何 Combined* 类，但它们要和已放置的老组合建筑
  * 互通，因此这里不依赖具体内部类，只依赖各组合建筑已经存在的约定字段：
  * comboLeader / comboGroup / comboDirty / comboTotalItemCap / comboTotalLiquidCap，
- * 以及 IUnitCombo 的存取方法。
+ * 以及同名的约定方法（leader() / group() / rebuildCombo() / comboPreUpdate()）。
+ *
+ * 【这里刻意不认任何具体接口】组合单位工厂/重组厂/构造机的组合簿记是
+ * {@code combine.units.IUnitCombo} 的 default 方法，而发射台/着陆台是各自类里写的方法 ——
+ * 两边字段名与方法名是同一套约定，走"按名字找"这条路就够了；
+ * 认接口反而会把这个通用的反射桥跟某一个接口绑死（见 {@link #findMethod} 对接口 default
+ * 方法的支持：getDeclaredMethod 在实现类上是找不到 default 方法的）。
  */
 public class ComboReflect {
 
     public static boolean isComboBuild(Building b){
         if(b == null) return false;
-        if(b instanceof IUnitCombo) return true;
         if(b.block instanceof CombinedStorageBlock) return true;
         // 被替换出来的组合墙等功能方块：自己维护分组（IComboGrouped），
         // 也要能被组合节点/连接器接起来（用户要求：接上就该有完整组合功能，比如墙共享血量）。
@@ -64,7 +68,7 @@ public class ComboReflect {
         // 重建时 linkedReachable() 会穿过组合节点/连接器 —— 连线变了分组跟着变
         //（节点连上/断开都要叫这里，见 ComboNode 的配置与移除逻辑）。
         if(isComboBuild(b) && !(b.block instanceof CombinedStorageBlock)
-            && (b instanceof IUnitCombo || hasField(b, "comboDirty"))){
+            && hasField(b, "comboDirty")){
             for(Building m : group(b)){
                 if(m.isValid()) setDirty(m, true);
             }
@@ -190,11 +194,8 @@ public class ComboReflect {
 
     public static Building leader(Building b){
         if(b == null) return null;
-        if(b instanceof IUnitCombo u){
-            IUnitCombo l = u.leader();
-            return l instanceof Building bl ? bl : b;
-        }
         if(CoopCombo.eligible(b.block)) return CoopCombo.coopLeader(b);
+        // 组合单位工厂/重组厂/构造机：IUnitCombo 的 default leader()
         Object r = call(b, "leader");
         return r instanceof Building bl ? bl : b;
     }
@@ -206,14 +207,6 @@ public class ComboReflect {
         // 注意用 add 而不是 addUnique：各组合类自己的 group() 已经是去重的集合，
         // 这里只是过滤 isValid。addUnique 在 Seq 上是线性查找，对 N 台一组的组合体
         // 就是 O(N²) —— 信息面板每帧都要调这个，几百台一组时会明显掉帧。
-        if(b instanceof IUnitCombo u){
-            for(IUnitCombo m : u.group()){
-                if(m instanceof Building bl && bl.isValid()) out.add(bl);
-            }
-            if(out.isEmpty()) out.add(b);
-            return out;
-        }
-
         if(CoopCombo.eligible(b.block)) return CoopCombo.coopGroup(b);
         Object r = call(b, "group");
         if(r instanceof Seq<?> seq){
@@ -273,60 +266,38 @@ public class ComboReflect {
 
     public static void setItemCap(Building b, int value){
         if(b == null) return;
-        if(b instanceof IUnitCombo u){
-            u.gItemCap(value);
-            return;
-        }
         setInt(b, "comboTotalItemCap", value);
     }
 
     public static void setLiquidCap(Building b, float value){
         if(b == null) return;
-        if(b instanceof IUnitCombo u){
-            u.gLiquidCap(value);
-            return;
-        }
         setFloat(b, "comboTotalLiquidCap", value);
     }
 
     public static void markClean(Building b){
         if(b == null) return;
-        if(b instanceof IUnitCombo u){
-            u.gDirty(false);
-            return;
-        }
         setBoolean(b, "comboDirty", false);
     }
 
     public static void setDirty(Building b, boolean value){
         if(b == null) return;
-        if(b instanceof IUnitCombo u){
-            u.gDirty(value);
-            return;
-        }
         setBoolean(b, "comboDirty", value);
     }
 
     public static boolean isDirty(Building b){
         if(b == null) return false;
-        if(b instanceof IUnitCombo u) return u.gDirty();
         Boolean v = getBoolean(b, "comboDirty");
         return v != null && v;
     }
 
     public static boolean hasPendingLeader(Building b){
         if(b == null) return false;
-        if(b instanceof IUnitCombo u) return u.gPending() != -1;
         Integer p = getInt(b, "pendingLeaderPos");
         return p != null && p != -1;
     }
 
     public static void rebuildLocal(Building b){
         if(b == null) return;
-        if(b instanceof IUnitCombo u){
-            u.rebuildCombo();
-            return;
-        }
         call(b, "rebuildCombo");
     }
 
@@ -337,10 +308,6 @@ public class ComboReflect {
     /** 读档后恢复共享模块的挂点：等价于各组合建筑 updateTile 开头的 comboPreUpdate()。 */
     public static void preUpdate(Building b){
         if(b == null) return;
-        if(b instanceof IUnitCombo u){
-            u.comboPreUpdate();
-            return;
-        }
         call(b, "comboPreUpdate");
     }
 
@@ -509,11 +476,45 @@ public class ComboReflect {
                 c = c.getSuperclass();
             }
         }
+        // 【接口 default 方法也必须找得到】组合单位工厂/重组厂/构造机的 leader()/group()/
+        // rebuildCombo()/comboPreUpdate() 全是 combine.units.IUnitCombo 的 default 方法 ——
+        // 实现类自己**不声明**它们，getDeclaredMethod 顺着类往上走永远 miss，于是
+        // preUpdate()/rebuildLocal()/leader() 会静默失效（读档并池、连线变分组全都不动了）。
+        Method im = findInterfaceMethod(clazz, name, types);
+        if(im != null){
+            try{ im.setAccessible(true); }catch(Throwable ignored){}
+            perClass.put(k, im);
+            return im;
+        }
         if(missing == null){
             missing = java.util.concurrent.ConcurrentHashMap.newKeySet();
             missingMethodCache.put(clazz, missing);
         }
         missing.add(k);
+        return null;
+    }
+
+    /**
+     * 在 clazz 的**整条继承链**的接口里找方法（含接口的 default 方法与继承来的接口）。
+     * 广度优先，命中即返回；找不到返回 null。
+     */
+    private static Method findInterfaceMethod(Class<?> clazz, String name, Class<?>[] types){
+        ObjectSet<Class<?>> seen = new ObjectSet<>();
+        Queue<Class<?>> queue = new Queue<>();
+        for(Class<?> c = clazz; c != null && c != Object.class; c = c.getSuperclass()){
+            for(Class<?> i : c.getInterfaces())
+                if(seen.add(i)) queue.addLast(i);
+        }
+        while(!queue.isEmpty()){
+            Class<?> i = queue.removeFirst();
+            try{
+                return types == null || types.length == 0
+                    ? i.getDeclaredMethod(name)
+                    : i.getDeclaredMethod(name, types);
+            }catch(NoSuchMethodException ignored){}
+            for(Class<?> s : i.getInterfaces())
+                if(seen.add(s)) queue.addLast(s);
+        }
         return null;
     }
 

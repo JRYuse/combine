@@ -36,6 +36,17 @@ public class MpScenario{
     static final Seq<String> seen = new Seq<>();
     static ClassLoader ml = MpScenario.class.getClassLoader();
 
+    /** 单位侧机制（组合巨兽/共享承伤…）已经拆到 combineunit 模组里：优先用它的类加载器；
+     *  没装就退回本驱动自己的（联机的单位侧剧本需要两端都装 combineunit，见 verify/README.md）。 */
+    static ClassLoader unitMl(){
+        try{
+            var m = Vars.mods.getMod("combineunit");
+            if(m != null && m.main != null) return m.main.getClass().getClassLoader();
+        }catch(Throwable ignored){}
+        return ml;
+    }
+
+
     /** -Ddrv.scenario=1 时挂上（服务端专用）。 */
     public static void install(){
         if(System.getProperty("drv.scenario") == null || installed) return;
@@ -162,7 +173,7 @@ public class MpScenario{
                 u.add();
                 units.add(u);
             }
-            Class<?> mergeCls = Class.forName("combine.units.UnitComboMerge", true, ml);
+            Class<?> mergeCls = Class.forName("combineunit.units.UnitComboMerge", true, unitMl());
             Unit mega = (Unit)mergeCls.getMethod("mergeSelected", Seq.class).invoke(null, units);
             System.out.println("[MP-HOST] 剧本：造 " + n + " 只 → 融合 " + (mega == null ? "失败" : ("成功 members=" + memberCount(mega) + " id=" + mega.id())));
             if(mega != null) System.out.println("[MP-PHASE] merge" + n + " " + state());
@@ -417,7 +428,7 @@ public class MpScenario{
                 units.add(u);
             }
             run2();
-            Class<?> mergeCls = Class.forName("combine.units.UnitComboMerge", true, ml);
+            Class<?> mergeCls = Class.forName("combineunit.units.UnitComboMerge", true, unitMl());
             miningMega = (Unit)mergeCls.getMethod("mergeSelected", Seq.class).invoke(null, units);
             if(miningMega == null){ System.out.println("[MP-HOST] 矿工巨兽融合失败"); return; }
             run2();
@@ -444,7 +455,7 @@ public class MpScenario{
         try{
             Unit mega = mega();
             if(mega == null){ System.out.println("[MP-HOST] 剧本：没有巨兽可解体"); return; }
-            Class<?> mergeCls = Class.forName("combine.units.UnitComboMerge", true, ml);
+            Class<?> mergeCls = Class.forName("combineunit.units.UnitComboMerge", true, unitMl());
             Object ok = mergeCls.getMethod("split", Unit.class).invoke(null, mega);
             System.out.println("[MP-HOST] 剧本：解体 = " + ok);
             System.out.println("[MP-PHASE] split " + state());
@@ -455,7 +466,7 @@ public class MpScenario{
 
     static Unit mega(){
         for(Unit u : Groups.unit)
-            if(u.team() == Team.sharded && u.getClass().getName().equals("combine.units.mega.MegaUnitEntity")) return u;
+            if(u.team() == Team.sharded && u.getClass().getName().equals("combineunit.units.mega.MegaUnitEntity")) return u;
         return null;
     }
 
@@ -486,7 +497,7 @@ public class MpScenario{
         for(Unit u : Groups.unit){
             if(u.team() != Team.sharded) continue;
             units++;
-            if(u.getClass().getName().equals("combine.units.mega.MegaUnitEntity")){ mega++; members += memberCount(u); }
+            if(u.getClass().getName().equals("combineunit.units.mega.MegaUnitEntity")){ mega++; members += memberCount(u); }
             if(u.type == UnitTypes.dagger) daggers++;
             if(u.type == UnitTypes.fortress) fortresses++;
             if(u.type == UnitTypes.oct) octs++;

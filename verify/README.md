@@ -176,6 +176,8 @@ verify/lagnet-selftest.py --count 3000 --rate 150 --latency 200   # 压更狠一
 | 测试 | 需要的模组 | 验什么 |
 |---|---|---|
 | `combine.dbg.SanityCheck` | 任意 | combine 真的加载了吗（防"假过"） |
+| `combine.dbg.ComboReflectBridgeTest` | 任意（有组合单位工厂/发射台） | **通用反射桥**：`ComboReflect` 对三种形态的组合建筑都必须成立 —— ①接口 default 方法（组合单位工厂的 `leader()/group()/rebuildCombo()/comboPreUpdate()` 全是 `IUnitCombo` 的 default 方法，实现类自己不声明，`getDeclaredMethod` 顺着类层次找不到，必须去接口里找）；②类自己写的方法（发射台/着陆台）；③只有字段没有方法的组合仓库（`group()` 兜底返回自己）。判定是**行为**不是"没抛异常"：塞 `pendingLeaderPos` 后调 `preUpdate()`，`comboLeader` 必须真的换成那台；加第三台邻居后调 `rebuildLocal()` 组必须变 3。改造前一旦漏了 default 方法这条，`preUpdate`/`rebuildLocal` 会**静默失效**（读档并池、连线变分组全不动，但一声不响） |
+| `combine.dbg.UnitComboBridgeTest` | **combine + combineunit 两个 jar**（例如 `/tmp/mp_both/data`） | 跨仓库反射桥：`combine.util.UnitComboBridge` 必须真的把工厂造出来的单位交给 combineunit 打组合标记 —— 无限火力下让组合单位工厂产出单位，用反射问 combineunit 的 `UnitComboDamage.comboId(Unit)`，必须 = 组长坐标 + 1（不是 0），且单位的实体类是 combineunit 的镜像类。只装 combine 时打印 SKIP 退出（不算失败） |
 | `combine.dbg.DetachTest` | js 或 java 扩展方块 | 设置里开关组合立刻拆池/还原/恢复 |
 | `combine.dbg.FilterTest` | js/java 扩展方块 | 显示可组合/不可组合 只列能开关的；NoCombo 排除的不出现 |
 | `combine.dbg.ContentTableTest` | 任意 | 手动名单不改内容表（`-Dseed=<方块名>`） |
@@ -187,15 +189,12 @@ verify/lagnet-selftest.py --count 3000 --rate 150 --latency 200   # 压更狠一
 | `combine.dbg.TurretClientAmmoTest` | 任意（有炮塔+容器+组合节点） | 用户报"客户端视角内炮台弹药时常归零然后恢复"：服务端炮塔组囤弹 → 取成员的 `writeSync` 字节（= 服务端发的 block snapshot）→ 在另一台炮塔上 `readSync`（= 客户端收快照做的事）→ 客户端看到的弹量必须和服务端**完全一致**。旧行为：原版 `ItemTurretBuild.read` 按**单台** maxAmmo 夹 + 用 short 存数量，3 台 duo 囤到 90 客户端只读出 30，囤到 40000 客户端读出 **-25536**（弹药条直接归零） |
 | `combine.dbg.MultiBuildPerfTest` | 任意（有铜墙/核心/传送带） | 用户报"服务端和客户端使用多线程建造后帧率下降十分明显"：量"空闲 / 多线程建造中 / 建造后"的每 tick 耗时（真实 delta 1/60），`-Dperf.block=wall\|conv` 选建组合墙还是传送带、`-Dperf.net=1` 打开 ComboNet 分段计时。修前：传送带 2.32ms/tick（峰值 27.7ms）、组合墙 4.10ms/tick（峰值 59.4ms）；修后：0.14ms / 1.29ms（峰值 1.8ms / 19.9ms） |
 | `combine.dbg.WallReplaceTest` | 任意（有铜墙/铅墙/核心） | 用户报"在墙上覆盖新的墙建造的时候多线程建造武器不工作"：8 面铜墙铺好后排 8 个"盖成铅墙"的计划（原版允许同类同尺寸墙互相覆盖，`Block.canReplace`），真实 delta 跑，要求核心机 1 秒内全部盖完、且不比摘掉建造武器的对照组慢。修前：挂座一个都不认领这种计划，只有单位自己一秒一格 → 实测 476 帧（7.9 秒，比对照组 229 帧还慢）；修后 9 帧（0.15 秒） |
-| `combine.dbg.MegaEnvTest` | 任意（有官方单位，`stell`/`merui` 等埃里克尔单位） | 用户报"任意埃里克尔地图、任意埃里克尔单位合体后直接爆炸"：把 `state.rules.env` 设成埃里克尔那样（`Env.scorching \| Env.terrestrial`，见 `Planets.erekir.defaultEnv`），用埃里克尔单位合体，要求巨兽类型支持该环境且 2 秒后仍存活。修前：巨兽类型停在原版 `UnitType` 的塞普罗默认 `envDisabled = Env.scorching` → `SupportsEnv=false` → `UnitComp.update()` 里 `Call.unitEnvDeath` 当场死亡（实测"融合后立刻在组里=false、死亡=true"）；修后占位类型 `envEnabled=Env.any` + 派生类型按成员推导（enabled 并集 / disabled·required 交集），2 秒后血量 1530/1530 仍存活 |
 | `combine.dbg.TurretCoolantTest` | `liquid-maker`（java 测试模组） | 冷却液选择：空选自动取效果最好的、手选生效、没货回退 |
 | `combine.dbg.SaveRoundTripTest` | 任意 | 核心+容器 存读档物品不翻倍 |
 | `combine.dbg.ModStorageCoreTest` | 需要"别的模组写的仓库"（`verify/make-modstorage-fixture.sh` 造一个） | 模组仓库挨着核心照样扩容、且不被组合压掉 |
 | `combine.dbg.CoreCapacityTest` | 任意 | 造/拆容器不丢不涨、存读档一分不差、仓库链读档不涨 |
 | `combine.dbg.UnitBarTest` | 任意 | 组合单位工厂/升级厂有原版那些 bar（含单位数量/上限） |
 | `combine.dbg.ClientSnapshotWipeTest` | 任意（有组合工厂 + 物品） | 联机快照不再清空物资：取「跟随者」的 `writeSync` 字节（= 服务端发的 block snapshot）再 `readSync`（= 客户端悬停看物品时做的），整组共用池子必须一份不少（旧行为：快照里是空模块 → `ItemModule.read` 直接清空整组） |
-| `combine.dbg.ComboFireSupportTest` | 任意（有 dagger + vela） | 组合火力共享：同组单位不会替队友发射治疗类武器（vela 的治疗激光）；借出方空闲、借入方开火时，带治疗的弹体必须为 0 |
-| `combine.dbg.MegaFieldTest` | 任意（有 mace + oct） | 组合巨兽：血上限=成员之和、力场合并成 1 份（上限=成员之和 → 力墙条不超 100%）、`flyingLayer`/`clipSize` 不是 late-init 留下的 -1（否则悬浮时画在地板下面=不显示） |
 | `combine.dbg.GeneratorPoolKeepTest` | 任意（有 combustion-generator） | 组合发电机满池后拆掉一台成员：池子不被按容量截断（容量只拦新物品进入）、世界物品总量守恒 |
 | `combine.dbg.GeneratorNuclearTest` | 任意（有 thorium-reactor） | 核模式发电效率 = 燃料 / 核反应堆总容量（≤1），组合进大容量建筑不再要巨量燃料 |
 | `combine.dbg.LinkWallRepairTest` | 任意（有 copper-wall + mend-projector） | 组合墙血池：伤害整组分摊；修复投影能把整组修到满血（不再永远"破损"） |
@@ -217,13 +216,7 @@ verify/lagnet-selftest.py --count 3000 --rate 150 --latency 200   # 压更狠一
 | `combine.dbg.PoolDedupeBugTest` | 任意（有容器） | 读档去重合并的漏项 bug（用户报的"物品异常减少"）：`ComboNet.mergeDistinctItems` 原来 `for(i=1..)` 只搬 `unique[1..]`，而目标是 `moduleOfFirst()` 挑的（**不一定是 `unique[0]`**）—— 一旦不是，第 0 份库存永远不会被搬走，紧接着 `mergeComponent()` 把各成员都指向目标，那份库存就被静默丢掉。本测试构造成"目标不是第 0 份"的布局：合并后目标里必须同时有 A 的 100 铜和 B 的 50 铅 |
 | `combine.dbg.SavePoolAuditTest` | **用户存档**（数据目录 `saves/` 下有 .msav，例如 `/tmp/mp_save/data`） | 用户存档的"组合池子审计"：读档后逐池子打印（模块身份 / 该分量容量 / 逐物品数量），并做四件事：①世界物品总量（按模块身份去重）与面板口径对照，抓"同一份库存被算两遍"；②存→读往返 3 轮不许改变总量；③空跑 600 tick 不许自己涨；④随机连/断组合节点、拆掉连线的成员，总量都不许多出来。用户报的存档（`sector-serpulo-20.msav`）读出来世界总量 **1,090,007,046**（一台激光钻机的池子：煤 522,167,664 / 硅 568,718,682，而该分量容量只有 1840），修复后降到 **124,380**、最大超容 2 倍 |
 | `combine.dbg.NodeNetPoolSwingTest` | 任意（有钻机/容器/工厂 + 组合节点） | 照用户视频搭的场景（只有 combine + 生存图）：一坨组合建筑（6 台钻机 + 容器/工厂）+ 2 个组合节点，灌物品后反复连/断节点，**逐 tick** 核对按模块身份去重的世界物品总量必须零跳变；并检查面板"分子分母同源"：`ComboNet.panelItemCap(self)`（该分量 Σ 基础容量）必须 ≥ 面板显示的那份池子里的量。视频现场是"组合钻机 x6 的面板显示 铜 1482273/60、硅 5555520/60，且每帧在百万/几十之间乱跳" |
-| `combine.dbg.MegaSyncTest` | 任意（有 mace/crawler/poly） | 组合巨兽的探雾/小地图/同步/存档：`type.fogRadius>0`（=0/-1 时一点都不探）、`drawMinimap` 没被关掉、融合后成员被**通知客户端移除**（幽灵成员会占着 id，导致快照整片错位）、快照/存档往返成员一致、真存档存读后巨兽还在、**数量并列时代表类型取血量最大**的那只（dagger+mace → mace）；外加**兼容别的自定义实体模组**：别的模组注册实体不影响巨兽 id（固定槽 250）、成员实体类 id 变了也能按名字读回、成员是自定义实体类（本模组的 CMechUnit 等）也能存读、升级前的旧成员格式仍能读 |
 | `combine.dbg.DrillComboSpeedTest` | 任意（有机械钻头） | 矿机组合挖速：同一片矿 1 台 vs 相邻 3 台组合矿机跑同样 tick，产量必须按台数成倍（3 台 ≈ 3×），面板另有「整组挖速」一行 |
-| `combine.dbg.MegaStatSumTest` | 任意（有 poly 这类工程/采矿单位） | 巨兽的建造/挖矿速率按成员累加，而且是**量行为**：给单位排同一条建造计划、跑同样 5 tick，量 `ConstructBuild.progress` 的增量（1 台 poly → 2 台 → 3 台必须是 1×/2×/3×）；挖矿同理量同样 300 tick 挖到手的物品数；再按 NetClient 的路子（EntityMapping 新建 + readSync）造一份"客户端实体"，它的 `type.buildSpeed/mineSpeed` 也必须是累加值；最后验力场：连续喂两个同步快照，力场能力必须还是**同一个实例**、展开动画 `radiusScale` 不被清零（清零 = 联机时"力墙一直放大缩小"），武器装填进度也不被快照清零 |
-| `combine.dbg.MegaGhostMemberTest` | 任意（有 dagger） | 用户报的"客户端进行单位合体会变成幽灵单位"：巨兽靠实体快照出现（UDP，可能先到），成员被收进去靠 `Call.unitDespawn` 通知（可靠通道，可能后到），中间那段客户端就是"巨兽已出现、成员还站着"。测试人为造出这个竞态（把成员按**原 id** 重新放回世界）再调 `removeGhostMembers()`：幽灵必须摘干净、巨兽自己不能误删、**同 id 但类型不同**的单位（防 id 复用）不能误删。配套：成员块格式加版本字节并把成员原始 id 写进去（老存档两种旧格式都还能读，见 `MegaSyncTest` 的 H/H2） |
-| `combine.dbg.MegaPayloadTest` | 任意（有 dagger/mace + 载荷黑洞方块） | 用户报的"巨兽图标变了、无法解体、进不了载荷黑洞销毁"三条一起量：①正常巨兽的代表类型/解体/`allowedInPayloads`/`spawnedByCore`/`isAI`；②**成员表丢了的巨兽**（读快照打嗝的降级态）不能不退化成占位类型（图标不能变）、也不能"什么都没法做"；③**载荷整条路**：原版载具能不能装下它（`canPickup`）、装进去后用 `PayloadVoid` 能不能销毁；④成员块带"代表类型"后，快照往返即使成员读丢了图标也不变 |
-| `combine.dbg.MegaMiningTest` | 任意（有 poly 这类采矿单位 + 附近有矿） | 用户报的"挖矿单位合体后没有挖矿光束、物品容量没了、操控时不显示身上有多少物品"：①3 台 poly 合体后 `itemCapacity` 必须 ≥ 成员之和（30×3=90）、`mineSpeed` = 10.5、`drawMineBeam=true`、`mineBeamOffset>0`（late 注册的类型原来停在 `Float.NEGATIVE_INFINITY`，光束起点算成 -Inf 画不出来）；②真的挖 300 tick，背包必须进物品（容量存在的实证），并且 `itemTime` 收敛到 1、`drawItems=true`、`itemOffsetY>0`（原版 `drawItems` 画"物品图标 + 底圈"，操控自己那只时还有数量数字；这三项缺一个都不显示）；③构成丢失（成员读不出来）时也不能退回占位类型（占位类型 `itemCapacity=-1`，就是用户看到的"物品容量没了"）。真联机里另有一张取证图：服务端把矿工巨兽用原版接管机制 `Call.unitControl` 交给客户端操控，截图里能看到巨兽身上的物品图标 + 数量 |
-| `combine.dbg.MegaSurviveTest` | 任意（有核心） | 联机剧本把巨兽生到**地图外**导致"融合成功、1 秒后单位没了"：地图内融合必须活过 2 秒；地图外（含同帧融合）用来复现原版"环境死亡"清理 |
 
 **组合巨兽的贴图规则**（`mega`/`legs`/`mech` 三个真客户端模式各拍一张对比图）：
 
@@ -236,6 +229,20 @@ verify/lagnet-selftest.py --count 3000 --rate 150 --latency 200   # 压更狠一
 | `combine.dbg.PowerGridAuditTest` | 任意（有组合工厂/电源/电力节点） | 组合体↔电网：放好/读档后按原版连接规则重算分量，必须同图、必须有 updater、必须有产出（S1~S8：同类/跨类型组合工厂、发电机组、节点跨距离接电、协作组合、连接器链、电池） |
 | `combine.dbg.PowerFreshLoadTest` | 任意 | 两阶段：`-Dpf.mode=write` 摆一个密集混合基地（组合工厂群+协作组合+节点/连接器+电源）并存档，`-Dpf.mode=read` **另起进程**读档，整张图电网必须自洽、不用刺激（`-Dpf.seed=` 换随机基地） |
 | `combine.dbg.PowerFuzzTest` | 任意 | 电网不变量模糊测试：随机放/拆方块 + 随机存读档，每步检查「同一分量同一张活电网 + 有电源必须发电」（`-Dfz.seed=` / `-Dfz.steps=`；失败会打印操作历史，`-Dfz.replay=<文件>` 可回放） |
+
+## 单位侧机制已经拆到 combineunit 仓库
+
+组合巨兽（合体/解体/按成员推导属性）、共享承伤/修复、共享火力、手动编组 UI，连同
+单位镜像实体类，都搬到了 **combineunit** 仓库；对应的逻辑测试与真客户端截图也在那边
+（`combineunit/verify/`，包名 `combineunit.dbg.*`）。本仓库只留**建筑侧**：
+
+- 组合单位工厂/升级厂/构造机/发射台/着陆台：`src/combine/units/`（`IUnitCombo` 是它们自己的
+  组合簿记接口，留在这里）；
+- 工厂造出单位后"打组合标记"这一个接触点，走 `combine.util.UnitComboBridge` 反射调
+  combineunit 的 `UnitComboDamage.tagProduced`（没装 combineunit 时静默跳过，建筑侧功能不受影响）；
+- 真客户端驱动里的 `mega`/`legs`/`mech`/`duo`/`shipmega` 场景与联机剧本（`run-mp.sh`）的
+  **单位阶段**都需要数据目录里同时有 `combineunit.jar`（把 build/libs/combineunit.jar 放进
+  `data/mods/` 即可），否则那些阶段只会打印"融合失败/没有巨兽"——这是"没装单位侧模组"的预期行为。
 
 ## 复现排版问题
 

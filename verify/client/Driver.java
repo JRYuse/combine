@@ -364,12 +364,24 @@ public class Driver extends Mod{
 
     static Object combineCall(String cls, String method, Class<?>[] sig, Object... args){
         try{
-            Class<?> c = Class.forName(cls, true, ml);
+            // 单位侧机制（组合巨兽/共享承伤…）已经拆到 combineunit 模组：按名字前缀选它的类加载器
+            // （没装 combineunit 时退回 combine 的加载器 → ClassNotFoundException，调用方自己兜）
+            ClassLoader loader = cls.startsWith("combineunit.") ? unitMl() : ml;
+            Class<?> c = Class.forName(cls, true, loader);
             java.lang.reflect.Method m = sig == null ? null : c.getMethod(method, sig);
             if(m == null) m = c.getMethod(method);
             m.setAccessible(true);
             return m.invoke(null, args);
         }catch(Throwable t){ Log.err("[drv] 调用 @.@ 失败", cls, method, t); return null; }
+    }
+
+    /** 单位侧机制（组合巨兽…）在 combineunit 模组里：优先用它的类加载器，没装则退回 combine 的。 */
+    static ClassLoader unitMl(){
+        try{
+            var m = Vars.mods.getMod("combineunit");
+            if(m != null && m.main != null) return m.main.getClass().getClassLoader();
+        }catch(Throwable ignored){}
+        return ml;
     }
 
     static void setupMegaScene(){
@@ -797,7 +809,7 @@ public class Driver extends Mod{
     static void legsMerge(){
         try{
             Object merged = legsA == null ? null
-                : combineCall("combine.units.UnitComboMerge", "merge", new Class<?>[]{Unit.class}, legsA);
+                : combineCall("combineunit.units.UnitComboMerge", "merge", new Class<?>[]{Unit.class}, legsA);
             if(merged instanceof Unit u) legsMega = u;
             Log.info("[drv] legs 融合结果=@", merged);
         }catch(Throwable t){ Log.err("[drv] legsMerge failed", t); }
@@ -912,7 +924,7 @@ public class Driver extends Mod{
     static void duoMerge(){
         try{
             Object merged = duoDagger == null ? null
-                : combineCall("combine.units.UnitComboMerge", "merge", new Class<?>[]{Unit.class}, duoDagger);
+                : combineCall("combineunit.units.UnitComboMerge", "merge", new Class<?>[]{Unit.class}, duoDagger);
             if(merged instanceof Unit u){
                 duoMega = u;
                 camTarget = u;
@@ -1053,7 +1065,7 @@ public class Driver extends Mod{
     static void shipMerge(){
         try{
             Object merged = rissoA == null ? null
-                : combineCall("combine.units.UnitComboMerge", "merge", new Class<?>[]{Unit.class}, rissoA);
+                : combineCall("combineunit.units.UnitComboMerge", "merge", new Class<?>[]{Unit.class}, rissoA);
             if(merged instanceof Unit u) shipMegaUnit = u;
             Log.info("[drv] shipmega 融合结果=@", merged);
         }catch(Throwable t){ Log.err("[drv] shipMerge failed", t); }
@@ -1134,9 +1146,9 @@ public class Driver extends Mod{
                 maceUnit == null ? "-" : maceUnit.isValid(), maceUnit == null ? "-" : maceUnit.isAdded(), maceUnit == null ? -1f : maceUnit.health(),
                 octUnit == null ? "-" : octUnit.isValid(), octUnit == null ? "-" : octUnit.isAdded(), octUnit == null ? -1f : octUnit.health(),
                 octUnit == null ? -1f : octUnit.shield());
-            Object gid = combineCall("combine.units.UnitComboDamage", "comboId", new Class<?>[]{Unit.class}, maceUnit);
+            Object gid = combineCall("combineunit.units.UnitComboDamage", "comboId", new Class<?>[]{Unit.class}, maceUnit);
             Log.info("[drv] mace comboId=@", gid);
-            Object merged = combineCall("combine.units.UnitComboMerge", "merge", new Class<?>[]{Unit.class}, maceUnit);
+            Object merged = combineCall("combineunit.units.UnitComboMerge", "merge", new Class<?>[]{Unit.class}, maceUnit);
             Log.info("[drv] 融合结果=@", merged);
             if(merged instanceof Unit u) megaUnit = u;
             if(megaUnit != null){
@@ -1165,7 +1177,7 @@ public class Driver extends Mod{
                     a instanceof mindustry.entities.abilities.ForceFieldAbility ff ? ff.scaledMax(u) : "-");
             }
             try{
-                Class<?> mt = Class.forName("combine.units.mega.MegaUnitType", true, ml);
+                Class<?> mt = Class.forName("combineunit.units.mega.MegaUnitType", true, unitMl());
                 Log.info("[drv]   type 是 MegaUnitType? = @ 类=@", mt.isInstance(u.type), u.type.getClass().getName());
             }catch(Throwable t){ Log.err("[drv] 类型检查失败", t); }
             if(dominant instanceof UnitType dt){
@@ -1386,14 +1398,14 @@ public class Driver extends Mod{
     /** 客户端这一侧看到的巨兽实体（按类名找，拿不到就 null）。 */
     static Unit megaUnit(){
         for(Unit u : Groups.unit)
-            if(u.getClass().getName().equals("combine.units.mega.MegaUnitEntity")) return u;
+            if(u.getClass().getName().equals("combineunit.units.mega.MegaUnitEntity")) return u;
         return null;
     }
 
     /** 正在挖矿的巨兽（收尾的"挖矿光束"取证：镜头要钉在它身上）。 */
     static Unit miningMega(){
         for(Unit u : Groups.unit){
-            if(!u.getClass().getName().equals("combine.units.mega.MegaUnitEntity")) continue;
+            if(!u.getClass().getName().equals("combineunit.units.mega.MegaUnitEntity")) continue;
             if(u.mining()){
                 if(!mpZoomed){
                     mpZoomed = true;
@@ -1516,7 +1528,7 @@ public class Driver extends Mod{
             for(Unit u : Groups.unit){
                 if(u == null || !u.isAdded() || u.team() != Vars.player.team()) continue;
                 if(u.isPlayer() && !includeSelf) continue;
-                if(u.getClass().getName().equals("combine.units.mega.MegaUnitEntity")) continue;
+                if(u.getClass().getName().equals("combineunit.units.mega.MegaUnitEntity")) continue;
                 cand.add(u);
             }
             if(cand.size < 2){
@@ -1533,7 +1545,7 @@ public class Driver extends Mod{
                 sel.add(cand.get(0));
                 sel.add(cand.get(1));
             }
-            Class<?> c = Class.forName("combine.units.UnitComboMerge", true, ml);
+            Class<?> c = Class.forName("combineunit.units.UnitComboMerge", true, unitMl());
             c.getMethod("requestMergeSelected", Seq.class).invoke(null, sel);
             Log.info("[MP-REQ] t=@s 客户端请求合体: @（@,@）", (int)(arc.util.Time.time / 60f),
                 sel.map(u -> u.id() + ":" + u.type.name), (int)sel.first().x, (int)sel.first().y);
@@ -1547,7 +1559,7 @@ public class Driver extends Mod{
         for(Unit u : Groups.unit){
             if(u.team() != Vars.player.team()) continue;
             units++;
-            if(u.getClass().getName().equals("combine.units.mega.MegaUnitEntity")){
+            if(u.getClass().getName().equals("combineunit.units.mega.MegaUnitEntity")){
                 mega++;
                 try{ members += (Integer)u.getClass().getMethod("memberCount").invoke(u); }catch(Throwable ignored){}
             }

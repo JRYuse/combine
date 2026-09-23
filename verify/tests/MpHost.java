@@ -140,7 +140,7 @@ public class MpHost implements ApplicationListener{
                 units.add(u);
             }
             run(2);
-            Class<?> mergeCls = Class.forName("combine.units.UnitComboMerge", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+            Class<?> mergeCls = Class.forName("combineunit.units.UnitComboMerge", true, unitLoader());
             java.lang.reflect.Method mergeSelected = mergeCls.getMethod("mergeSelected", Seq.class);
             Unit mega = (Unit)mergeSelected.invoke(null, units);
             run(5);
@@ -155,7 +155,7 @@ public class MpHost implements ApplicationListener{
         try{
             Unit mega = mega();
             if(mega == null){ System.out.println("[MP-HOST] 剧本：没有巨兽可解体"); return; }
-            Class<?> mergeCls = Class.forName("combine.units.UnitComboMerge", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+            Class<?> mergeCls = Class.forName("combineunit.units.UnitComboMerge", true, unitLoader());
             java.lang.reflect.Method split = mergeCls.getMethod("split", Unit.class);
             boolean ok = (Boolean)split.invoke(null, mega);
             run(5);
@@ -167,8 +167,18 @@ public class MpHost implements ApplicationListener{
 
     static Unit mega(){
         for(Unit u : Groups.unit)
-            if(u.team() == Team.sharded && u.getClass().getName().equals("combine.units.mega.MegaUnitEntity")) return u;
+            if(u.team() == Team.sharded && u.getClass().getName().equals("combineunit.units.mega.MegaUnitEntity")) return u;
         return null;
+    }
+
+    /** 单位侧机制（组合巨兽…）在 combineunit 模组里：优先用它的类加载器，没装就退回 combine 的
+     *（联机剧本的单位侧阶段需要数据目录里同时有 combineunit.jar，见 verify/README.md）。 */
+    static ClassLoader unitLoader(){
+        try{
+            var m = Vars.mods.getMod("combineunit");
+            if(m != null && m.main != null) return m.main.getClass().getClassLoader();
+        }catch(Throwable ignored){}
+        return Vars.mods.getMod("combine").main.getClass().getClassLoader();
     }
 
     static int memberCount(Unit u){
@@ -181,7 +191,7 @@ public class MpHost implements ApplicationListener{
         for(Unit u : Groups.unit){
             if(u.team() != Team.sharded) continue;
             units++;
-            if(u.getClass().getName().equals("combine.units.mega.MegaUnitEntity")){ mega++; members += memberCount(u); }
+            if(u.getClass().getName().equals("combineunit.units.mega.MegaUnitEntity")){ mega++; members += memberCount(u); }
             if(u.type == UnitTypes.dagger) daggers++;
             if(u.type == UnitTypes.fortress) fortresses++;
             if(u.type == UnitTypes.oct) octs++;
