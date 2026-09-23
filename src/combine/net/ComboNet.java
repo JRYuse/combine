@@ -152,6 +152,50 @@ public class ComboNet {
         loadingWorld = true;
         // 读档后头几帧仍按去重语义合并（本地组合体/网络还在重建，见 loadDedupeFrames 注释）
         loadDedupeFrames = loadDedupeGraceFrames;
+        // 这一轮读档的"离谱池子体检"还没做（见 repairInsanePools）
+        poolRepairDone = false;
+    }
+
+    /** 本轮读档的池子体检是否已做过。 */
+    private static boolean poolRepairDone = false;
+
+    /**
+     * 读档体检：把**明显被算岔的池子**夹回容量上限。
+     *
+     * <p>为什么需要：用户存档里出现过一台激光钻机的池子写着 {@code 煤=522167664}、
+     * {@code 硅=568718682}，而该分量容量只有 1840（差了 30 万倍）—— 这是以前版本在某条
+     * "瞎连"路径上把池子反复相加留下的烂账，数字已经烧进存档，光修代码清不掉。
+     *
+     * <p>阈值故意定得极保守（{@code max(分量容量×1000, 1000 万)}），正常玩法堆不到这个量级：
+     * 只有确凿的坏账才会被夹。夹的时候逐条打日志，方便玩家对照。
+     */
+    public static void repairInsanePools(){
+        if(poolRepairDone) return;
+        poolRepairDone = true;
+        try{
+            ObjectSet<ItemModule> seen = new ObjectSet<>();
+            int fixed = 0;
+            for(Building b : allComboBuildings()){
+                if(b == null || !b.isValid() || b.items == null || !seen.add(b.items)) continue;
+                Seq<Building> members = componentMembers(b);
+                int cap = Math.max(componentItemCap(members), 1);
+                long limit = Math.max((long)cap * 1000L, 10_000_000L);
+                for(Item item : content.items()){
+                    int amt = b.items.get(item);
+                    if(amt <= limit) continue;
+                    b.items.set(item, cap);
+                    fixed++;
+                    Log.warn("[combine] 存档池子坏账已夹回容量：@ 的 @ @ → @（该分量容量 @，阈值 @）",
+                        b.block.name, item.name, amt, cap, cap, limit);
+                }
+            }
+            if(fixed > 0){
+                Log.warn("[combine] 共修正 @ 项离谱库存（历史版本「瞎连」留下的坏账，已夹回该分量容量）", fixed);
+                markDirty();
+            }
+        }catch(Throwable t){
+            Log.err("[combine] 读档池子体检失败（跳过，不影响游戏）", t);
+        }
     }
 
     public static void rebuildLoading(){
@@ -666,6 +710,8 @@ public class ComboNet {
 
             // 读档语义只在读档过程中生效；任何一次运行期重建都意味着读档已经结束
             if(!loading && !world.isGenerating()) loadingWorld = false;
+            // 读档窗口结束 → 做一次"离谱池子"体检（一次读档只做一次；见 repairInsanePools）
+            if(loadPhase && !poolRepairDone && !loading && !world.isGenerating()) repairInsanePools();
 
             heatAlloc.clear();
         }catch(Throwable t){
@@ -1113,12 +1159,18 @@ public class ComboNet {
      * 硅 5555520/60，每帧还在百万/几十之间跳）。分子分母必须同源：池子是网络的，分母也得是网络的。
      */
     public static int panelItemCap(Building self){
-        return Math.max(componentItemCap(componentMembers(self)), 1);
+        int cap = componentItemCap(componentMembers(self));
+        // 不在任何组合网络里（分量只有自己）时用这台方块自己的基础容量：
+        // 否则核心这类方块会算出 1，面板/审计就会把"核心里 12000 物品"误判成坏账
+        if(cap <= 0) cap = ComboReflect.baseItemCap(self);
+        return Math.max(cap, 1);
     }
 
     /** 同上，液体版。 */
     public static float panelLiquidCap(Building self){
-        return Math.max(componentLiquidCap(componentMembers(self)), 1f);
+        float cap = componentLiquidCap(componentMembers(self));
+        if(cap <= 0f) cap = ComboReflect.baseLiquidCap(self);
+        return Math.max(cap, 1f);
     }
 
     /**
