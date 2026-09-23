@@ -173,10 +173,16 @@ public class CoopPanel {
       table.add("[lightgray]构成: " + comp + "[]").left().row();
 
       // 共享物品池（每行 3 个）
-      int itemCap = Math.max(build.block.itemCapacity, 1);
+      // 【分母必须和池子同源】池子可能是**整张网络**共用的那一份（组合节点/连接器接起来的），
+      // 这时用"这台方块自己的容量"当分母就会出现"1482273/60"这种数字
+      //（用户视频现场：组合钻机 x6 的面板显示 铜 1482273/60、硅 5555520/60，还在每帧乱跳）。
+      int itemCap = Math.max(combine.net.ComboNet.panelItemCap(build), Math.max(build.block.itemCapacity, 1));
+      // 【池子也要取"网络实际共用的那一份"】并池之后池子可能躺在网络里别的成员手上，
+      // 直接读 build.items 会显示"（空）"或在不同模块之间乱跳（视频里 1482273 → 487 → 8）。
+      mindustry.world.modules.ItemModule pool = combine.net.ComboNet.panelItemPool(build);
       Seq<Item> items = new Seq<>();
-      if (build.items != null) {
-        for (Item item : content.items()) if (build.items.get(item) > 0) items.add(item);
+      if (pool != null) {
+        for (Item item : content.items()) if (pool.get(item) > 0) items.add(item);
       }
       table.add("[lightgray]物品池[]").left().row();
       if (items.isEmpty()) {
@@ -186,10 +192,10 @@ public class CoopPanel {
           Table rowT = new Table();
           for (int k = i; k < Math.min(i + 3, items.size); k++) {
             Item item = items.get(k);
-            int amount = build.items.get(item);
+            int amount = pool.get(item);
             Table cell = new Table();
             cell.add(new Image(item.uiIcon)).size(26f).pad(2f);
-            cell.add(amount + "/" + build.getMaximumAccepted(item)).pad(2f);
+            cell.add(amount + "/" + Math.max(itemCap, build.getMaximumAccepted(item))).pad(2f);
             rowT.add(cell).left();
           }
           table.add(rowT).left().row();
@@ -197,10 +203,11 @@ public class CoopPanel {
       }
 
       // 共享液体池（每行 3 个）
-      float liquidCap = Math.max(build.block.liquidCapacity, 1f);
+      float liquidCap = Math.max(combine.net.ComboNet.panelLiquidCap(build), Math.max(build.block.liquidCapacity, 1f));
+      mindustry.world.modules.LiquidModule lpool = combine.net.ComboNet.panelLiquidPool(build);
       Seq<Liquid> liquids = new Seq<>();
-      if (build.liquids != null) {
-        for (Liquid liquid : content.liquids()) if (build.liquids.get(liquid) > 0.001f) liquids.add(liquid);
+      if (lpool != null) {
+        for (Liquid liquid : content.liquids()) if (lpool.get(liquid) > 0.001f) liquids.add(liquid);
       }
       table.add("[lightgray]液体池[]").left().row();
       if (liquids.isEmpty()) {
@@ -210,7 +217,7 @@ public class CoopPanel {
           Table rowT = new Table();
           for (int k = i; k < Math.min(i + 3, liquids.size); k++) {
             Liquid liquid = liquids.get(k);
-            float amount = build.liquids.get(liquid);
+            float amount = lpool.get(liquid);
             Table cell = new Table();
             cell.add(new Image(liquid.uiIcon)).size(26f).pad(2f);
             cell.add(Math.round(amount) + "/" + (int) liquidCap).pad(2f);

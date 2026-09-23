@@ -1104,6 +1104,59 @@ public class ComboNet {
         return total;
     }
 
+    /**
+     * 面板用：这台建筑所在**分量**（= 共用同一份池子的那整张网络）的物品容量。
+     *
+     * <p>为什么要单独给一个：协作组合面板原来打印的分母是**这台方块自己**的容量
+     * （例如"组合钻机 x6"= 6 台钻机的 60），而它显示的池子却可能是**整张网络**共用的那一份
+     * —— 于是面板上出现"1482273/60"这种数字（用户视频里的现场：铜 1482273/60、
+     * 硅 5555520/60，每帧还在百万/几十之间跳）。分子分母必须同源：池子是网络的，分母也得是网络的。
+     */
+    public static int panelItemCap(Building self){
+        return Math.max(componentItemCap(componentMembers(self)), 1);
+    }
+
+    /** 同上，液体版。 */
+    public static float panelLiquidCap(Building self){
+        return Math.max(componentLiquidCap(componentMembers(self)), 1f);
+    }
+
+    /**
+     * 面板用：这台建筑所在网络**实际共用的那一份**物品模块（网络已经共用时就是它自己的那份）。
+     *
+     * <p>面板原来直接读 {@code build.items}（这台方块自己的模块），可并池之后池子可能躺在网络里
+     * 别的成员手里 —— 于是面板要么显示"（空）"，要么在不同模块之间来回跳（用户视频里
+     * 组合钻机的面板数字每帧在百万/几十之间跳，就是这个）。
+     */
+    public static ItemModule panelItemPool(Building self){
+        if(self == null) return null;
+        // 1) 节点/连接器接起来的**网络**共用池
+        ItemModule netPool = poolModuleFor(self);
+        if(netPool != null) return netPool;
+        // 2) 本地组合体（相邻成组）里成员真的共用一份时，取那一份
+        ItemModule shared = null;
+        for(Building m : ComboReflect.group(self)){
+            if(m == null || m.items == null) continue;
+            if(shared == null) shared = m.items;
+            else if(shared != m.items) return self.items;   // 没共用：各自看各自的
+        }
+        return shared != null ? shared : self.items;
+    }
+
+    /** 同上，液体版。 */
+    public static LiquidModule panelLiquidPool(Building self){
+        if(self == null) return null;
+        LiquidModule netPool = poolLiquidFor(self);
+        if(netPool != null) return netPool;
+        LiquidModule shared = null;
+        for(Building m : ComboReflect.group(self)){
+            if(m == null || m.liquids == null) continue;
+            if(shared == null) shared = m.liquids;
+            else if(shared != m.liquids) return self.liquids;
+        }
+        return shared != null ? shared : self.liquids;
+    }
+
     private static float componentLiquidCap(Seq<Building> members){
         float total = 0f;
         for(Building m : members) total += ComboReflect.baseLiquidCap(m);
