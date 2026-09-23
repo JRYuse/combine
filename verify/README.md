@@ -186,6 +186,8 @@ verify/lagnet-selftest.py --count 3000 --rate 150 --latency 200   # 压更狠一
 | `combine.dbg.TurretAmmoTest` | 任意（有炮塔+容器） | 仓库↔炮塔：每种弹药都进、弹仓按台数放大、从池里扣 |
 | `combine.dbg.TurretClientAmmoTest` | 任意（有炮塔+容器+组合节点） | 用户报"客户端视角内炮台弹药时常归零然后恢复"：服务端炮塔组囤弹 → 取成员的 `writeSync` 字节（= 服务端发的 block snapshot）→ 在另一台炮塔上 `readSync`（= 客户端收快照做的事）→ 客户端看到的弹量必须和服务端**完全一致**。旧行为：原版 `ItemTurretBuild.read` 按**单台** maxAmmo 夹 + 用 short 存数量，3 台 duo 囤到 90 客户端只读出 30，囤到 40000 客户端读出 **-25536**（弹药条直接归零） |
 | `combine.dbg.MultiBuildPerfTest` | 任意（有铜墙/核心/传送带） | 用户报"服务端和客户端使用多线程建造后帧率下降十分明显"：量"空闲 / 多线程建造中 / 建造后"的每 tick 耗时（真实 delta 1/60），`-Dperf.block=wall\|conv` 选建组合墙还是传送带、`-Dperf.net=1` 打开 ComboNet 分段计时。修前：传送带 2.32ms/tick（峰值 27.7ms）、组合墙 4.10ms/tick（峰值 59.4ms）；修后：0.14ms / 1.29ms（峰值 1.8ms / 19.9ms） |
+| `combine.dbg.WallReplaceTest` | 任意（有铜墙/铅墙/核心） | 用户报"在墙上覆盖新的墙建造的时候多线程建造武器不工作"：8 面铜墙铺好后排 8 个"盖成铅墙"的计划（原版允许同类同尺寸墙互相覆盖，`Block.canReplace`），真实 delta 跑，要求核心机 1 秒内全部盖完、且不比摘掉建造武器的对照组慢。修前：挂座一个都不认领这种计划，只有单位自己一秒一格 → 实测 476 帧（7.9 秒，比对照组 229 帧还慢）；修后 9 帧（0.15 秒） |
+| `combine.dbg.MegaEnvTest` | 任意（有官方单位，`stell`/`merui` 等埃里克尔单位） | 用户报"任意埃里克尔地图、任意埃里克尔单位合体后直接爆炸"：把 `state.rules.env` 设成埃里克尔那样（`Env.scorching \| Env.terrestrial`，见 `Planets.erekir.defaultEnv`），用埃里克尔单位合体，要求巨兽类型支持该环境且 2 秒后仍存活。修前：巨兽类型停在原版 `UnitType` 的塞普罗默认 `envDisabled = Env.scorching` → `SupportsEnv=false` → `UnitComp.update()` 里 `Call.unitEnvDeath` 当场死亡（实测"融合后立刻在组里=false、死亡=true"）；修后占位类型 `envEnabled=Env.any` + 派生类型按成员推导（enabled 并集 / disabled·required 交集），2 秒后血量 1530/1530 仍存活 |
 | `combine.dbg.TurretCoolantTest` | `liquid-maker`（java 测试模组） | 冷却液选择：空选自动取效果最好的、手选生效、没货回退 |
 | `combine.dbg.SaveRoundTripTest` | 任意 | 核心+容器 存读档物品不翻倍 |
 | `combine.dbg.ModStorageCoreTest` | 需要"别的模组写的仓库"（`verify/make-modstorage-fixture.sh` 造一个） | 模组仓库挨着核心照样扩容、且不被组合压掉 |

@@ -13,6 +13,7 @@ import mindustry.gen.Legsc;
 import mindustry.gen.Tankc;
 import mindustry.gen.Unit;
 import mindustry.type.UnitType;
+import mindustry.world.meta.Env;
 
 /**
  * 组合巨兽的单位类型。无自己的贴图——绘制时取成员中"代表类型"
@@ -138,6 +139,19 @@ public class MegaUnitType extends UnitType {
     public MegaUnitType(String name) {
         super(name);
         constructor = MegaUnitEntity::new;
+        // 【环境适应：占位类型必须最宽松】
+        // 原版 UnitType 的默认口径是 envEnabled = Env.terrestrial、envDisabled = Env.scorching
+        //（塞普罗口径），而埃里克尔地图的 state.rules.env 就是
+        // Env.scorching | Env.terrestrial（见 Planets.erekir.defaultEnv）—— 埃里克尔单位自己都是
+        // ErekirUnitType（envDisabled = Env.space，不禁灼热），可巨兽类型是模组 late 注册的，
+        // 从没按成员推导过这两项。于是合体之后 UnitComp.update() 里
+        // `!type.supportsEnv(state.rules.env)` 立刻成立 → Call.unitEnvDeath → 单位当场死亡
+        //（用户报的"任意埃里克尔地图、任意埃里克尔单位合体后直接爆炸"）。
+        // 这里给"成员还没推导出来"（快照刚到/成员读丢）的兜底：最宽松；
+        // 真正按成员构成推导见 compTypeFor()。
+        envEnabled = Env.any;
+        envDisabled = 0;
+        envRequired = 0;
         // 兜底数值（融合时会被按成员重算的实例值覆盖）
         hitSize = 20f;
         health = 1000f;

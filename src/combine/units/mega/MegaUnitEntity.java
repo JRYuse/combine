@@ -563,6 +563,15 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
         float spd = 0f, mineSpd = 0f, mineRange = 0f, buildSpd = 0f, buildRange = 0f;
         int tier = -1, cap = 0, spdCount = 0;
         boolean mineFloor = false, mineWalls = false;
+        // 【环境适应按成员推导】合体单位必须能在"成员待得住的环境"里待得住。
+        // 口径：envEnabled 取**并集**（有一个成员能在那种环境里活着，合体就活着 ——
+        // 成员合体那一刻本来就都活着，所以当前环境必然在并集里）、
+        // envDisabled/envRequired 取**交集**（所有成员都受不了的环境才算合体受不了）。
+        // 不推导的后果（用户报的"埃里克尔合体单位后直接爆炸"）：占位类型停在原版 UnitType 的
+        // 塞普罗默认值 envDisabled = Env.scorching，而埃里克尔地图 env = scorching|terrestrial
+        //（Planets.erekir.defaultEnv）→ UnitComp.update() 里 `!type.supportsEnv(...)` 成立
+        // → Call.unitEnvDeath → 合体当场死。
+        int envOn = 0, envOff = ~0, envReq = ~0;
         for(UnitType t : tally.keys()){
             // 【按成员个数加权】这里 tally 是按"类型"遍历的（每种类型只来一次），
             // 所以求和必须乘上该类型的成员数 —— 原来只加一次、计数却按成员数，
@@ -588,7 +597,13 @@ public class MegaUnitEntity extends UnitEntity implements Legsc, Crawlc, Tankc{
             buildRange = Math.max(buildRange, t.buildRange);
             // 物品上限 = Σ 成员（不是 Σ 类型）
             cap += Math.max(t.itemCapacity, 0) * count;
+            envOn |= t.envEnabled;
+            envOff &= t.envDisabled;
+            envReq &= t.envRequired;
         }
+        if(envOn != 0) ct.envEnabled = envOn;
+        if(envOff != ~0) ct.envDisabled = envOff;
+        if(envReq != ~0) ct.envRequired = envReq;
         ct.speed = spdCount > 0 ? Math.max(spd / spdCount, 0.3f) : 0.8f;
         ct.mineTier = tier;
         ct.mineSpeed = mineSpd;

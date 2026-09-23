@@ -367,8 +367,17 @@ public class MultiBuildWeapon extends Weapon {
       // 例外1 废墟修复 —— 格子上就是衍生物团队的**同名**方块，原版会当场修好，属于"可认领"
       // 例外2 原地改方向 —— 同格同名我方方块、只是方向不同，原版 beginPlace 会当场 quickRotate，
       //       也属于"可认领"（否则批量改方向时挂座一个都认不了，计划还被当成"已造好"删掉）
-      if(existing != null && !constructing && !instantPlan(plan, weaponUnit.team))
-        return false;
+      // 例外3 【覆盖建造】格子上是**别的**方块（同类同尺寸、可被替换）——原版
+      //       Build.beginPlace 就是"拆掉旧的、盖上新的"（用户报的"在墙上覆盖新的墙建造时
+      //       多线程建造武器不工作"：拖一片新墙盖旧墙，所有挂座都把这种计划当成"这格已经造好了"
+      //       拒收，只剩单位自己的建造逻辑一秒一格 → 看着像"只能单线程"）。
+      if(existing != null && !constructing && !instantPlan(plan, weaponUnit.team)){
+        if(existing.team != weaponUnit.team || existing.block == plan.block)
+          return false;
+        // 到底能不能盖（方块替换规则、组/尺寸、地形都在里面）交给原版判一次
+        if(!Build.validPlace(plan.block, weaponUnit.team, plan.x, plan.y, plan.rotation))
+          return false;
+      }
     }
 
     // 核心现在拿不出料的计划不认领（和原版 BuilderComp.shouldSkip 同一个判据）：
