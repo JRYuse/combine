@@ -177,6 +177,7 @@ verify/lagnet-selftest.py --count 3000 --rate 150 --latency 200   # 压更狠一
 |---|---|---|
 | `combine.dbg.SanityCheck` | 任意 | combine 真的加载了吗（防"假过"） |
 | `combine.dbg.ComboReflectBridgeTest` | 任意（有组合单位工厂/发射台） | **通用反射桥**：`ComboReflect` 对三种形态的组合建筑都必须成立 —— ①接口 default 方法（组合单位工厂的 `leader()/group()/rebuildCombo()/comboPreUpdate()` 全是 `IUnitCombo` 的 default 方法，实现类自己不声明，`getDeclaredMethod` 顺着类层次找不到，必须去接口里找）；②类自己写的方法（发射台/着陆台）；③只有字段没有方法的组合仓库（`group()` 兜底返回自己）。判定是**行为**不是"没抛异常"：塞 `pendingLeaderPos` 后调 `preUpdate()`，`comboLeader` 必须真的换成那台；加第三台邻居后调 `rebuildLocal()` 组必须变 3。改造前一旦漏了 default 方法这条，`preUpdate`/`rebuildLocal` 会**静默失效**（读档并池、连线变分组全不动，但一声不响） |
+| `combine.dbg.MegaRepairFireTest` | **combine + combineunit 两个 jar**（例如 `/tmp/mp_both/data`） | 用户报的"组合了 mega 的巨兽单位在 mega 武器去修复建筑的时候，其他武器的开火会损坏己方建筑"：①基线——同队 `Damage.damage` 与同队单位的子弹都**不会**伤到己方建筑（原版有敌我判定，实测 160→160，共 18 发）；②"借火"（`UnitComboFire`）修前会把同组空闲成员的武器照着开火者跟踪的**己方建筑**（维修/建造武器跟踪的就是它）或**瞄准点压在己方建筑上**时开火，实测己方半血墙各被借火打 14 发；修后这两种情况都是 0 发，而敌方目标照常 14 发。③巨兽自己 `groupable=false`（不参与借火），这一点也印在日志里，免得把"巨兽"和"普通组合"两条路径混起来查 |
 | `combine.dbg.UnitComboBridgeTest` | **combine + combineunit 两个 jar**（例如 `/tmp/mp_both/data`） | 跨仓库反射桥：`combine.util.UnitComboBridge` 必须真的把工厂造出来的单位交给 combineunit 打组合标记 —— 无限火力下让组合单位工厂产出单位，用反射问 combineunit 的 `UnitComboDamage.comboId(Unit)`，必须 = 组长坐标 + 1（不是 0），且单位的实体类是 combineunit 的镜像类。只装 combine 时打印 SKIP 退出（不算失败） |
 | `combine.dbg.DetachTest` | js 或 java 扩展方块 | 设置里开关组合立刻拆池/还原/恢复 |
 | `combine.dbg.FilterTest` | js/java 扩展方块 | 显示可组合/不可组合 只列能开关的；NoCombo 排除的不出现 |
