@@ -1049,7 +1049,14 @@ public class ComboNet {
             if(!dup) unique.add(mod);
         }
         ItemModule dst = moduleOfFirst(members, unique);
-        for(int i = 1; i < unique.size; i++) moveItems(unique.get(i), dst);
+        // 【必须遍历全部、只跳过目标自己】原来看起来是"把第 0 份留下、其余搬进 dst"，
+        // 但 dst 是 moduleOfFirst() 挑的（优先核心池，否则 pos 最小的那台），
+        // **不一定是 unique.get(0)**：一旦不是，第 0 份库存就永远不会被搬走，
+        // 紧接着 mergeComponent() 把每个成员的模块都指向 dst —— 那份库存被静默丢掉
+        //（用户报的"物品异常减少"）。
+        for(ItemModule mod : unique){
+            if(mod != dst) moveItems(mod, dst);
+        }
         return dst;
     }
 
@@ -1066,7 +1073,10 @@ public class ComboNet {
             if(!dup) unique.add(mod);
         }
         LiquidModule dst = moduleOfFirstLiquid(members, unique);
-        for(int i = 1; i < unique.size; i++) moveLiquids(unique.get(i), dst);
+        // 同上：目标不一定是 unique.get(0)，必须遍历全部、只跳过目标自己
+        for(LiquidModule mod : unique){
+            if(mod != dst) moveLiquids(mod, dst);
+        }
         return dst;
     }
 

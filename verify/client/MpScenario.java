@@ -2,6 +2,9 @@ package drv;
 import arc.*; import arc.struct.Seq; import arc.util.*;
 import mindustry.Vars;
 import mindustry.content.UnitTypes;
+import mindustry.type.Item;
+import mindustry.world.Block;
+import mindustry.gen.Building;
 import mindustry.game.EventType;
 import mindustry.game.Team;
 import mindustry.gen.Groups;
@@ -69,6 +72,9 @@ public class MpScenario{
                 System.out.println("[MP-IDS] ms=" + System.currentTimeMillis() + " player="
                     + (Groups.player.size() == 0 || Groups.player.first().unit() == null ? -1 : Groups.player.first().unit().id)
                     + " " + ids);
+                // 【物品总量】按**模块身份**去重（共享池只算一次）：两端各打一行，脚本按毫秒对齐比对。
+                // 用户报的"组合节点瞎连导致物品涨到 11m / 变负数"就是这一步该抓的。
+                System.out.println("[MP-ITEMS] ms=" + System.currentTimeMillis() + " total=" + worldItemTotal());
                 // 逐个单位的明细默认关着（一秒 4 行×单位数，正常跑一次就刷几千行）；
                 // 排查"客户端少看到哪个单位"时用服务端加 -Ddrv.mpVerbose=1 打开。
                 if("1".equals(System.getProperty("drv.mpVerbose"))){
@@ -106,6 +112,18 @@ public class MpScenario{
             // 【挖矿光束取证】最后再合一只**矿工巨兽**并让它当场挖矿：客户端截图里应当看得见
             // 原版那条挖矿激光（用户报的"合体后挖矿没有挖矿光束"）。
             else if(phase == 4 && t >= 58){ phase = 5; spawnMiningMega(); }
+            // 【节点乱连取证】用户报"组合节点瞎连 → 物品异常增长/减少（11m、负数）"。
+            // 摆一个"只会被连来连去、不消耗物品"的小基地（只给铜，在场工厂的配方都不吃铜），
+            // 之后每秒随机连/断一根线；两端各自报世界物品总量，脚本比对（涨/跌/两端不一致都 FAIL）。
+            else if(phase == 5 && t >= 72){ phase = 6; buildNodeMess(); }
+            else if(phase == 6 && t < 74){ /* 静默期：等基地摆好、物品注入生效 */ }
+            else if(phase == 6 && t == 74){
+                // 让世界静下来再测：把矿工巨兽的 mineTile 停掉（它 10.5/s 的产量会把"守恒"淹掉）
+                if(miningMega != null && miningMega.isAdded()) miningMega.mineTile(null);
+                miningTile = null;
+                System.out.println("[MP-HOST] 已停止挖矿，物品总量进入静默期（基线 " + worldItemTotal() + "）");
+            }
+            else if(phase == 6 && t >= 76){ /* 连/断由**客户端**在做（见 Driver.mpNodeMess），服务端只摆基地 */ }
             // 矿工巨兽的 mineTile 会被它自己的 AI 清掉（原版 CommandAI 发现目标不在射程里就清），
             // 这里每 tick 重新钉住，保证客户端那边**一直是挖矿状态**（截图才有光束可看）。
             if(miningMega != null && miningMega.isAdded() && miningTile != null){
@@ -231,6 +249,137 @@ public class MpScenario{
     static Unit miningMega;
     static mindustry.world.Tile miningTile;
     static boolean mineControlGiven = false;
+    /** "节点乱连"取证用的小基地 + 起始物品总量。 */
+    static final Seq<Building> messBuildings = new Seq<>();
+    static final Seq<Building> messNodes = new Seq<>();
+    static int messStartTotal = -1;
+
+    /**
+     * 世界物品总量：按**模块身份**去重（共享池只算一次）。
+     * 用户报的"组合节点瞎连导致物品涨到 11m / 变负数"，在这一项上表现为总数暴涨/变负。
+     */
+    static int worldItemTotal(){
+        java.util.IdentityHashMap<Object, Boolean> seen = new java.util.IdentityHashMap<>();
+        int total = 0;
+        // 必须按**世界格**遍历：Groups.build 在有些时机并不全（实测漏过刚摆下的容器，
+        // 于是"总量"读数凭空虚低，看着像物品凭空多出来）
+        for(mindustry.world.Tile t : Vars.world.tiles){
+            Building b = t == null ? null : t.build;
+            if(b == null || b.items == null || seen.put(b.items, Boolean.TRUE) != null) continue;
+            for(mindustry.type.Item it : Vars.content.items()) total += b.items.get(it);
+        }
+        return total;
+    }
+
+    static Block byName(String name){
+        for(Block b : Vars.content.blocks()){
+            if(b.name.equals(name)) return b;
+        }
+        for(Block b : Vars.content.blocks()){
+            if(b.name.endsWith("-" + name) && !b.getClass().getName().startsWith("mindustry.")) return b;
+        }
+        return null;
+    }
+    static Block nodeBlock(){
+        for(Block b : Vars.content.blocks())
+            if(b.getClass().getName().contains("ComboNode")) return b;
+        return null;
+    }
+    static void placeBlock(Block b, int x, int y){
+        int size = Math.max(b.size, 1);
+        int ax = x + (size - 1) / 2, ay = y + (size - 1) / 2;
+        mindustry.world.Build.beginPlace(null, b, Team.sharded, ax, ay, 0, null);
+        mindustry.world.blocks.ConstructBlock.constructed(Vars.world.tile(ax, ay), b, null, (byte)0, Team.sharded, null);
+        Building bu = Vars.world.build(ax, ay);
+        if(bu != null){
+            try{ bu.created(); }catch(Throwable ignored){}
+            try{ bu.updateProximity(); }catch(Throwable ignored){}
+        }
+    }
+    static boolean areaFree(Block b, int x, int y){
+        int size = Math.max(b.size, 1);
+        int ax = x + (size - 1) / 2, ay = y + (size - 1) / 2;
+        int x0 = ax - (size - 1) / 2, x1 = ax + size / 2, y0 = ay - (size - 1) / 2, y1 = ay + size / 2;
+        for(int tx = x0; tx <= x1; tx++) for(int ty = y0; ty <= y1; ty++){
+            mindustry.world.Tile t = Vars.world.tile(tx, ty);
+            if(t == null || t.block() != mindustry.content.Blocks.air) return false;
+        }
+        return true;
+    }
+
+    /** 摆"节点乱连"基地：一个组合仓库 + 三台组合工厂 + 两个组合节点，只灌铜（工厂配方不吃铜，不会动）。 */
+    static void buildNodeMess(){
+        try{
+            float[] at = landSpot();
+            int bx = (int)(at[0] / 8f) + 12, by = (int)(at[1] / 8f);
+            Block cont = byName("container"), node = nodeBlock();
+            Seq<Block> facts = new Seq<>();
+            for(String n : new String[]{"graphite-press", "silicon-smelter", "kiln"}){
+                Block f = byName(n);
+                if(f != null) facts.add(f);
+            }
+            if(cont == null || node == null || facts.isEmpty()){
+                System.out.println("[MP-HOST] 找不到组合仓库/组合节点/组合工厂，跳过节点乱连取证（cont=" + cont
+                    + " node=" + node + " facts=" + facts.size + "）");
+                return;
+            }
+            // 先把这块清空，保证能摆下
+            for(int y = by - 8; y <= by + 8; y++) for(int x = bx - 3; x <= bx + 14; x++){
+                mindustry.world.Tile t = Vars.world.tile(x, y);
+                if(t != null && t.block() != mindustry.content.Blocks.air) t.setBlock(mindustry.content.Blocks.air);
+            }
+            run2();
+            int cx = bx, cy = by;
+            if(areaFree(cont, cx, cy)){ placeBlock(cont, cx, cy); messBuildings.add(Vars.world.build(cx + (cont.size - 1) / 2, cy + (cont.size - 1) / 2)); }
+            int fx = bx + 5;
+            for(Block f : facts){
+                if(areaFree(f, fx, cy)){ placeBlock(f, fx, cy); messBuildings.add(Vars.world.build(fx + (f.size - 1) / 2, cy + (f.size - 1) / 2)); }
+                fx += 4;
+            }
+            for(int i = 0; i < 2; i++){
+                int nx = bx - 2 + i * 2, ny = cy + 4;
+                if(areaFree(node, nx, ny)){
+                    placeBlock(node, nx, ny);
+                    Building nb = Vars.world.build(nx, ny);
+                    if(nb != null){ messNodes.add(nb); messBuildings.add(nb); }
+                }
+            }
+            run2();
+            run2();
+            // 只灌铜：在场工厂（石墨压机/硅冶炼厂/窑）都不吃铜，所以总量必须是死的
+            Building store = messBuildings.isEmpty() ? null : messBuildings.first();
+            if(store != null && store.items != null) store.items.add(mindustry.content.Items.copper, 5000);
+            messStartTotal = worldItemTotal();
+            System.out.println("[MP-HOST] 节点乱连基地就位：建筑=" + messBuildings.size + " 节点=" + messNodes.size
+                + " 起始物品总量=" + messStartTotal);
+        }catch(Throwable t){
+            System.out.println("[MP-HOST] buildNodeMess 失败: " + t);
+        }
+    }
+
+    /** 每秒随机连/断一根线（模拟玩家"瞎连"）。 */
+    static void nodeMessStep(){
+        try{
+            if(messNodes.isEmpty()) return;
+            Building nd = messNodes.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(messNodes.size));
+            if(nd == null || !nd.isValid()) return;
+            Seq<Building> cand = new Seq<>();
+            for(Building b : messBuildings){
+                if(b == null || b == nd || !b.isValid()) continue;
+                if(b.dst(nd) < 120f) cand.add(b);
+            }
+            if(cand.isEmpty()) return;
+            Building target = cand.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(cand.size));
+            nd.onConfigureBuildTapped(target);
+            run2();
+            int total = worldItemTotal();
+            System.out.println("[MP-ITEMS-STEP] ms=" + System.currentTimeMillis() + " 连线切换 "
+                + nd.tileX() + "," + nd.tileY() + " ↔ " + target.block.name + "@" + target.tileX() + "," + target.tileY()
+                + " 总量=" + total + "（起始 " + messStartTotal + "）");
+        }catch(Throwable t){
+            System.out.println("[MP-HOST] nodeMessStep 失败: " + t);
+        }
+    }
 
     /**
      * 合一只矿工巨兽并让它当场挖矿：找一块"矿格旁边有干净落脚点"的地方，

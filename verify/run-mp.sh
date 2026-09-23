@@ -318,4 +318,43 @@ else
     echo "[mp] PASS：全程没有幽灵成员（没有任何 id 同时是独立单位与巨兽成员）"
   fi
 fi
+
+# 8) 物品总量对账（抓"组合节点瞎连 → 物品暴涨/变负数"）：两端每秒各打一行
+#      [MP-ITEMS] ms=<epoch> total=<按模块身份去重的世界物品总量>
+#    判定两条：①两端数量必须一样（客户端看到的就是玩家看到的）；②全程不能出现负数。
+items_line(){ strip_ansi < "$1" | grep -oE "\[MP-ITEMS\].*ms=[0-9]+ total=-?[0-9]+" | tail -1; }
+CLIENT_ITEMS="$(items_line "$CLIENT_LOG")"
+HOST_ITEMS="$(items_line "$HOST_LOG")"
+if [ -z "$HOST_ITEMS" ] || [ -z "$CLIENT_ITEMS" ]; then
+  echo "[mp] 注：日志里没有 [MP-ITEMS] 行，跳过物品总量对账"
+else
+  CALL="$(strip_ansi < "$CLIENT_LOG" | grep -oE "\[MP-ITEMS\] ms=[0-9]+ total=-?[0-9]+" | sed 's/.*total=//')"
+  HALL="$(strip_ansi < "$HOST_LOG"   | grep -oE "\[MP-ITEMS\] ms=[0-9]+ total=-?[0-9]+" | sed 's/.*total=//')"
+  CNEG="$(echo "$CALL" | grep -c '^-')"
+  HNEG="$(echo "$HALL" | grep -c '^-')"
+  echo "[mp] ===== 物品总量（按模块身份去重；客户端 $CLIENT_ITEMS / 服务端 $HOST_ITEMS）====="
+  if [ "$CNEG" != "0" ] || [ "$HNEG" != "0" ]; then
+    echo "[mp] FAIL：出现过负数物品总量（客户端 $CNEG 次、服务端 $HNEG 次）"
+    exit 1
+  fi
+  CM="$(echo "$CLIENT_ITEMS" | sed -E 's/.*ms=([0-9]+).*/\1/')"
+  HOST_ALIGNED="$(strip_ansi < "$HOST_LOG" | grep -oE "\[MP-ITEMS\] ms=[0-9]+ total=-?[0-9]+" \
+    | awk -v cms="$CM" '{ split($2, a, "="); d = a[2] - cms; if(d < 0) d = -d; if(best == "" || d < best){ best = d; line = $0 } } END { if(best <= 5000) print line }')"
+  if [ -z "$HOST_ALIGNED" ]; then
+    echo "[mp] 注：服务端没有和客户端同一时刻的 [MP-ITEMS] 行，跳过两端数量比对"
+  else
+    CV="$(echo "$CLIENT_ITEMS" | sed 's/.*total=//')"
+    HV="$(echo "$HOST_ALIGNED" | sed 's/.*total=//')"
+    # 容差：客户端比服务端晚一个快照（200ms 链路 + 20% 丢包），几十个物品的差是正常的；
+    # 但"客户端 11m / 服务端几千"这种量级差必须判失败（用户报的异常增长就是这一条）。
+    TOL=$(( HV / 20 + 50 ))
+    DIFF=$(( CV - HV )); [ "$DIFF" -lt 0 ] && DIFF=$(( -DIFF ))
+    echo "[mp]   客户端=$CV 服务端=$HV 差=$DIFF（容差 $TOL）"
+    if [ "$DIFF" -gt "$TOL" ]; then
+      echo "[mp] FAIL：同一时刻两端物品总量差得太多（客户端 $CV / 服务端 $HV）—— 客户端那份池子被算岔了"
+      exit 1
+    fi
+    echo "[mp] PASS：同一时刻两端物品总量基本一致（客户端 $CV / 服务端 $HV），且全程没有负数"
+  fi
+fi
 echo "[mp] 截图："; ls -l "$DRV_OUT" | tail -5

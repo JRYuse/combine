@@ -260,6 +260,9 @@ public class Driver extends Mod{
                 // 否则客户端这次请求会把"服务端刚拆出来的瞬态"又合掉，1 秒一次的采样就抓不到那个
                 // 阶段状态了（那只说明判定的时间撞车，不是同步 bug）。
                 Timer.schedule(Driver::mpRequestMerge, 13f, 3f, 4);
+                // 服务端 t≈72s 会摆好"节点乱连"基地，之后由**客户端**每 3 秒随机连一根线/断一根线
+                // （走玩家点击那条原版配置通道 Call.tileConfig），复现"客户端瞎连 → 物品异常增长/减少"
+                Timer.schedule(Driver::mpNodeMess, 80f, 3f, 40);
                 Timer.schedule(() -> shot("mp_mega"), 26f);
                 Timer.schedule(() -> shot("mp_mega2"), 50f);
                 Timer.schedule(() -> shot("mp_after_split"), 66f);
@@ -1326,6 +1329,8 @@ public class Driver extends Mod{
             // 时间戳用 epoch 毫秒（和 MpScenario 一致），脚本按毫秒把两端对齐到同一时刻
             Log.info("[MP-IDS] ms=@ player=@ @", System.currentTimeMillis(),
                 Vars.player.unit() == null ? -1 : Vars.player.unit().id, ids);
+            // 【物品总量】按模块身份去重（共享池算一次）：和服务端 MpScenario 的 [MP-ITEMS] 对齐比对
+            Log.info("[MP-ITEMS] ms=@ total=@", System.currentTimeMillis(), worldItemTotal());
             // 每秒把每个单位逐个打出来（排查"幽灵/看不见/成员数不对"时用）：默认关着，
             // 免得正常跑一次就刷几千行；要排查就加参数 -Ddrv.mpVerbose=1。
             if("1".equals(System.getProperty("drv.mpVerbose"))){
@@ -1428,6 +1433,51 @@ public class Driver extends Mod{
         for(Unit u : Groups.unit)
             sb.append(u.getClass().getName()).append("@").append(u.id).append(" ");
         return sb.toString();
+    }
+
+    /**
+     * 世界物品总量：按**模块身份**去重（组合体共用的那份池子只算一次）。
+     * 和服务端 MpScenario 的 [MP-ITEMS] 对齐比对 —— 用户报的"组合节点瞎连导致物品涨到 11m /
+     * 变负数"在这一项上一眼就能看出来（涨了、跌了、或者两端对不上都算异常）。
+     */
+    /**
+     * 客户端"瞎连"：随机挑一个组合节点和它附近的一栋组合建筑，走玩家点击那条原版配置通道
+     * （{@code onConfigureBuildTapped} → {@code Building.configure} → {@code Call.tileConfig}）连/断。
+     * 用户报的"组合节点瞎连导致物品异常增长/减少（11m、负数）"就是这么点出来的。
+     */
+    static void mpNodeMess(){
+        try{
+            Seq<Building> nodes = new Seq<>(), others = new Seq<>();
+            for(mindustry.world.Tile t : Vars.world.tiles){
+                Building b = t == null ? null : t.build;
+                if(b == null || !b.isValid()) continue;
+                if(b.getClass().getName().contains("ComboNode")) nodes.add(b);
+                else if(b.team == Vars.player.team()) others.add(b);
+            }
+            if(nodes.isEmpty() || others.isEmpty()) return;
+            Building nd = nodes.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(nodes.size));
+            Seq<Building> near = new Seq<>();
+            for(Building b : others) if(b.dst(nd) < 120f && b != nd) near.add(b);
+            if(near.isEmpty()) return;
+            Building tg = near.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(near.size));
+            nd.onConfigureBuildTapped(tg);
+            Log.info("[MP-LINK] ms=@ 客户端连线/断线 节点@,@ ↔ @ @@,@", System.currentTimeMillis(),
+                nd.tileX(), nd.tileY(), tg.block.name, tg.tileX(), tg.tileY());
+        }catch(Throwable t){
+            Log.err("[MP-LINK] 客户端连接切换失败", t);
+        }
+    }
+
+    static int worldItemTotal(){
+        java.util.IdentityHashMap<Object, Boolean> seen = new java.util.IdentityHashMap<>();
+        int total = 0;
+        // 按**世界格**遍历（Groups.build 在有些时机不全：实测漏过刚摆下的容器）
+        for(mindustry.world.Tile t : Vars.world.tiles){
+            Building b = t == null ? null : t.build;
+            if(b == null || b.items == null || seen.put(b.items, Boolean.TRUE) != null) continue;
+            for(mindustry.type.Item it : Vars.content.items()) total += b.items.get(it);
+        }
+        return total;
     }
 
     /** 巨兽的成员 id 列表（逗号分隔）；不是巨兽就返回空串。全部走反射，驱动不依赖模组类。 */
