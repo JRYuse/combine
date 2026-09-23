@@ -111,6 +111,21 @@ public class MpScenario{
             if(miningMega != null && miningMega.isAdded() && miningTile != null){
                 miningMega.mineTile(miningTile);
             }
+            // 【操控取证】"身上有多少物品"只有 `unit.isLocal()`（= 玩家正在操控它）时才画数字，
+            // 所以挖矿几秒后把这只巨兽交给玩家操控（原版接管机制 Call.unitControl），
+            // 客户端截图里才看得到那串数量（用户报的就是"操控组合巨兽时不显示身上有多少物品"）。
+            if(miningMega != null && miningMega.isAdded() && !mineControlGiven && startMs > 0
+                && System.currentTimeMillis() - startMs > 66_000L){
+                mineControlGiven = true;
+                try{
+                    Vars.state.rules.possessionAllowed = true;
+                    mindustry.gen.Call.unitControl(Groups.player.first(), miningMega);
+                    System.out.println("[MP-HOST] 已把矿工巨兽 @" + miningMega.id() + " 交给玩家操控（物品="
+                        + miningMega.stack().amount + "）");
+                }catch(Throwable ex){
+                    System.out.println("[MP-HOST] 接管巨兽失败: " + ex);
+                }
+            }
         }catch(Throwable t){
             Log.err("[MP-HOST] 剧本异常", t);
         }
@@ -215,6 +230,7 @@ public class MpScenario{
     /** 正在挖矿的巨兽（客户端截图取证用）。 */
     static Unit miningMega;
     static mindustry.world.Tile miningTile;
+    static boolean mineControlGiven = false;
 
     /**
      * 合一只矿工巨兽并让它当场挖矿：找一块"矿格旁边有干净落脚点"的地方，

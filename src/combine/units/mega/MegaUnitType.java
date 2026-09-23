@@ -89,17 +89,24 @@ public class MegaUnitType extends UnitType {
         if (!(mineBeamOffset > 0f)) mineBeamOffset = hitSize / 2f;
         if (mineLaserRegion == null) mineLaserRegion = borrowedMineLaser;
         if (mineLaserEndRegion == null) mineLaserEndRegion = borrowedMineLaserEnd;
+        // 【身上物品的图标底圈】原版 load() 里 `itemCircleRegion = Core.atlas.find("ring-item")`。
+        // 巨兽类型 late 注册、load() 从没跑过 → 这个贴图是 null，drawItems 画出来的物品图标
+        // 底圈就没有（用户报的"身上有物品时不显示有多少物品"）。
+        if (itemCircleRegion == null) itemCircleRegion = borrowedItemCircle;
         rebuildEngines();
     }
 
     /** 借来的激光贴图（原版所有单位共用一张 "minelaser"）。 */
     static TextureRegion borrowedMineLaser, borrowedMineLaserEnd;
+    /** 借来的"物品底圈"贴图（原版共用 "ring-item"）。 */
+    static TextureRegion borrowedItemCircle;
 
     /** 从一台已经 load() 过的原版单位上取激光贴图（贴图全局共用，谁都一样）。 */
     static void borrowLaserRegions() {
         try {
             if (borrowedMineLaser == null) borrowedMineLaser = UnitTypes.dagger.mineLaserRegion;
             if (borrowedMineLaserEnd == null) borrowedMineLaserEnd = UnitTypes.dagger.mineLaserEndRegion;
+            if (borrowedItemCircle == null) borrowedItemCircle = UnitTypes.dagger.itemCircleRegion;
         } catch (Throwable ignored) {
         }
     }
@@ -142,7 +149,10 @@ public class MegaUnitType extends UnitType {
         applyLateDefaults();
         // 没有自己的贴图，这些绘制开关关掉（绘制全在 draw() 里自定义）
         drawCell = false;
-        drawItems = false;
+        // 【身上物品不在这里关】原版就是在 draw() 尾部按 drawItems 画"身上物品"的
+        // （drawItems(unit)：物品图标 + 底圈，操控自己那只时还会画数量数字）——
+        // 我们自定义绘制必须自己接上这一段，否则用户看到的"身上有物品却不显示有多少物品"。
+        drawItems = true;
         // 【小地图】原版 MinimapRenderer 每个单位都判 `!unit.type.drawMinimap` 就跳过；
         // 巨兽类型这里关掉过，于是**任何一方的小地图都没有它**（用户报的"合体的单位不会在
         // 小地图出现"）。图标走 MegaUnitEntity.icon()（= 代表成员的 uiIcon），不会画空贴图。
@@ -416,9 +426,20 @@ public class MegaUnitType extends UnitType {
         drawWeaponOutlines(unit);
         drawWeapons(unit);
 
+        // 【身上物品】原版在 drawWeapons 之后画（图标 + 底圈；操控自己那只时还有数量数字，
+        // 见 UnitType.drawItems 里的 unit.isLocal() 判断）。巨兽是完全自定义绘制，这一段
+        // 必须自己接上，否则"身上有物品却不显示有多少物品"。
+        if (drawItems) {
+            drawItems(unit);
+        }
+
         // 成员能力特效（力场护盾/状态光环/维修波等）——原版画在 UnitType.draw 尾部
         // （abilities → drawBody），巨兽是完全自定义绘制，必须自己接这一段，
         // 否则能力只有逻辑生效、没有任何视觉（"没有力墙显示"）
+        // 顺带把原版的"单位灯光"也补上（lightRadius 在 applyLateDefaults 里按体型补过）
+        if (!isPayload) {
+            drawLight(unit);
+        }
         if (!isPayload) {
             for (mindustry.entities.abilities.Ability a : unit.abilities()) {
                 Draw.reset();

@@ -137,6 +137,16 @@ public class MegaMiningTest implements ApplicationListener{
             check("A 挖矿速率按成员累加", Math.abs(mega.type.mineSpeed - UnitTypes.poly.mineSpeed * 3f) < 0.001f);
             check("A 挖矿光束开关是开的", mega.type.drawMineBeam);
             check("A 光束起点已初始化（不再是 NEGATIVE_INFINITY）", mega.type.mineBeamOffset > 0f);
+            // 【身上物品】原版 UnitType.draw 尾部按 drawItems 画"物品图标 + 底圈"，
+            // 操控自己那只（unit.isLocal()）时还会画数量数字。巨兽是自定义绘制，
+            // 这两段必须自己接上（用户报的"身上有物品却不显示有多少物品"）。
+            check("A 身上物品的绘制开关是开的（drawItems）", mega.type.drawItems);
+            check("A 物品图标偏移有效（itemOffsetY > 0）", mega.type.itemOffsetY > 0f);
+            if(Vars.headless){
+                System.out.println("[MM] A headless 没有 atlas，itemCircleRegion 为空属正常（真客户端再验）");
+            }else{
+                check("A 物品底圈贴图已借到（itemCircleRegion）", mega.type.itemCircleRegion != null);
+            }
 
             // 真的挖起来：mineTile + 跑 300 tick，物品必须进背包（物品容量存在的实证）
             mega.set(ore.worldx(), ore.worldy() + 20f);
@@ -146,6 +156,11 @@ public class MegaMiningTest implements ApplicationListener{
             System.out.println("[MM] A 挖矿 300 tick 挖到 " + mined + " 个（背包 " + mega.stack.amount + "/" + mega.itemCapacity() + "）");
             check("A 合并后的巨兽真的能挖到东西（容量没丢）", mined > 0);
             mega.mineTile(null);
+            // itemTime 是双端都按 hasItem() 每帧收敛的本地视觉量；原来 = 0.01 以下时
+            // drawItems 直接不画（图标/数字都不出现）
+            run(60);
+            System.out.println("[MM] A 有物品后 itemTime=" + mega.itemTime() + "（>0.9 才会画物品图标/数量）");
+            check("A 有物品时 itemTime 收敛到 1（物品图标/数量会被画出来）", mega.itemTime() > 0.9f);
 
             // ============ B. 构成丢失（读快照打嗝的降级态）也要保住容量/挖速 ============
             Unit lost = merge(mergeCls, ox * 8f - 300f, oy * 8f, UnitTypes.poly, UnitTypes.poly);

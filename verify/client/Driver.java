@@ -1354,13 +1354,14 @@ public class Driver extends Mod{
                 Tmp.v1.set(mg.x, mg.y);
                 Core.camera.project(Tmp.v1);
                 Log.info("[MP-DRAW] 巨兽@ 位置=@,@ 屏幕=@,@ 相机=@,@ 有region=@ 有fullIcon=@ clipSize=@ flyingLayer=@ "
-                    + "elevation=@ 代表类型=@ 缩放=@ 迷雾扣住=@ 已加=@ 血=@/@ 盾=@ 物品容量=@ 挖矿中=@ 矿格=@ 玩家单位=@,@（跟随@）",
+                    + "elevation=@ 代表类型=@ 缩放=@ 迷雾扣住=@ 已加=@ 血=@/@ 盾=@ 物品容量=@ 身上物品=@ itemTime=@ 物品底圈贴图=@ drawItems=@ 挖矿中=@ 矿格=@ 玩家单位=@,@（跟随@）",
                     mg.id, (int)mg.x, (int)mg.y, (int)Tmp.v1.x, (int)Tmp.v1.y,
                     (int)Core.camera.position.x, (int)Core.camera.position.y,
                     mg.type.region != null, mg.type.fullIcon != null, mg.type.clipSize,
                     mg.type.flyingLayer, mg.elevation, dom, scale,
                     mg.inFogTo(Vars.player.team()), mg.isAdded(), (int)mg.health, (int)mg.maxHealth, (int)mg.shield,
-                    mg.type.itemCapacity, mg.mining(),
+                    mg.type.itemCapacity, mg.stack().amount, mg.itemTime(),
+                    mg.type.itemCircleRegion != null, mg.type.drawItems, mg.mining(),
                     mg.mineTile() == null ? "无" : (mg.mineTile().x + "," + mg.mineTile().y),
                     (int)Vars.player.x, (int)Vars.player.y,
                     Vars.player.unit() == null ? "无" : Vars.player.unit().type.name);
