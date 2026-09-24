@@ -167,9 +167,13 @@ public class CombinedSolidPump extends SolidPump {
             if (newLeader == null)
                 newLeader = this;
             LiquidModule poolLiquids = newLeader.liquids;
+            // 【池子可能不只本组在用】核心库存 / 组合节点接过来的别的组合体也在引用它时，
+            // 本地拆分一律不动这口池子（退出成员拿空模块，由 ComboNet 按网络重新分配）。
+            // 否则就是从核心库存里搬东西给退出的工厂 —— 用户报的"拆工厂时核心里的东西全没了"。
+            boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(poolLiquids, oldGroup);
             for (CombinedSolidPumpBuild b : oldGroup) {
                 if (!b.isValid()) continue;
-                if (poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
+                if (liquidPoolOurs && poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
                     for (Liquid liquid : content.liquids()) {
                         float amt = b.liquids.get(liquid);
                         if (amt > 0.001f) { poolLiquids.add(liquid, amt); b.liquids.remove(liquid, amt); }
@@ -200,7 +204,7 @@ public class CombinedSolidPump extends SolidPump {
             for (int i = 0; i < kicked.size; i++)
                 newLiquidMods[i] = new LiquidModule();
 
-            if (oldLiquids != null && oldTotalLiqCap > 0.001f && kickedTotalLiqCap > 0.001f) {
+            if (liquidPoolOurs && oldLiquids != null && oldTotalLiqCap > 0.001f && kickedTotalLiqCap > 0.001f) {
                 for (Liquid liquid : content.liquids()) {
                     float total = oldLiquids.get(liquid);
                     if (total <= 0.001f)
@@ -220,7 +224,7 @@ public class CombinedSolidPump extends SolidPump {
                     oldLiquids.remove(liquid, kickedTotalShare - remaining);
                 }
             }
-            if (oldLiquids != null)
+            if (liquidPoolOurs && oldLiquids != null)
                 for (CombinedSolidPumpBuild b : newGroup)
                     if (b.isValid())
                         b.liquids = oldLiquids;
@@ -237,12 +241,20 @@ public class CombinedSolidPump extends SolidPump {
                         break;
                     }
             }
+            // 【池子归属】组里有人拿着"组外也在用"的那份模块（核心库存/网络池）时，
+            // 组长必须换成那一份再并池：否则会把网络池复制进组长自己的模块里
+            //（池子没动、这边也多一份同样的液体），网络层随后把这多出来的一份并回去 —— 凭空翻倍。
+            ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(group());
+            LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
+            if (sharedLiquids != null) leader.liquids = sharedLiquids;
             ObjectSet<LiquidModule> processed = new ObjectSet<>();
             if (leader.liquids != null) {
                 processed.add(leader.liquids);
                 for (CombinedSolidPumpBuild m : group()) {
                     if (m != leader && m.isValid() && m.liquids != null
-                            && !processed.contains(m.liquids)) {
+                            && !processed.contains(m.liquids)
+                            // 组外也在用的模块不能"全额并入"（并入不清空源模块 = 凭空多一份）
+                            && !sharedLiquidPools.contains(m.liquids)) {
                         processed.add(m.liquids);
                         for (Liquid liquid : content.liquids()) {
                             float amt = m.liquids.get(liquid);
@@ -254,6 +266,7 @@ public class CombinedSolidPump extends SolidPump {
                 for (CombinedSolidPumpBuild m : group())
                     if (m.isValid())
                         m.liquids = leader.liquids;
+                if (leader.liquids != null) leader.liquids.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
             }
         }
 
@@ -278,6 +291,9 @@ public class CombinedSolidPump extends SolidPump {
             Seq<CombinedSolidPumpBuild> members = new Seq<>(group());
             boolean wasLeader = isLeader();
             LiquidModule oldLiquids = this.liquids;
+            // 【别动不属于本组的池子】核心库存/别的组合体也在用的那份模块：既不能按容量
+            // "分一份给幸存者"（那是从核心库存里搬东西），也不能复制一份（核心库存会凭空翻倍）。
+            boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(oldLiquids, members);
             if (!wasLeader && oldLiquids != null) {
                 boolean shared = false;
                 for (CombinedSolidPumpBuild m : members)
@@ -303,7 +319,7 @@ public class CombinedSolidPump extends SolidPump {
                 LiquidModule[] liquidMods = new LiquidModule[survivors.size];
                 for (int i = 0; i < survivors.size; i++)
                     liquidMods[i] = new LiquidModule();
-                if (oldLiquids != null && totalLiqCap > 0.001f) {
+                if (liquidPoolOurs && oldLiquids != null && totalLiqCap > 0.001f) {
                     for (Liquid liquid : content.liquids()) {
                         float total = oldLiquids.get(liquid);
                         if (total <= 0.001f)
@@ -388,13 +404,15 @@ public class CombinedSolidPump extends SolidPump {
         }
 
         /** 读档/合并/拆分后可能留下超容的存量：每帧夹回各自上限（和组合仓库/核心一个口径）。 */
+        /**
+         * 【已停用】原来这里每帧把液体/物品按"组容量"硬删（set(liquid, cap)）。
+         * 组容量随成员增减变化，一拆成员、或某轮容量算小了，超出的存量就被真删掉 ——
+         * 用户报的"物资莫名其妙清空"就是这个；而且和本模组其它地方"宁可超容也不丢"的
+         * 约定不一致（容量只该拦住新液体进入，见 acceptLiquid/handleLiquid）。
+         * 实测：两台组合泵的池子灌 1000 水，下一帧就被削成组容量 40。
+         */
+        @Deprecated
         public void clampPoolToCaps() {
-            if (liquids != null) {
-                float cap = Math.max(comboTotalLiquidCap, 0f);
-                for (Liquid liquid : content.liquids())
-                    if (liquids.get(liquid) > cap)
-                        liquids.set(liquid, cap);
-            }
         }
         @Override
         public boolean acceptLiquid(Building source, Liquid liquid) {

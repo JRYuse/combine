@@ -581,15 +581,20 @@ public class CombinedDrill extends Block {
                 newLeader = this;
             ItemModule poolItems = newLeader.items;
             LiquidModule poolLiquids = newLeader.liquids;
+            // 【池子可能不只本组在用】核心库存 / 组合节点接过来的别的组合体也在引用它时，
+            // 本地拆分一律不动这口池子（退出成员拿空模块，由 ComboNet 按网络重新分配）。
+            // 否则就是从核心库存里搬东西给退出的工厂 —— 用户报的"拆工厂时核心里的东西全没了"。
+            boolean poolOurs = !ComboReflect.itemPoolSharedOutside(poolItems, oldGroup);
+            boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(poolLiquids, oldGroup);
             for (CombinedDrillBuild b : oldGroup) {
                 if (!b.isValid()) continue;
-                if (poolItems != null && b.items != null && b.items != poolItems) {
+                if (poolOurs && poolItems != null && b.items != null && b.items != poolItems) {
                     for (Item item : content.items()) {
                         int amt = b.items.get(item);
                         if (amt > 0) { poolItems.add(item, amt); b.items.remove(item, amt); }
                     }
                 }
-                if (poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
+                if (liquidPoolOurs && poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
                     for (Liquid liquid : content.liquids()) {
                         float amt = b.liquids.get(liquid);
                         if (amt > 0.001f) { poolLiquids.add(liquid, amt); b.liquids.remove(liquid, amt); }
@@ -627,7 +632,7 @@ public class CombinedDrill extends Block {
                 newItemMods[i] = new ItemModule();
                 newLiquidMods[i] = new LiquidModule();
             }
-            if (oldItems != null && oldTotalItemCap > 0 && kickedTotalItemCap > 0) {
+            if (poolOurs && oldItems != null && oldTotalItemCap > 0 && kickedTotalItemCap > 0) {
                 int[] kickedAllocated = new int[kicked.size];
                 for (Item item : content.items()) {
                     int total = oldItems.get(item);
@@ -651,7 +656,7 @@ public class CombinedDrill extends Block {
                     oldItems.remove(item, kickedTotalShare - remaining);
                 }
             }
-            if (oldLiquids != null && oldTotalLiquidCap > 0.001f && kickedTotalLiquidCap > 0.001f) {
+            if (liquidPoolOurs && oldLiquids != null && oldTotalLiquidCap > 0.001f && kickedTotalLiquidCap > 0.001f) {
                 float[] kickedAllocated = new float[kicked.size];
                 for (Liquid liquid : content.liquids()) {
                     float total = oldLiquids.get(liquid);
@@ -675,11 +680,11 @@ public class CombinedDrill extends Block {
                     oldLiquids.remove(liquid, kickedTotalShare - remaining);
                 }
             }
-            if (oldItems != null)
+            if (poolOurs && oldItems != null)
                 for (CombinedDrillBuild b : newGroup)
                     if (b.isValid())
                         b.items = oldItems;
-            if (oldLiquids != null)
+            if (liquidPoolOurs && oldLiquids != null)
                 for (CombinedDrillBuild b : newGroup)
                     if (b.isValid())
                         b.liquids = oldLiquids;
@@ -705,13 +710,24 @@ public class CombinedDrill extends Block {
                         leader.liquids = member.liquids;
                         break;
                     }
+            // 【池子归属】组里有人拿着"组外也在用"的那份模块（核心库存/网络池）时，
+            // 组长必须换成那一份再并池：否则会把核心库存复制进组长自己的模块里
+            //（核心没动、工厂也多一份同样的物品），网络层随后把这多出来的一份并回核心 —— 库存凭空翻倍。
+            ObjectSet<ItemModule> sharedItemPools = ComboReflect.itemPoolsSharedOutside(group());
+            ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(group());
+            ItemModule sharedItems = sharedItemPools.isEmpty() ? null : sharedItemPools.first();
+            if (sharedItems != null) leader.items = sharedItems;
+            LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
+            if (sharedLiquids != null) leader.liquids = sharedLiquids;
             ObjectSet<ItemModule> processedItems = new ObjectSet<>();
             ObjectSet<LiquidModule> processedLiquids = new ObjectSet<>();
             if (leader.items != null) {
                 processedItems.add(leader.items);
                 for (CombinedDrillBuild member : group()) {
                     if (member != leader && member.isValid() && member.items != null
-                            && !processedItems.contains(member.items)) {
+                            && !processedItems.contains(member.items)
+                            // 组外也在用的模块不能"全额并入"（并入不清空源模块 = 凭空多一份）
+                            && !sharedItemPools.contains(member.items)) {
                         processedItems.add(member.items);
                         for (Item item : content.items()) {
                             int amt = member.items.get(item);
@@ -727,12 +743,15 @@ public class CombinedDrill extends Block {
                 for (CombinedDrillBuild member : group())
                     if (member.isValid())
                         member.items = leader.items;
+                if (leader.items != null) leader.items.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
+                if (leader.items != null) leader.items.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
             }
             if (leader.liquids != null) {
                 processedLiquids.add(leader.liquids);
                 for (CombinedDrillBuild member : group()) {
                     if (member != leader && member.isValid() && member.liquids != null
-                            && !processedLiquids.contains(member.liquids)) {
+                            && !processedLiquids.contains(member.liquids)
+                            && !sharedLiquidPools.contains(member.liquids)) {
                         processedLiquids.add(member.liquids);
                         for (Liquid liquid : content.liquids()) {
                             float amt = member.liquids.get(liquid);
@@ -748,6 +767,8 @@ public class CombinedDrill extends Block {
                 for (CombinedDrillBuild member : group())
                     if (member.isValid())
                         member.liquids = leader.liquids;
+                if (leader.liquids != null) leader.liquids.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
+                if (leader.liquids != null) leader.liquids.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
             }
         }
 
@@ -782,6 +803,10 @@ public class CombinedDrill extends Block {
             boolean wasLeader = isLeader();
             ItemModule oldItems = this.items;
             LiquidModule oldLiquids = this.liquids;
+            // 【别动不属于本组的池子】核心库存/别的组合体也在用的那份模块：既不能按容量
+            // "分一份给幸存者"（那是从核心库存里搬东西），也不能复制一份（核心库存会凭空翻倍）。
+            boolean poolOurs = !ComboReflect.itemPoolSharedOutside(oldItems, members);
+            boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(oldLiquids, members);
             if (!wasLeader) {
                 if (items != null) {
                     boolean shared = false;
@@ -826,7 +851,7 @@ public class CombinedDrill extends Block {
                     itemMods[i] = new ItemModule();
                     liquidMods[i] = new LiquidModule();
                 }
-                if (oldItems != null && totalItemCap > 0) {
+                if (poolOurs && oldItems != null && totalItemCap > 0) {
                     int[] allocated = new int[survivors.size];
                     for (Item item : content.items()) {
                         int total = oldItems.get(item);
@@ -847,7 +872,7 @@ public class CombinedDrill extends Block {
                         }
                     }
                 }
-                if (oldLiquids != null && totalLiquidCap > 0.001f) {
+                if (liquidPoolOurs && oldLiquids != null && totalLiquidCap > 0.001f) {
                     float[] allocated = new float[survivors.size];
                     for (Liquid liquid : content.liquids()) {
                         float total = oldLiquids.get(liquid);
@@ -1024,8 +1049,14 @@ public class CombinedDrill extends Block {
                 for (Tile tile : facing) {
                     Item drop = tile == null ? null : tile.wallDrop();
                     // FIX(per-type)：每种矿独立余量，某种满了继续挖别的
-                    if (drop != null && items.get(drop) < comboTotalItemCap)
-                        items.add(drop, 1);
+                    // FIX[区块产出统计]: 必须走原版 offload() —— 它会先 produced(item, 1)
+                    // 计入 sector.info.handleProduction（区块产量 rawProduction）。
+                    // 之前这里直接 items.add(drop, 1)：物品进了池子，但区块"物品产出"恒为 0，
+                    // 面板/结算里这块产量一直不涨（用户报的"后台物品增长没算上"；
+                    // 同一类修复见 CombinedCrafter.craft() 与分离机分支的注释）。
+                    // 顺带：offload 里的容量判断走 getMaximumAccepted()，巨兽/组合体那边已重写成整组容量。
+                    if (drop != null && efficiency > 0f && items.get(drop) < comboTotalItemCap)
+                        offload(drop);
                 }
                 time %= drillTime;
             }
@@ -1511,6 +1542,33 @@ public class CombinedDrill extends Block {
                 table.add("[darkGray]无").left();
                 table.row();
             }
+            // 【整组挖速】用户报"矿机组合挖速没变化"：以前面板每一台只显示**本机**那一份
+            // （矿种 × 钻速 × 覆盖格数），组合多少台数字都一样。这里补一行整组合计：
+            // 每台各自挖、共用一口池子，整组产量就是 Σ 各成员那一份。
+            if (group().size > 1) {
+                float speed = groupDrillSpeed();
+                if (speed > 0.001f) {
+                    table.add("[lightgray]整组挖速: " + Strings.fixed(speed, 1) + "/s（" + group().size + " 台）[]").left();
+                    table.row();
+                }
+            }
+        }
+
+        /** 整组产量（件/秒）：Σ 各成员自己的那一份（自己的矿种 × 自己的钻速 × 覆盖格数）。 */
+        public float groupDrillSpeed() {
+            float sum = 0f;
+            for (CombinedDrillBuild m : group()) {
+                if (m == null || !m.isValid())
+                    continue;
+                CombinedDrill mb2 = (CombinedDrill) m.block;
+                if (mb2.mode == Mode.beam) {
+                    if (m.lastItem != null && m.facingAmount > 0)
+                        sum += 60f / mb2.getDrillTime(m.lastItem) * m.facingAmount;
+                } else if (m.dominantItem != null && m.dominantItems > 0) {
+                    sum += 60f / mb2.getDrillTime(m.dominantItem) * m.dominantItems;
+                }
+            }
+            return sum;
         }
 
         public void buildLocalIO(Table table) {

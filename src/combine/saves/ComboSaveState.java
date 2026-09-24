@@ -136,9 +136,45 @@ public class ComboSaveState implements SaveFileReader.CustomChunk{
     return leader;
   }
 
-  // 自己是不是组员（不是组长）。
+  /**
+   * 自己是不是组员（不是组长）——**只在写存档时**算数。
+   *
+   * 为什么必须区分存档 / 联机同步：非组长写空模块是为了防"读档物品翻倍"，
+   * 但联机的 block snapshot（客户端把鼠标移到建筑上看物品时会请求一次）走的
+   * **是同一套 writeBase**。同步快照里也写空模块的话，客户端读到的就是空模块 ——
+   * 而组合体成员共用同一份 ItemModule，`ItemModule.read()` 一上来就
+   * `Arrays.fill(items, 0)`，整组池子在客户端当场被清空：
+   * 用户报的"联机时鼠标移到建筑上查看物品，物资被清空"就是这个。
+   *
+   * 所以同步（不是存档）时一律写真数据：客户端读到的就是真池子。
+   */
   public static boolean isFollower(Building self, Iterable<? extends Building> group){
+    if(!writingSave())
+      return false;
     return trueLeader(self, group) != self;
+  }
+
+  /** 现在是不是在写存档（而不是在写联机同步快照）。 */
+  public static boolean writingSave(){
+    try{
+      if(Vars.control != null && Vars.control.saves != null && Vars.control.saves.isSaving())
+        return true;
+    }catch(Throwable ignored){
+    }
+    // 兜底：按调用栈判断（服务端/地图导出这类不走 Saves 的存档路径）。
+    // 认不出来时按"不是存档"处理 —— 万一真在存档，也只是每个成员各写一份整池，
+    // 读档时由去重窗口兜住（不会丢东西），比清空客户端池子安全得多。
+    try{
+      for(StackTraceElement e : new Throwable().getStackTrace()){
+        String cn = e.getClassName();
+        if(cn.startsWith("mindustry.io.Save") || cn.startsWith("mindustry.io.MapIO"))
+          return true;
+        if(cn.startsWith("mindustry.core.NetServer"))
+          return false;
+      }
+    }catch(Throwable ignored){
+    }
+    return false;
   }
 
   static final ObjectMap<Block, Byte> versionCache = new ObjectMap<>();

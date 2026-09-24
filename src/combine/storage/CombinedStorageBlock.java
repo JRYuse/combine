@@ -43,8 +43,8 @@ import static mindustry.Vars.world;
  * 空模块（=「a 中所有物品进入核心」），再按缩小后的容量把核心库存截断
  * （=「超出核心容量的部分截断」）。
  *
- * 全程只改核心自己的 storageCapacity 字段与仓库的 linkedCore/items，不替换原版核心。
- */
+   * 全程只改核心自己的 storageCapacity 字段与仓库的 linkedCore/items，不替换原版核心。
+  */
 public class CombinedStorageBlock extends StorageBlock {
 
   // ==================== 机制驱动 ====================
@@ -93,8 +93,43 @@ public class CombinedStorageBlock extends StorageBlock {
     // 上面在 WorldLoadEvent 先记下地图里的库存，这里把被削掉的补回来（只补不删）。
     Events.on(EventType.SaveLoadEvent.class, e -> restoreCoreItems());
     // 放置/拆除/替换方块都会触发；这里只置位，真正重算留到之后
-    Events.on(EventType.TileChangeEvent.class, e -> dirty = true);
-    Events.on(EventType.BlockBuildEndEvent.class, e -> dirty = true);
+    // 【性能】不再无条件置脏：多线程建造刷一大片时，每格都触发一次"全部仓库重算"
+    // （用户报的"服务端和客户端使用多线程建造后帧率下降十分明显"）。
+    // 只有"仓库/核心这一坨"真的变了才需要重算，见 markTileChanged。
+    Events.on(EventType.TileChangeEvent.class, e -> markTileChanged(e.tile));
+    Events.on(EventType.BlockBuildEndEvent.class, e -> markTileChanged(e.tile));
+  }
+
+  /** 这一格变化要不要重算仓库：仓库本身/核心，或者挨着它们的格子。 */
+  public static void markTileChanged(mindustry.world.Tile tile){
+    try{
+      if(tile == null){
+        dirty = true;
+        return;
+      }
+      Building b = tile.build;
+      if(b != null && isStorageLike(b)){
+        dirty = true;
+        return;
+      }
+      for(int i = 0; i < 4; i++){
+        mindustry.world.Tile cur = tile.nearby(i);
+        Building nb = cur == null ? null : cur.build;
+        if(nb != null && isStorageLike(nb)){
+          dirty = true;
+          return;
+        }
+      }
+    }catch(Throwable t){
+      dirty = true; // 判据出错宁可多算
+    }
+  }
+
+  /** 参与"仓库↔核心"并仓那一套的建筑：组合仓库（含被别的模组写的仓库）或核心。 */
+  private static boolean isStorageLike(Building b){
+    if(b == null) return false;
+    if(b instanceof CombinedStorageBuild) return true;
+    return b instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild;
   }
 
   /**
@@ -486,6 +521,18 @@ public class CombinedStorageBlock extends StorageBlock {
         continue;
 
       ItemModule old = entry.key;
+      // 【这口池子是不是本组独有的】并仓状态和这一轮重算不是同一时刻：仓库手里的模块可能
+      // 还是**核心库存那一份**（网络层把整张网络的池子指成了核心的那份）。按容量"拆一份"
+      // 给各组等于从核心库存里复制一份出去 —— 核心没动、仓库这边多出一份同样的物品，
+      // 下次并回核心就翻倍（用户报的"拆工厂时核心里面的东西全没了"的另一面）。
+      // 池子被参与拆分的这些组之外的建筑引用时，一律不动它。
+      Seq<Building> members = new Seq<>();
+      for (Seq<CombinedStorageBuild> user : users)
+        for (CombinedStorageBuild s : user)
+          if (s != null) members.add(s);
+      if (ComboReflect.itemPoolSharedOutside(old, members))
+        continue;
+
       int n = users.size;
       int[] caps = new int[n];
       int totalCap = 0;
@@ -551,6 +598,7 @@ public class CombinedStorageBlock extends StorageBlock {
         from.remove(item, amount);
       }
     }
+    to.stopFlow(); // 见 ComboNet.moveItems 的说明：内部搬池子不算流量
   }
 
   private static boolean sameItems(ItemModule a, ItemModule b) {

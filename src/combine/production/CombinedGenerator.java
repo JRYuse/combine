@@ -513,27 +513,13 @@ public class CombinedGenerator extends ConsumeGenerator {
         }
       }
 
-      if (newLeader.items != null && totalItemCap > 0) {
-        // FIX: 每种物品独立上限——只有单一类型自身超过上限时才截断该类型。
-        // 旧写法按池子总量截断，与按类型验收不一致：两种燃料各自顶到上限时
-        // 池子总量必然超过总容量，任何重建（包括拆除周围非组合建筑触发的
-        // onProximityUpdate -> rebuildCombo）都会把超出总量部分销毁。
-        for (Item item : content.items()) {
-          int amt = newLeader.items.get(item);
-          if (amt > totalItemCap) {
-            newLeader.items.remove(item, amt - totalItemCap);
-          }
-        }
-      }
-      if (newLeader.liquids != null && totalLiqCap > 0.001f) {
-        // 上限是"每种液体各自"的：把每种超标液体各自截回组容量
-        for (Liquid liquid : cachedLiquids) {
-          float amt = newLeader.liquids.get(liquid);
-          if (amt > totalLiqCap + 0.001f) {
-            newLeader.liquids.remove(liquid, amt - totalLiqCap);
-          }
-        }
-      }
+      // 【不许在重建时按容量销毁库存】这里原来按"这次算出来的组容量"截断物品/液体：
+      // 每种物品的验收上限就是组容量（acceptItem 里 items.get(item) < getMaximumAccepted），
+      // 所以池子是"每种都能装满一份"，总量天然超过组容量；而组容量会随成员增减变化 ——
+      // 满池时拆掉一台成员（或只是周围方块变化触发一次 rebuildCombo）就把超出新容量的
+      // 那份真删掉，表现就是用户报的"组合工厂物资满后有时也会莫名其妙清空物品"。
+      // 容量只该拦住"新物品进入"（acceptItem/acceptLiquid 已经在做），存量一律保留
+      // （同 CombinedCrafter/CombinedDrill/组合仓库：宁可超容也不丢物品）。
 
       for (CombinedGeneratorBuild oldMember : oldGroup) {
         if (oldMember != this && oldMember.isValid() && !newGroup.contains(oldMember)) {
@@ -559,15 +545,20 @@ public class CombinedGenerator extends ConsumeGenerator {
           newLeader = this;
       ItemModule poolItems = newLeader.items;
       LiquidModule poolLiquids = newLeader.liquids;
+      // 【池子可能不只本组在用】核心库存 / 组合节点接过来的别的组合体也在引用它时，
+      // 本地拆分一律不动这口池子（退出成员拿空模块，由 ComboNet 按网络重新分配）。
+      // 否则就是从核心库存里搬东西给退出的工厂 —— 用户报的"拆工厂时核心里的东西全没了"。
+      boolean poolOurs = !ComboReflect.itemPoolSharedOutside(poolItems, oldGroup);
+      boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(poolLiquids, oldGroup);
       for (CombinedGeneratorBuild b : oldGroup) {
           if (!b.isValid()) continue;
-          if (poolItems != null && b.items != null && b.items != poolItems) {
+          if (poolOurs && poolItems != null && b.items != null && b.items != poolItems) {
               for (Item item : content.items()) {
                   int amt = b.items.get(item);
                   if (amt > 0) { poolItems.add(item, amt); b.items.remove(item, amt); }
               }
           }
-          if (poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
+          if (liquidPoolOurs && poolLiquids != null && b.liquids != null && b.liquids != poolLiquids) {
               for (Liquid liquid : content.liquids()) {
                   float amt = b.liquids.get(liquid);
                   if (amt > 0.001f) { poolLiquids.add(liquid, amt); b.liquids.remove(liquid, amt); }
@@ -623,7 +614,7 @@ public class CombinedGenerator extends ConsumeGenerator {
         for (Liquid liquid : content.liquids())
           if (oldLiquids.get(liquid) > 0.001f) involvedLiquids.add(liquid);
 
-      if (oldItems != null && oldTotalItemCap > 0 && kickedTotalItemCap > 0) {
+      if (poolOurs && oldItems != null && oldTotalItemCap > 0 && kickedTotalItemCap > 0) {
         int[] kickedAllocated = new int[kicked.size];
         for (Item item : involvedItems) {
           int total = oldItems.get(item);
@@ -648,7 +639,7 @@ public class CombinedGenerator extends ConsumeGenerator {
         }
       }
 
-      if (oldLiquids != null && oldTotalLiquidCap > 0.001f && kickedTotalLiquidCap > 0.001f) {
+      if (liquidPoolOurs && oldLiquids != null && oldTotalLiquidCap > 0.001f && kickedTotalLiquidCap > 0.001f) {
         float[] kickedAllocated = new float[kicked.size];
         for (Liquid liquid : involvedLiquids) {
           float total = oldLiquids.get(liquid);
@@ -673,11 +664,11 @@ public class CombinedGenerator extends ConsumeGenerator {
         }
       }
 
-      if (oldItems != null)
+      if (poolOurs && oldItems != null)
         for (CombinedGeneratorBuild b : newGroup)
           if (b.isValid())
             b.items = oldItems;
-      if (oldLiquids != null)
+      if (liquidPoolOurs && oldLiquids != null)
         for (CombinedGeneratorBuild b : newGroup)
           if (b.isValid())
             b.liquids = oldLiquids;
@@ -708,6 +699,15 @@ public class CombinedGenerator extends ConsumeGenerator {
           }
         }
       }
+      // 【池子归属】组里有人拿着"组外也在用"的那份模块（核心库存/网络池）时，
+      // 组长必须换成那一份再并池：否则会把核心库存复制进组长自己的模块里
+      //（核心没动、工厂也多一份同样的物品），网络层随后把这多出来的一份并回核心 —— 库存凭空翻倍。
+      ObjectSet<ItemModule> sharedItemPools = ComboReflect.itemPoolsSharedOutside(group());
+      ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(group());
+      ItemModule sharedItems = sharedItemPools.isEmpty() ? null : sharedItemPools.first();
+      if (sharedItems != null) leader.items = sharedItems;
+      LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
+      if (sharedLiquids != null) leader.liquids = sharedLiquids;
 
       ObjectSet<ItemModule> processedItems = new ObjectSet<>();
       ObjectSet<LiquidModule> processedLiquids = new ObjectSet<>();
@@ -716,7 +716,9 @@ public class CombinedGenerator extends ConsumeGenerator {
         processedItems.add(leader.items);
         for (CombinedGeneratorBuild member : group()) {
           if (member != leader && member.isValid() && member.items != null
-              && !processedItems.contains(member.items)) {
+              && !processedItems.contains(member.items)
+              // 组外也在用的模块不能"全额并入"（并入不清空源模块 = 凭空多一份）
+              && !sharedItemPools.contains(member.items)) {
             processedItems.add(member.items);
             for (Item item : ((CombinedGenerator) member.block).cachedItems) {
               int amt = member.items.get(item);
@@ -733,6 +735,8 @@ public class CombinedGenerator extends ConsumeGenerator {
         for (CombinedGeneratorBuild member : group()) {
           if (member.isValid())
             member.items = leader.items;
+    if (leader.items != null) leader.items.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
+    if (leader.items != null) leader.items.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
         }
       }
 
@@ -740,7 +744,8 @@ public class CombinedGenerator extends ConsumeGenerator {
         processedLiquids.add(leader.liquids);
         for (CombinedGeneratorBuild member : group()) {
           if (member != leader && member.isValid() && member.liquids != null
-              && !processedLiquids.contains(member.liquids)) {
+              && !processedLiquids.contains(member.liquids)
+              && !sharedLiquidPools.contains(member.liquids)) {
             processedLiquids.add(member.liquids);
             for (Liquid liquid : cachedLiquids) {
               float amt = member.liquids.get(liquid);
@@ -756,6 +761,8 @@ public class CombinedGenerator extends ConsumeGenerator {
         for (CombinedGeneratorBuild member : group()) {
           if (member.isValid())
             member.liquids = leader.liquids;
+    if (leader.liquids != null) leader.liquids.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
+    if (leader.liquids != null) leader.liquids.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
         }
       }
     }
@@ -786,6 +793,10 @@ public class CombinedGenerator extends ConsumeGenerator {
       boolean wasLeader = isLeader();
       ItemModule oldItems = this.items;
       LiquidModule oldLiquids = this.liquids;
+      // 【别动不属于本组的池子】核心库存/别的组合体也在用的那份模块：既不能按容量
+      // "分一份给幸存者"（那是从核心库存里搬东西），也不能复制一份（核心库存会凭空翻倍）。
+      boolean poolOurs = !ComboReflect.itemPoolSharedOutside(oldItems, members);
+      boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(oldLiquids, members);
 
       if (!wasLeader) {
         if (items != null) {
@@ -848,7 +859,7 @@ public class CombinedGenerator extends ConsumeGenerator {
           for (Liquid liquid : content.liquids())
             if (oldLiquids.get(liquid) > 0.001f) involvedLiquids.add(liquid);
 
-        if (oldItems != null && totalItemCap > 0) {
+        if (poolOurs && oldItems != null && totalItemCap > 0) {
           int[] allocated = new int[survivors.size];
           for (Item item : involvedItems) {
             int total = oldItems.get(item);
@@ -870,7 +881,7 @@ public class CombinedGenerator extends ConsumeGenerator {
           }
         }
 
-        if (oldLiquids != null && totalLiquidCap > 0.001f) {
+        if (liquidPoolOurs && oldLiquids != null && totalLiquidCap > 0.001f) {
           float[] allocated = new float[survivors.size];
           for (Liquid liquid : involvedLiquids) {
             float total = oldLiquids.get(liquid);
@@ -1421,7 +1432,10 @@ public class CombinedGenerator extends ConsumeGenerator {
       }
 
       if (items != null) {
-        for (Item item : cachedItems) {
+        // 列"块声明过的 + 池子里实际有的"：发电机的燃料是运行期过滤出来的（ConsumeItemFilter），
+        // 不在 cachedItems 里 —— 只按 cachedItems 列，池子灌满燃料面板上却一行物品都没有
+        // （用户报的「观测组合建筑物品面板时（看着像）清空所有物资」）。
+        for (Item item : combine.util.ComboReflect.displayItems(items, cachedItems)) {
           int total = items.get(item);
           if (total > 0) {
             final int t = total;

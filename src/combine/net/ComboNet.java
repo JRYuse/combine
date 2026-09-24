@@ -102,6 +102,57 @@ public class ComboNet {
         dirty = true;
     }
 
+    /** 上一次重建里"属于某张网络"的格子（pos）；用来判断一次格子变化要不要重建网络。 */
+    private static final IntSet netMemberPos = new IntSet();
+
+    /**
+     * 一格方块变了（造/拆/替换）之后：**只有可能影响组合网络的**才置脏。
+     *
+     * 【性能/用户报"服务端和客户端使用多线程建造后帧率下降十分明显"】以前这里无条件置脏，
+     * 于是"多线程建造刷一大片"时每一帧都在重建整张组合网络（全图建筑过一遍 + 建图 + 拆池 + 合池，
+     * 大基地上单次就是几毫秒到几十毫秒，实测建造中 4~5ms/tick、峰值 45ms）。
+     * 但绝大多数格子变化跟网络无关：传送带、生产线、矿机、墙……既不是连接器/节点，
+     * 也不在任何网络的成员表里，更不挨着网络成员 —— 重建结果一定和上一帧一模一样。
+     *
+     * 判据（保守优先：拿不准就置脏）：
+     *   · 这一格**原来**是网络成员（pos 在成员表里）→ 变了就得重算；
+     *   · 新方块是组合连接器/节点 → 要重算；
+     *   · 新方块是组合建筑，且自己或邻居是网络成员/连接件 → 可能刚并进网络 → 要重算。
+     */
+    public static void markTileChanged(mindustry.world.Tile tile){
+        try{
+            if(tile == null){
+                markDirty();
+                return;
+            }
+            if(netMemberPos.contains(tile.pos())){
+                markDirty();
+                return;
+            }
+            Building b = tile.build;
+            if(b == null)
+                return;
+            if(isLinker(b)){
+                markDirty();
+                return;
+            }
+            if(!ComboReflect.isComboBuild(b))
+                return;
+            if(b.proximity != null){
+                for(Building nb : b.proximity){
+                    if(nb == null) continue;
+                    if(isLinker(nb) || netMemberPos.contains(nb.pos())){
+                        markDirty();
+                        return;
+                    }
+                }
+            }
+        }catch(Throwable t){
+            // 判据出错宁可多算一遍，也不要漏掉网络变化
+            markDirty();
+        }
+    }
+
     /** 是否正在 rebuild 内部（防止 CoopCombo → ComboNet → CoopCombo 的重入）。 */
     public static boolean rebuilding(){
         return inRebuild;
@@ -152,6 +203,50 @@ public class ComboNet {
         loadingWorld = true;
         // 读档后头几帧仍按去重语义合并（本地组合体/网络还在重建，见 loadDedupeFrames 注释）
         loadDedupeFrames = loadDedupeGraceFrames;
+        // 这一轮读档的"离谱池子体检"还没做（见 repairInsanePools）
+        poolRepairDone = false;
+    }
+
+    /** 本轮读档的池子体检是否已做过。 */
+    private static boolean poolRepairDone = false;
+
+    /**
+     * 读档体检：把**明显被算岔的池子**夹回容量上限。
+     *
+     * <p>为什么需要：用户存档里出现过一台激光钻机的池子写着 {@code 煤=522167664}、
+     * {@code 硅=568718682}，而该分量容量只有 1840（差了 30 万倍）—— 这是以前版本在某条
+     * "瞎连"路径上把池子反复相加留下的烂账，数字已经烧进存档，光修代码清不掉。
+     *
+     * <p>阈值故意定得极保守（{@code max(分量容量×1000, 1000 万)}），正常玩法堆不到这个量级：
+     * 只有确凿的坏账才会被夹。夹的时候逐条打日志，方便玩家对照。
+     */
+    public static void repairInsanePools(){
+        if(poolRepairDone) return;
+        poolRepairDone = true;
+        try{
+            ObjectSet<ItemModule> seen = new ObjectSet<>();
+            int fixed = 0;
+            for(Building b : allComboBuildings()){
+                if(b == null || !b.isValid() || b.items == null || !seen.add(b.items)) continue;
+                Seq<Building> members = componentMembers(b);
+                int cap = Math.max(componentItemCap(members), 1);
+                long limit = Math.max((long)cap * 1000L, 10_000_000L);
+                for(Item item : content.items()){
+                    int amt = b.items.get(item);
+                    if(amt <= limit) continue;
+                    b.items.set(item, cap);
+                    fixed++;
+                    Log.warn("[combine] 存档池子坏账已夹回容量：@ 的 @ @ → @（该分量容量 @，阈值 @）",
+                        b.block.name, item.name, amt, cap, cap, limit);
+                }
+            }
+            if(fixed > 0){
+                Log.warn("[combine] 共修正 @ 项离谱库存（历史版本「瞎连」留下的坏账，已夹回该分量容量）", fixed);
+                markDirty();
+            }
+        }catch(Throwable t){
+            Log.err("[combine] 读档池子体检失败（跳过，不影响游戏）", t);
+        }
     }
 
     public static void rebuildLoading(){
@@ -638,12 +733,14 @@ public class ComboNet {
             }
             // 8) 登记"网络成员 -> 整张网络"的索引，给组合仓库那套本地并仓逻辑查（见 networkMembers）。
             netByPos.clear();
+            netMemberPos.clear();
             long netSig = 1125899906842597L;
             for(Seq<Building> members : compMembers){
                 if(members.size <= 1) continue;
                 for(Building m : members){
                     if(m != null && m.isValid()){
                         netByPos.put(m.pos(), members);
+                        netMemberPos.add(m.pos());
                         netSig = netSig * 31 + m.pos();
                     }
                 }
@@ -666,6 +763,8 @@ public class ComboNet {
 
             // 读档语义只在读档过程中生效；任何一次运行期重建都意味着读档已经结束
             if(!loading && !world.isGenerating()) loadingWorld = false;
+            // 读档窗口结束 → 做一次"离谱池子"体检（一次读档只做一次；见 repairInsanePools）
+            if(loadPhase && !poolRepairDone && !loading && !world.isGenerating()) repairInsanePools();
 
             heatAlloc.clear();
         }catch(Throwable t){
@@ -733,6 +832,10 @@ public class ComboNet {
     }
 
     private static void splitItemsAcrossComponents(Seq<Seq<Building>> comps){
+        ObjectSet<Building> allMembers = new ObjectSet<>();
+        for(Seq<Building> comp : comps)
+            for(Building m : comp)
+                if(m != null) allMembers.add(m);
         IdentityHashMap<ItemModule, IntSet> owners = new IdentityHashMap<>();
         // 核心的池子（核心自己、或"并进核心"的组合仓库）**不能拆**：
         // 它们本来就是故意共用同一份模块的。按分量拆会把它复制成好几份
@@ -771,6 +874,18 @@ public class ComboNet {
             }
 
             ItemModule old = entry.getKey();
+            // 【池子被组外也在用】核心库存 / 组合节点接进来的别的组合体也引用着这份模块时，
+            // 按容量"复制一份"给各分量就是凭空多一份（原模块还在别人手里）——
+            // 用户报的"拆工厂时核心里的东西全没了/翻倍"就是这个。
+            // 这份池子不属于这些分量：分量里的成员换成空模块，池子留给真正的所有者。
+            if(ComboReflect.itemPoolSharedOutside(old, allMembers)){
+                for(int i = 0; i < comps.size; i++){
+                    for(Building m : comps.get(i)){
+                        if(m.items == old) m.items = new ItemModule();
+                    }
+                }
+                continue;
+            }
             int n = ownerComps.size;
             int[] compIdx = new int[n];
             int[] caps = new int[n];
@@ -806,6 +921,10 @@ public class ComboNet {
     }
 
     private static void splitLiquidsAcrossComponents(Seq<Seq<Building>> comps){
+        ObjectSet<Building> allMembers = new ObjectSet<>();
+        for(Seq<Building> comp : comps)
+            for(Building m : comp)
+                if(m != null) allMembers.add(m);
         IdentityHashMap<LiquidModule, IntSet> owners = new IdentityHashMap<>();
         IdentityHashMap<LiquidModule, Boolean> coreOwned = new IdentityHashMap<>();
         for(int i = 0; i < comps.size; i++){
@@ -838,6 +957,15 @@ public class ComboNet {
             }
 
             LiquidModule old = entry.getKey();
+            // 【池子被组外也在用】同物品：不是这些分量独有的池子不能"复制一份"分给各分量。
+            if(ComboReflect.liquidPoolSharedOutside(old, allMembers)){
+                for(int i = 0; i < comps.size; i++){
+                    for(Building m : comps.get(i)){
+                        if(m.liquids == old) m.liquids = new LiquidModule();
+                    }
+                }
+                continue;
+            }
             int n = ownerComps.size;
             int[] compIdx = new int[n];
             float[] caps = new float[n];
@@ -1020,7 +1148,14 @@ public class ComboNet {
             if(!dup) unique.add(mod);
         }
         ItemModule dst = moduleOfFirst(members, unique);
-        for(int i = 1; i < unique.size; i++) moveItems(unique.get(i), dst);
+        // 【必须遍历全部、只跳过目标自己】原来看起来是"把第 0 份留下、其余搬进 dst"，
+        // 但 dst 是 moduleOfFirst() 挑的（优先核心池，否则 pos 最小的那台），
+        // **不一定是 unique.get(0)**：一旦不是，第 0 份库存就永远不会被搬走，
+        // 紧接着 mergeComponent() 把每个成员的模块都指向 dst —— 那份库存被静默丢掉
+        //（用户报的"物品异常减少"）。
+        for(ItemModule mod : unique){
+            if(mod != dst) moveItems(mod, dst);
+        }
         return dst;
     }
 
@@ -1037,7 +1172,10 @@ public class ComboNet {
             if(!dup) unique.add(mod);
         }
         LiquidModule dst = moduleOfFirstLiquid(members, unique);
-        for(int i = 1; i < unique.size; i++) moveLiquids(unique.get(i), dst);
+        // 同上：目标不一定是 unique.get(0)，必须遍历全部、只跳过目标自己
+        for(LiquidModule mod : unique){
+            if(mod != dst) moveLiquids(mod, dst);
+        }
         return dst;
     }
 
@@ -1065,11 +1203,76 @@ public class ComboNet {
         return total;
     }
 
+    /**
+     * 面板用：这台建筑所在**分量**（= 共用同一份池子的那整张网络）的物品容量。
+     *
+     * <p>为什么要单独给一个：协作组合面板原来打印的分母是**这台方块自己**的容量
+     * （例如"组合钻机 x6"= 6 台钻机的 60），而它显示的池子却可能是**整张网络**共用的那一份
+     * —— 于是面板上出现"1482273/60"这种数字（用户视频里的现场：铜 1482273/60、
+     * 硅 5555520/60，每帧还在百万/几十之间跳）。分子分母必须同源：池子是网络的，分母也得是网络的。
+     */
+    public static int panelItemCap(Building self){
+        int cap = componentItemCap(componentMembers(self));
+        // 不在任何组合网络里（分量只有自己）时用这台方块自己的基础容量：
+        // 否则核心这类方块会算出 1，面板/审计就会把"核心里 12000 物品"误判成坏账
+        if(cap <= 0) cap = ComboReflect.baseItemCap(self);
+        return Math.max(cap, 1);
+    }
+
+    /** 同上，液体版。 */
+    public static float panelLiquidCap(Building self){
+        float cap = componentLiquidCap(componentMembers(self));
+        if(cap <= 0f) cap = ComboReflect.baseLiquidCap(self);
+        return Math.max(cap, 1f);
+    }
+
+    /**
+     * 面板用：这台建筑所在网络**实际共用的那一份**物品模块（网络已经共用时就是它自己的那份）。
+     *
+     * <p>面板原来直接读 {@code build.items}（这台方块自己的模块），可并池之后池子可能躺在网络里
+     * 别的成员手里 —— 于是面板要么显示"（空）"，要么在不同模块之间来回跳（用户视频里
+     * 组合钻机的面板数字每帧在百万/几十之间跳，就是这个）。
+     */
+    public static ItemModule panelItemPool(Building self){
+        if(self == null) return null;
+        // 1) 节点/连接器接起来的**网络**共用池
+        ItemModule netPool = poolModuleFor(self);
+        if(netPool != null) return netPool;
+        // 2) 本地组合体（相邻成组）里成员真的共用一份时，取那一份
+        ItemModule shared = null;
+        for(Building m : ComboReflect.group(self)){
+            if(m == null || m.items == null) continue;
+            if(shared == null) shared = m.items;
+            else if(shared != m.items) return self.items;   // 没共用：各自看各自的
+        }
+        return shared != null ? shared : self.items;
+    }
+
+    /** 同上，液体版。 */
+    public static LiquidModule panelLiquidPool(Building self){
+        if(self == null) return null;
+        LiquidModule netPool = poolLiquidFor(self);
+        if(netPool != null) return netPool;
+        LiquidModule shared = null;
+        for(Building m : ComboReflect.group(self)){
+            if(m == null || m.liquids == null) continue;
+            if(shared == null) shared = m.liquids;
+            else if(shared != m.liquids) return self.liquids;
+        }
+        return shared != null ? shared : self.liquids;
+    }
+
     private static float componentLiquidCap(Seq<Building> members){
         float total = 0f;
         for(Building m : members) total += ComboReflect.baseLiquidCap(m);
         return total;
     }
+
+    // 【别把"内部搬池子"记成流量】LiquidModule.add/ItemModule.add 会把搬运量记进
+    // 流量窗口（cacheSums += amount），面板（含 MindustryX 的流量行）就会显示
+    // "每秒几千的水进账"，其实只是把两份池子并成一份、总量一点没变 ——
+    // 用户报的"莫名其妙显示进了水实则没有，储罐也没和抽水机连管"。
+    // stopFlow() 让这份模块的流量窗口从头重新统计（下一次真实进液再算）。
 
     private static void moveItems(ItemModule from, ItemModule to){
         if(from == null || to == null || from == to) return;
@@ -1080,6 +1283,7 @@ public class ComboNet {
                 from.remove(item, amt);
             }
         }
+        to.stopFlow();
     }
 
     private static void moveLiquids(LiquidModule from, LiquidModule to){
@@ -1091,6 +1295,7 @@ public class ComboNet {
                 from.remove(liquid, amt);
             }
         }
+        to.stopFlow();
     }
 
     // -------------------- 节点热量网络 --------------------

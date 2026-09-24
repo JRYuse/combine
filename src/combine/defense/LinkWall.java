@@ -51,6 +51,32 @@ public class LinkWall extends Wall {
     buildType = LinkWallBuild::new;
   }
 
+  /** 本帧待重算分组的墙（见 {@link LinkWallBuild#markSelfDirty()}）。 */
+  private static final ObjectSet<LinkWallBuild> pendingRebuild = new ObjectSet<>();
+
+  /** 在 Main.init() 里注册一次：每帧最多重算一遍（跑在建筑 update 之前）。 */
+  public static void register() {
+    arc.Events.run(mindustry.game.EventType.Trigger.update, LinkWall::flushPending);
+  }
+
+  private static void flushPending() {
+    if (pendingRebuild.isEmpty())
+      return;
+    Seq<LinkWallBuild> list = new Seq<>();
+    for (LinkWallBuild w : pendingRebuild)
+      list.add(w);
+    pendingRebuild.clear();
+    for (LinkWallBuild w : list) {
+      if (w == null || w.dead() || !w.linksDirty)
+        continue; // 同一组里已经有人重建过 → 这一格的分组字段已经被写好了
+      try {
+        w.rebuildLinks();
+      } catch (Throwable ignored) {
+        // 分组重算失败不该影响游戏，下一帧还有机会
+      }
+    }
+  }
+
   @Override
   public void load() {
     super.load();
@@ -130,6 +156,22 @@ public class LinkWall extends Wall {
     public LinkWallBuild linkLeader;
     public boolean linksDirty = true;
     public int seqSize = 1;
+
+    /**
+     * 本格的分组需要重算 —— **不立刻做**，攒到本帧收口跑一次。
+     *
+     * 【性能/用户报"多线程建造后帧率下降十分明显"】一次放置会连着触发
+     * placed() 自己 + 四周邻居的 onProximityUpdate()，原先每一遍都同步跑一次
+     * {@link #rebuildLinks()}（整组 BFS + 节点扫描 + 血量摊平）：大墙组上放一格
+     * 就是 5 遍 O(组员数)，多线程建造刷一片墙时单帧几毫秒到几十毫秒。
+     * 现在只标脏，交给每帧一次的 {@link LinkWall#flushPending()}；
+     * 整组只要有一个成员重建过，其余成员在这一帧里就被顺手清干净了（rebuildLinks
+     * 会把 links/linkLeader 写回每个成员），所以一帧最多跑一遍。
+     */
+    public void markSelfDirty() {
+      linksDirty = true;
+      pendingRebuild.add(this);
+    }
     /** 上一次"挨着/连着的组合连接器、节点的links"指纹：变了就重算分组（跨距离连线也要算同组）。 */
     public int lastLinkerHash = Integer.MIN_VALUE;
     /** 上一次"是否允许组合"的判定结果：队伍里玩家有变动时自动重算一次。 */
@@ -162,10 +204,13 @@ public class LinkWall extends Wall {
 
     public void markGroupDirty() {
       for (LinkWallBuild b : new Seq<>(group())) {
-        if (!b.dead())
+        if (!b.dead()) {
           b.linksDirty = true;
+          pendingRebuild.add(b);
+        }
       }
       linksDirty = true;
+      pendingRebuild.add(this);
     }
 
     /**
@@ -349,13 +394,13 @@ public class LinkWall extends Wall {
     public void onProximityUpdate() {
       super.onProximityUpdate();
       if (!dead())
-        rebuildLinks();
+        markSelfDirty();
     }
 
     @Override
     public void placed() {
       super.placed();
-      rebuildLinks();
+      markSelfDirty();
     }
 
     @Override

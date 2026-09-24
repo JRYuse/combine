@@ -24,6 +24,7 @@ import mindustry.type.Weapon;
 import mindustry.world.Build;
 import mindustry.world.Tile;
 import mindustry.world.blocks.ConstructBlock;
+import mindustry.game.Team;
 import mindustry.game.Teams.BlockPlan;
 
 import java.lang.reflect.Field;
@@ -107,6 +108,12 @@ public class MultiBuildWeapon extends Weapon {
     // （current 换成被拆的那个方块 / activeDeconstruct=true）。挂座原先不看这个，
     // 继续对它 construct() —— 把拆除又造回去，表现就是"造到一半的建筑拆不掉/反而被造完"。
     if (m.plan != null && deconstructing(m.target, m.plan)) {
+      release(m);
+    }
+    // 【不许被"造不动"的计划钉死】认领之后核心的料被别的施工者吃光了：原版队首逻辑会跳过
+    // 这种计划（BuilderComp.shouldSkip），挂座也得放手，否则几把挂座一起抱着没料的格子空转，
+    // 队列里能做的活（修废墟/改方向/有料的）一个都轮不到 —— 用户报的"只修/建了几个"。
+    if (m.plan != null && m.target != null && coreLacks(m.plan, unit)) {
       release(m);
     }
 
@@ -197,9 +204,21 @@ public class MultiBuildWeapon extends Weapon {
     // "Attempt to invoke ... arc.struct.Seq.first() on a null object reference"（用户报的崩溃）。
     if (plans == null)
       return null;
-
     if (plans.size > 0) {
       BuildPlan first = plans.first();
+      // 【立刻能做完的事优先】修废墟(derelict) 与 原地改方向(rotation) 都不需要材料、也不需要
+      // 施工时间：原版 Build.beginPlace 一按就当场完成。它们排在队列后面时（原版 rebuildArea
+      // 就是先排"被摧毁建筑"、再排废墟修复），按原来的"只从队首往后认领"要等前面那些慢施工
+      // 全部完工才轮得到 —— 表现就是用户报的"修废墟/改方向只动了几个"。
+      // 这里单独扫一遍队列：只要是能当场做完的，不管排在第几个都先认领，几把挂座一起分。
+      for (int i = 0; i < plans.size; i++) {
+        BuildPlan p = plans.get(i);
+        if (p == null || !instantPlan(p, weaponUnit.team))
+          continue;
+        if (!claimable(weaponUnit, tm, p, false, true))
+          continue;
+        return p;
+      }
       // 认领顺序（队首始终留给单位自己的建造逻辑）：
       //   1. 队首**以外**已经在施工的格子（一把武器帮一格，几把就分摊到几格）
       //   2. 队首以外还没开工的格子（开新格）
@@ -239,7 +258,12 @@ public class MultiBuildWeapon extends Weapon {
         if (derelictPlan(p))
           continue;
         Building b = world.build(p.x, p.y);
-        if (b != null && !(b instanceof ConstructBlock.ConstructBuild) && b.block == p.block) {
+        // 【改方向也不能当成"已经造好"】原地改方向的计划，格子上本来就是同一种方块
+        // （只是方向不同），只按 b.block == p.block 判会在还没转过去时就把计划删掉 ——
+        // 表现就是用户报的"批量改传送带方向只改了几个，其它计划直接没了"。
+        // 只有"方向也对上了"（或者方块本身不转向）才算这一格已经完成。
+        if (b != null && !(b instanceof ConstructBlock.ConstructBuild) && b.block == p.block
+            && (!p.block.rotate || b.rotation == p.rotation)) {
           plans.removeIndex(i);
         }
       }
@@ -340,10 +364,26 @@ public class MultiBuildWeapon extends Weapon {
         return false;
     }else{
       // 建造计划：已经有别的方块，说明造好了/这里不是该造的东西
-      // 例外：废墟修复 —— 格子上就是衍生物团队的**同名**方块，原版会当场修好，属于"可认领"
-      if(existing != null && !constructing && !derelictPlan(plan))
-        return false;
+      // 例外1 废墟修复 —— 格子上就是衍生物团队的**同名**方块，原版会当场修好，属于"可认领"
+      // 例外2 原地改方向 —— 同格同名我方方块、只是方向不同，原版 beginPlace 会当场 quickRotate，
+      //       也属于"可认领"（否则批量改方向时挂座一个都认不了，计划还被当成"已造好"删掉）
+      // 例外3 【覆盖建造】格子上是**别的**方块（同类同尺寸、可被替换）——原版
+      //       Build.beginPlace 就是"拆掉旧的、盖上新的"（用户报的"在墙上覆盖新的墙建造时
+      //       多线程建造武器不工作"：拖一片新墙盖旧墙，所有挂座都把这种计划当成"这格已经造好了"
+      //       拒收，只剩单位自己的建造逻辑一秒一格 → 看着像"只能单线程"）。
+      if(existing != null && !constructing && !instantPlan(plan, weaponUnit.team)){
+        if(existing.team != weaponUnit.team || existing.block == plan.block)
+          return false;
+        // 到底能不能盖（方块替换规则、组/尺寸、地形都在里面）交给原版判一次
+        if(!Build.validPlace(plan.block, weaponUnit.team, plan.x, plan.y, plan.rotation))
+          return false;
+      }
     }
+
+    // 核心现在拿不出料的计划不认领（和原版 BuilderComp.shouldSkip 同一个判据）：
+    // 不然后面能造的（有料的新格子）全被几把"抱着没料计划空转"的挂座堵住。
+    if(coreLacks(plan, weaponUnit))
+      return false;
 
     if(!allowOwn){
       BuildPlan own = weaponUnit.buildPlan();
@@ -412,10 +452,10 @@ public class MultiBuildWeapon extends Weapon {
       return;
     }
 
-    // 废墟修复：同格同名方块 + team=derelict → 原版 beginPlace 会**当场**把它变成自己的建筑
-    // （不走施工阶段、不要材料）。这里不需要接住什么 ConstructBuild，
-    // 处理完就把这格松开，下一帧再去找别的格子（多把武器因此能同时修好几格）。
-    if (derelictPlan(plan)) {
+    // 修废墟 / 原地改方向：原版 beginPlace 会**当场**做完（不经过施工阶段、不要材料）。
+    // 这里不需要接住什么 ConstructBuild，处理完就把这格松开，
+    // 下一帧再去找别的格子（多把武器因此能同时修/转好几格）。
+    if (instantPlan(plan, unit.team)) {
       if (Build.validPlace(plan.block, unit.team, plan.x, plan.y, plan.rotation)) {
         Build.beginPlace(unit, plan.block, unit.team, plan.x, plan.y, plan.rotation, plan.config);
       }
@@ -433,6 +473,9 @@ public class MultiBuildWeapon extends Weapon {
           m.plan = plan;
           plan.initialized = true;
         }
+      }else{
+        // 这一格现在放不下（比如有单位压着格子）：别每帧原地重试，退一下再看别的活
+        m.searchCooldown = searchRetryInterval;
       }
     } else if (Build.validBreak(unit.team, plan.x, plan.y)) {
       Build.beginBreak(unit, unit.team, plan.x, plan.y);
@@ -459,6 +502,51 @@ public class MultiBuildWeapon extends Weapon {
     Tile tile = world.tile(plan.x, plan.y);
     return tile != null && tile.team() == mindustry.game.Team.derelict && tile.block() == plan.block
         && tile.build != null && plan.block.allowDerelictRepair && state.rules.derelictRepair;
+  }
+
+  /**
+   * 这一格是不是"原地改方向"：同格、同名、我方方块，只是方向对不上。
+   *
+   * 原版 Build.beginPlace 对"自己队伍的同名方块"走的是 quickRotate 分支（当场把方向改掉、
+   * 不经过施工阶段也不要材料），玩家拖一排传送带改方向时生成的计划就是这一种。
+   * 它和 {@link #derelictPlan} 一样是"当场能做掉"的活，所以：
+   *   · 不能算"已经造好"（格子上本来就是同名方块，只按方块名判会在还没转过去时就删掉计划）；
+   *   · 也要能被建造武器认领 —— 不然批量改方向只有队首那一格会被原版一秒一个地转过去。
+   */
+  static boolean rotationPlan(BuildPlan plan, Team team){
+    if(plan == null || plan.breaking || plan.block == null || !plan.block.rotate)
+      return false;
+    Tile tile = world.tile(plan.x, plan.y);
+    return tile != null && tile.team() == team && tile.block() == plan.block && tile.build != null
+        && tile.build.rotation != plan.rotation;
+  }
+
+  /** 当场就能做完、不要材料的那一类计划：修废墟 + 原地改方向。 */
+  static boolean instantPlan(BuildPlan plan, Team team){
+    return derelictPlan(plan) || rotationPlan(plan, team);
+  }
+
+  /**
+   * 核心现在拿不出这个计划的料（和原版 {@code BuilderComp.shouldSkip} 同一个判据）。
+   *
+   * 挂座原先是"认领了就抱着不放"，几把挂座全被没料的计划占住之后，队列里能做的
+   * （修废墟、改方向、有料的格子）一个都轮不到，表现就是"重建只动了几个"。
+   */
+  static boolean coreLacks(BuildPlan plan, Unit unit){
+    if(plan == null || plan.breaking || plan.block == null || plan.block.requirements.length == 0)
+      return false;
+    // 修废墟 / 改方向不要材料，别把它们也挡掉
+    if(instantPlan(plan, unit.team))
+      return false;
+    if(state.rules.infiniteResources || (unit.team != null && unit.team.rules().infiniteResources))
+      return false;
+    // 用"离这台单位最近的核心"，和原版 BuilderComp 的取法一致（多核心地图里各自看各自的料）
+    Building core = unit.closestCore();
+    if(core == null)
+      return false;
+    return arc.util.Structs.contains(plan.block.requirements, i ->
+        !core.items.has(i.item, Math.min(i.amount, 15))
+            && Mathf.round(i.amount * state.rules.buildCostMultiplier) > 0);
   }
 
   /**

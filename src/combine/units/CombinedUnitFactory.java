@@ -4,6 +4,7 @@ import combine.production.CombinedCrafter;
 import combine.production.CombinedDrill;
 import combine.production.CombinedPump;
 import combine.util.ComboReflect;
+import combine.util.UnitComboBridge;
 import combine.util.ComboUi;
 import arc.Core;
 import arc.graphics.Color;
@@ -284,6 +285,9 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
                     } else {
                         this.progress %= 1.0F;
                         Unit unit = plan.unit.create(this.team);
+                        // 组合单位工厂产出的单位继承本建筑组合体的组标记（共享承伤/火力）。
+                        // 单位侧机制在 combineunit 里，这里走反射桥（没装就静默跳过）。
+                        UnitComboBridge.tagProduced(unit, this);
                         if (unit.isCommandable()) {
                             if (this.commandPos != null) {
                                 unit.command().commandPosition(this.commandPos);

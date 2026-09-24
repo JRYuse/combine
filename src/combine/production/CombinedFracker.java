@@ -176,12 +176,20 @@ public class CombinedFracker extends Fracker {
                         break;
                     }
             }
+            // 【池子归属】组里有人拿着"组外也在用"的那份模块（核心库存/网络池）时，
+            // 组长必须换成那一份再并池：否则会把网络池复制进组长自己的模块里
+            //（池子没动、这边也多一份同样的物品/液体），网络层随后把这多出来的一份并回去 —— 凭空翻倍。
+            ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(group());
+            LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
+            if (sharedLiquids != null) leader.liquids = sharedLiquids;
             ObjectSet<LiquidModule> processed = new ObjectSet<>();
             if (leader.liquids != null) {
                 processed.add(leader.liquids);
                 for (CombinedFrackerBuild m : group()) {
                     if (m != leader && m.isValid() && m.liquids != null
-                            && !processed.contains(m.liquids)) {
+                            && !processed.contains(m.liquids)
+                            // 组外也在用的模块不能"全额并入"（并入不清空源模块 = 凭空多一份）
+                            && !sharedLiquidPools.contains(m.liquids)) {
                         processed.add(m.liquids);
                         for (Liquid liquid : content.liquids()) {
                             float amt = m.liquids.get(liquid);
@@ -193,6 +201,7 @@ public class CombinedFracker extends Fracker {
                 for (CombinedFrackerBuild m : group())
                     if (m.isValid())
                         m.liquids = leader.liquids;
+                if (leader.liquids != null) leader.liquids.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
             }
 
             // 物品同样：组内共用一份模块，容量 = Σ 单台容量（Fracker 吃料从这里扣）
@@ -203,11 +212,15 @@ public class CombinedFracker extends Fracker {
                         break;
                     }
             }
+            ObjectSet<ItemModule> sharedItemPools = ComboReflect.itemPoolsSharedOutside(group());
+            ItemModule sharedItems = sharedItemPools.isEmpty() ? null : sharedItemPools.first();
+            if (sharedItems != null) leader.items = sharedItems;
             ObjectSet<ItemModule> processedItems = new ObjectSet<>();
             if (leader.items != null) {
                 processedItems.add(leader.items);
                 for (CombinedFrackerBuild m : group()) {
-                    if (m != leader && m.isValid() && m.items != null && !processedItems.contains(m.items)) {
+                    if (m != leader && m.isValid() && m.items != null && !processedItems.contains(m.items)
+                            && !sharedItemPools.contains(m.items)) {
                         processedItems.add(m.items);
                         for (Item item : content.items()) {
                             int amt = m.items.get(item);
@@ -219,6 +232,7 @@ public class CombinedFracker extends Fracker {
                 for (CombinedFrackerBuild m : group())
                     if (m.isValid())
                         m.items = leader.items;
+                if (leader.items != null) leader.items.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
             }
         }
 
@@ -314,19 +328,15 @@ public class CombinedFracker extends Fracker {
         }
 
         /** 读档/合并/拆分后可能留下超容的存量：每帧夹回各自上限（和组合仓库/核心一个口径）。 */
+        /**
+         * 【已停用】原来这里每帧把液体/物品按"组容量"硬删（set(liquid, cap)）。
+         * 组容量随成员增减变化，一拆成员、或某轮容量算小了，超出的存量就被真删掉 ——
+         * 用户报的"物资莫名其妙清空"就是这个；而且和本模组其它地方"宁可超容也不丢"的
+         * 约定不一致（容量只该拦住新液体进入，见 acceptLiquid/handleLiquid）。
+         * 实测：两台组合泵的池子灌 1000 水，下一帧就被削成组容量 40。
+         */
+        @Deprecated
         public void clampPoolToCaps() {
-            if (items != null) {
-                int cap = Math.max(comboTotalItemCap, 0);
-                for (Item item : content.items())
-                    if (items.get(item) > cap)
-                        items.set(item, cap);
-            }
-            if (liquids != null) {
-                float cap = Math.max(comboTotalLiquidCap, 0f);
-                for (Liquid liquid : content.liquids())
-                    if (liquids.get(liquid) > cap)
-                        liquids.set(liquid, cap);
-            }
         }
         @Override
         public boolean acceptLiquid(Building source, Liquid liquid) {

@@ -54,6 +54,15 @@ public interface IUnitCombo {
         return (Building) m;
     }
 
+    /** Seq<IUnitCombo> → Seq<Building>（给 ComboReflect 判"这口池子是不是本组独有"用）。 */
+    static Seq<Building> Bs(Seq<? extends IUnitCombo> in) {
+        Seq<Building> out = new Seq<>();
+        if (in != null)
+            for (IUnitCombo u : in)
+                if (u != null) out.add(B(u));
+        return out;
+    }
+
     /** 跨类型开关: 由方块侧 allowCrossTypeCombo 字段决定 */
     static boolean crossAllowed(IUnitCombo m) {
         return B(m).block instanceof IUnitComboBlock x && x.allowCrossTypeCombo();
@@ -170,10 +179,15 @@ public interface IUnitCombo {
             newLeader = this;
         ItemModule poolItems = B(newLeader).items;
         LiquidModule poolLiquids = B(newLeader).liquids;
+        // 【池子可能不只本组在用】核心库存 / 组合节点接过来的别的组合体也在引用它时，
+        // 本地拆分一律不动这口池子（退出成员拿空模块，由 ComboNet 按网络重新分配）。
+        // 否则就是从核心库存里搬东西给退出的工厂 —— 用户报的"拆工厂时核心里的东西全没了"。
+        boolean poolOurs = !ComboReflect.itemPoolSharedOutside(poolItems, Bs(oldGroup));
+        boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(poolLiquids, Bs(oldGroup));
         for (IUnitCombo b : oldGroup) {
             if (!B(b).isValid())
                 continue;
-            if (poolItems != null && B(b).items != null && B(b).items != poolItems) {
+            if (poolOurs && poolItems != null && B(b).items != null && B(b).items != poolItems) {
                 for (Item item : content.items()) {
                     int amt = B(b).items.get(item);
                     if (amt > 0) {
@@ -182,7 +196,7 @@ public interface IUnitCombo {
                     }
                 }
             }
-            if (poolLiquids != null && B(b).liquids != null && B(b).liquids != poolLiquids) {
+            if (liquidPoolOurs && poolLiquids != null && B(b).liquids != null && B(b).liquids != poolLiquids) {
                 for (Liquid liquid : content.liquids()) {
                     float amt = B(b).liquids.get(liquid);
                     if (amt > 0.001f) {
@@ -227,7 +241,7 @@ public interface IUnitCombo {
             newLiquidMods[i] = new LiquidModule();
         }
 
-        if (oldItems != null && oldTotalItemCap > 0 && kickedTotalItemCap > 0) {
+        if (poolOurs && oldItems != null && oldTotalItemCap > 0 && kickedTotalItemCap > 0) {
             for (Item item : content.items()) {
                 int total = oldItems.get(item);
                 if (total <= 0)
@@ -245,7 +259,7 @@ public interface IUnitCombo {
                 oldItems.remove(item, total - remaining);
             }
         }
-        if (oldLiquids != null && oldTotalLiquidCap > 0.001f && kickedTotalLiquidCap > 0.001f) {
+        if (liquidPoolOurs && oldLiquids != null && oldTotalLiquidCap > 0.001f && kickedTotalLiquidCap > 0.001f) {
             for (Liquid liquid : content.liquids()) {
                 float total = oldLiquids.get(liquid);
                 if (total <= 0.001f)
@@ -263,11 +277,11 @@ public interface IUnitCombo {
                 oldLiquids.remove(liquid, total - remaining);
             }
         }
-        if (oldItems != null)
+        if (poolOurs && oldItems != null)
             for (IUnitCombo b : newGroup)
                 if (B(b).isValid())
                     B(b).items = oldItems;
-        if (oldLiquids != null)
+        if (liquidPoolOurs && oldLiquids != null)
             for (IUnitCombo b : newGroup)
                 if (B(b).isValid())
                     B(b).liquids = oldLiquids;
@@ -294,6 +308,15 @@ public interface IUnitCombo {
                 }
             }
         }
+        // 【池子归属】组里有人拿着"组外也在用"的那份模块（核心库存/网络池）时，
+        // 组长必须换成那一份再并池：否则会把核心库存复制进组长自己的模块里
+        //（核心没动、工厂也多一份同样的物品），网络层随后把这多出来的一份并回核心 —— 库存凭空翻倍。
+        ObjectSet<ItemModule> sharedItemPools = ComboReflect.itemPoolsSharedOutside(Bs(group()));
+        ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(Bs(group()));
+        ItemModule sharedItems = sharedItemPools.isEmpty() ? null : sharedItemPools.first();
+        if (sharedItems != null) B(leader).items = sharedItems;
+        LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
+        if (sharedLiquids != null) B(leader).liquids = sharedLiquids;
 
         ObjectSet<ItemModule> processedItems = new ObjectSet<>();
         ObjectSet<LiquidModule> processedLiquids = new ObjectSet<>();
@@ -302,7 +325,9 @@ public interface IUnitCombo {
             processedItems.add(B(leader).items);
             for (IUnitCombo member : group()) {
                 if (member != leader && B(member).isValid() && B(member).items != null
-                        && !processedItems.contains(B(member).items)) {
+                        && !processedItems.contains(B(member).items)
+                        // 组外也在用的模块不能"全额并入"（并入不清空源模块 = 凭空多一份）
+                        && !sharedItemPools.contains(B(member).items)) {
                     processedItems.add(B(member).items);
                     for (Item item : content.items()) {
                         int amt = B(member).items.get(item);
@@ -320,7 +345,8 @@ public interface IUnitCombo {
             processedLiquids.add(B(leader).liquids);
             for (IUnitCombo member : group()) {
                 if (member != leader && B(member).isValid() && B(member).liquids != null
-                        && !processedLiquids.contains(B(member).liquids)) {
+                        && !processedLiquids.contains(B(member).liquids)
+                        && !sharedLiquidPools.contains(B(member).liquids)) {
                     processedLiquids.add(B(member).liquids);
                     for (Liquid liquid : content.liquids()) {
                         float amt = B(member).liquids.get(liquid);
@@ -376,6 +402,10 @@ public interface IUnitCombo {
         boolean wasLeader = isLeader();
         ItemModule oldItems = B(this).items;
         LiquidModule oldLiquids = B(this).liquids;
+        // 【别动不属于本组的池子】核心库存/别的组合体也在用的那份模块：既不能按容量
+        // "分一份给幸存者"（那是从核心库存里搬东西），也不能复制一份（核心库存会凭空翻倍）。
+        boolean poolOurs = !ComboReflect.itemPoolSharedOutside(oldItems, Bs(members));
+        boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(oldLiquids, Bs(members));
 
         if (!wasLeader) {
             if (B(this).items != null) {
@@ -432,7 +462,7 @@ public interface IUnitCombo {
                 liquidMods[i] = new LiquidModule();
             }
 
-            if (oldItems != null && totalItemCap > 0) {
+            if (poolOurs && oldItems != null && totalItemCap > 0) {
                 for (Item item : content.items()) {
                     int total = oldItems.get(item);
                     if (total <= 0)
@@ -449,7 +479,7 @@ public interface IUnitCombo {
                     }
                 }
             }
-            if (oldLiquids != null && totalLiquidCap > 0.001f) {
+            if (liquidPoolOurs && oldLiquids != null && totalLiquidCap > 0.001f) {
                 for (Liquid liquid : content.liquids()) {
                     float total = oldLiquids.get(liquid);
                     if (total <= 0.001f)
