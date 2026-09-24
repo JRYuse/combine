@@ -16,6 +16,7 @@ import mindustry.entities.units.UnitController;
 import mindustry.entities.units.WeaponMount;
 import mindustry.entities.Units;
 import mindustry.gen.Building;
+import mindustry.gen.Call;
 import mindustry.gen.Unit;
 import mindustry.graphics.Drawf;
 import mindustry.graphics.Layer;
@@ -410,6 +411,18 @@ public class MultiBuildWeapon extends Weapon {
     }
   }
 
+  /**
+   * 【开工必须走网络包】本仓库的建造武器是"队首那格之外"的施工者。原版 {@code BuilderComp}
+   * 开工用的是 {@code Call.beginPlace / Call.beginBreak}（服务端权威执行 + 转发给所有客户端），
+   * 而我们这里原先直接调 {@code Build.beginPlace / Build.beginBreak} —— 那只改**本机**世界。
+   *
+   * <p>武器挂座是实体组件的一部分，**客户端也会跑**（原版就是这样：弹道/建造都要在客户端预测），
+   * 于是两端各自就地改世界、谁也不知道谁。用户报的「联机时服务端和客户端拐角处水管/传送带
+   * 方向对不上」就是这么来的：原地改方向(quickRotate)与修废墟这类计划原版是**当场完成、
+   * 不生成施工格**的，没有任何后续快照能把方向纠正回来，两端就一直各显示各的。
+   *
+   * <p>改用 {@code Call.*} 后：服务端执行并转发，客户端只是发请求（本机不再自己改世界）。
+   */
   void findTarget(Unit unit, Unit weaponUnit, BuildWeaponMount m) {
     // 被队首占用/被别的挂座抢走：立刻放手（这一步每帧都要做，很便宜）
     if (m.plan != null && m.target != null && isRob(unit, m)) {
@@ -457,7 +470,7 @@ public class MultiBuildWeapon extends Weapon {
     // 下一帧再去找别的格子（多把武器因此能同时修/转好几格）。
     if (instantPlan(plan, unit.team)) {
       if (Build.validPlace(plan.block, unit.team, plan.x, plan.y, plan.rotation)) {
-        Build.beginPlace(unit, plan.block, unit.team, plan.x, plan.y, plan.rotation, plan.config);
+        Call.beginPlace(unit, plan.block, unit.team, plan.x, plan.y, plan.rotation, plan.config);
       }
       m.plan = null;
       m.target = null;
@@ -466,7 +479,7 @@ public class MultiBuildWeapon extends Weapon {
 
     if (!plan.breaking) {
       if (Build.validPlace(plan.block, unit.team, plan.x, plan.y, plan.rotation)) {
-        Build.beginPlace(unit, plan.block, unit.team, plan.x, plan.y, plan.rotation, plan.config);
+        Call.beginPlace(unit, plan.block, unit.team, plan.x, plan.y, plan.rotation, plan.config);
         Building build = world.build(plan.x, plan.y);
         if (build instanceof ConstructBlock.ConstructBuild cb) {
           m.target = cb;
@@ -478,7 +491,7 @@ public class MultiBuildWeapon extends Weapon {
         m.searchCooldown = searchRetryInterval;
       }
     } else if (Build.validBreak(unit.team, plan.x, plan.y)) {
-      Build.beginBreak(unit, unit.team, plan.x, plan.y);
+      Call.beginBreak(unit, unit.team, plan.x, plan.y);
       Building build = world.build(plan.x, plan.y);
       if (build instanceof ConstructBlock.ConstructBuild cb) {
         m.target = cb;

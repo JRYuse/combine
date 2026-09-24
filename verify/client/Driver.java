@@ -1343,6 +1343,10 @@ public class Driver extends Mod{
                 Vars.player.unit() == null ? -1 : Vars.player.unit().id, ids);
             // 【物品总量】按模块身份去重（共享池算一次）：和服务端 MpScenario 的 [MP-ITEMS] 对齐比对
             Log.info("[MP-ITEMS] ms=@ total=@", System.currentTimeMillis(), worldItemTotal());
+            // 【建造网络包】全图传送带的方向：服务端 [MP-ROT] 里那一排（它排了"原地改方向"计划）
+            // 必须都能在下面这一串里找到**同样的方向** —— 用户报的"联机时两端拐角处方向对不上"
+            // 就是这一步该抓的（修前服务端的建造武器只改本机世界，客户端一直停在旧方向）。
+            Log.info("[MP-ROT] ms=@ world=@", System.currentTimeMillis(), conveyorRots());
             // 每秒把每个单位逐个打出来（排查"幽灵/看不见/成员数不对"时用）：默认关着，
             // 免得正常跑一次就刷几千行；要排查就加参数 -Ddrv.mpVerbose=1。
             if("1".equals(System.getProperty("drv.mpVerbose"))){
@@ -1390,6 +1394,17 @@ public class Driver extends Mod{
 
     static Seq<String> mpStates(){
         return mpSeen;
+    }
+
+    /** 全图传送带 → {@code x,y:方向}（服务端 [MP-ROT] 的每一格都要能在这一串里找到同样的方向）。 */
+    static String conveyorRots(){
+        StringBuilder b = new StringBuilder();
+        for(mindustry.world.Tile t : Vars.world.tiles){
+            if(t == null || t.build == null) continue;
+            if(!(t.block() instanceof mindustry.world.blocks.distribution.Conveyor)) continue;
+            b.append(t.x).append(',').append(t.y).append(':').append(t.build.rotation).append(' ');
+        }
+        return b.toString();
     }
 
     /** 镜头对准组合巨兽（截"联机时巨兽长什么样"的证据图用）。 */
