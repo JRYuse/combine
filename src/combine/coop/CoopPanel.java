@@ -112,12 +112,34 @@ public class CoopPanel {
     return true;
   }
 
-  /** 这个方块要不要给面板？—— 只给"协作组合接管的、改不了 display 的"方块。 */
+  /**
+   * 这个方块要不要给面板？
+   *
+   * <p>两类：
+   * <ul>
+   *   <li>协作组合接管的 JS/子类方块（改不了它们的 display()，只能靠这个悬浮面板看整组池子）；</li>
+   *   <li><b>本模组自己替换出来的组合方块</b>（{@link combine.BlockCloner#comboToOriginal} 里的那些）。
+   *       用户的诉求原话："还是搞一个大的悬浮面板，跟 js/java 扩展建筑的一样" ——
+   *       组合体一大，原版那个贴在屏幕右侧的信息面板要么顶穿屏幕、要么一改显示方式就出问题，
+   *       所以组合方块也走这个**独立悬浮面板**：点一下方块就浮出来、内容实时刷新、
+   *       点别的地方才收起（不依赖原版信息面板的重画时机）。</li>
+   * </ul>
+   */
   public static boolean showable(Building b) {
     if (b == null || !b.isValid() || b.block == null) return false;
-    // 原版方块、combine 自己替换出来的组合方块都不管（后者面板里本来就有整组池子）
-    if (!CoopCombo.eligible(b.block)) return false;
+    if (!CoopCombo.eligible(b.block) && !isCombined(b.block)) return false;
     return b.items != null || b.liquids != null;
+  }
+
+  /** 是不是"本模组替换出来的组合方块"（同 id 同名字接管的那些）。 */
+  public static boolean isCombined(Block block) {
+    if (block == null) return false;
+    try {
+      if (combine.BlockCloner.comboToOriginal.containsKey(block)) return true;
+      return combine.Replacer.replaced.containsValue(block, true);
+    } catch (Throwable ignored) {
+      return false;
+    }
   }
 
   public static void showFor(Building t) {
@@ -165,7 +187,9 @@ public class CoopPanel {
 
       Seq<Building> members = members(build);
       // 标题 + 构成
-      table.add("[accent]协作组合[] x" + Math.max(members.size, 1) + "  " + build.block.localizedName).left().row();
+      // 组合方块（本模组替换出来的）叫"组合体"，协作组合接管的那些仍叫"协作组合"
+      String kind = isCombined(build.block) ? "组合体" : "协作组合";
+      table.add("[accent]" + kind + "[] x" + Math.max(members.size, 1) + "  " + build.block.localizedName).left().row();
       ObjectIntMap<Block> counts = new ObjectIntMap<>();
       for (Building m : members) counts.increment(m.block, 1);
       StringBuilder comp = new StringBuilder();
@@ -174,7 +198,10 @@ public class CoopPanel {
         comp.append(b.localizedName).append(" x").append(counts.get(b, 0));
       }
       if (comp.length() == 0) comp.append(build.block.localizedName).append(" x1");
-      table.add("[lightgray]构成: " + comp + "[]").left().row();
+      // 构成可能有十几种方块：不换行的话面板会宽到屏幕外（标题被裁掉、还没法看全）。
+      // 这里按屏幕宽度的一半换行，超长构成的悬浮面板也不会顶穿屏幕。
+      float compWidth = Math.max(160f, arc.Core.graphics.getWidth() / arc.scene.ui.layout.Scl.scl() * 0.5f);
+      table.add("[lightgray]构成: " + comp + "[]").left().width(compWidth).wrap().row();
 
       // 共享物品池（每行 3 个）
       // 【分母必须和池子同源】池子可能是**整张网络**共用的那一份（组合节点/连接器接起来的），

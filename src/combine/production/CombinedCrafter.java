@@ -358,6 +358,11 @@ public class CombinedCrafter extends GenericCrafter {
         public float lastPooledHeatTime = -1f;
         // HeatProducer 平滑输出值（对外暴露，非池子存量）
         public float producerHeat = 0f;
+        // 【对外供热】整组对外报的热量：产量求和（一组 = 一台大机器），
+        // 再按"组里有多少台贴着外用热端"摊开（见 exposedHeatTotal()）。每 tick 只在 leader 上算一次。
+        public float comboExposedHeat = 0f;
+        public int comboHeatOutlets = 0;
+        public long comboHeatExposureTick = Long.MIN_VALUE;
 
         // Attribute 模式数据
         public float attrsum;
@@ -507,33 +512,121 @@ public class CombinedCrafter extends GenericCrafter {
          * calculateHeat、原版热熔炉等）能把组合产热器识别为热源。
          * 只有 heatproducer 模式对外供热，其余模式恒返回 0 —— 不进入原版
          * 导体网络、不被误读、也不会与 availableHeat() 的内部池语义混淆。
-         * 无递归：本方法只读 producerHeat 字段，绝不调用其它建筑的 heat()。
-         */
-        /**
-         * 对外暴露的热量 = **这一台自己的** producerHeat（原版 HeatProducer 就是这么报的）。
-         *
-         * 【不能报整组之和】原版耗热方（热熔炉 / 导热管 / 导热路由器 / 各种 heat 扫描）是把
-         * 每个**相邻** HeatBlock 的 heat() 加起来算的。以前这里每台都返回整组总量，
-         * 于是贴着组合体里 N 台产热机就会被算 N 遍 —— 用户报的"10 台矿渣制热机，
-         * 每台只有 8 热，连起来后每台都报 80（整组总和），耗热方看到 800"。
-         *
-         * 组内共享不受影响：heatcrafter 成员的 availableHeat() 是直接按整组 producerHeat 求和
-         * （按组去重），跨组合体的网络热量由 {@link ComboNet} 按组汇总。
+         * 无递归：只读本组各成员的 producerHeat / comboHeat 字段，绝不调用其它建筑的 heat()。
+         * 口径见 {@link #exposedHeatTotal()}（一组 = 一台大机器，整组热量都出得去，但不会 N 倍）。
          */
         @Override
         public float heat() {
             CombinedCrafter cb = (CombinedCrafter) block;
             if (cb.mode != Mode.heatproducer)
                 return 0f;
-            return producerHeat;
+            return exposedHeatTotal();
+        }
+
+        /**
+         * 对外（原版导热管 / 热路由器 / 热熔炉 / 可变反应堆等 HeatConsumer）能读到的热量。
+         *
+         * <p>原版耗热方是把**每个相邻 HeatBlock 的 heat() 加起来**的，所以这里不能简单地
+         * 「每台都报整组之和」（那会 N 倍：10 台 × 整组 80 = 耗热方看到 800），也不能
+         * 「每台只报自己那一份」（那是另一个极端：整组的热只有贴着导热管的那一台出得去
+         * ——用户报的"一个组合体的热量不能通过热量传输器统一输出，只能输出靠近热量传输器的一个的"）。
+         *
+         * <p>折中：整组产量求和（组合体 = 一台大机器），再按**组里有多少台贴着外用热端**
+         * 均摊 —— 只有一台贴着时那台就报整组总量（耗热方拿到整组热量）；两三台各贴一个热端时
+         * 按接触面摊开（各自拿到自己那一份的接触份额），不会出现 N 倍。
+         *
+         * <p>同时保证「组内之和不变」：Σ(成员 heat()) 恒等于整组产量，
+         * {@code ComboNet.groupHeatSource} 与组合体内部的 {@code availableHeat()} 口径不受影响。
+         */
+        public float exposedHeatTotal(){
+            CombinedCrafter cb = (CombinedCrafter) block;
+            if (cb.mode != Mode.heatproducer)
+                return 0f;
+            Seq<CombinedCrafterBuild> g = group();
+            if (g == null || g.size <= 1)
+                return producerHeat;
+
+            CombinedCrafterBuild l = leader();
+            if (l.comboHeatExposureTick != state.updateId) {
+                l.comboHeatExposureTick = state.updateId;
+                float total = 0f;
+                int outlets = 0;
+                for (CombinedCrafterBuild m : g) {
+                    if (!m.isValid())
+                        continue;
+                    CombinedCrafter mb = (CombinedCrafter) m.block;
+                    if (mb.mode == Mode.heatproducer) {
+                        total += m.producerHeat;
+                    } else if (mb.heatOutput > 0f && mb.mode != Mode.heatcrafter && mb.heatRequirement <= 0f) {
+                        // 兼容旧式（非 heatproducer 模式但配了 heatOutput）的产热成员。
+                        // heatRequirement > 0 的是需热方（热熔炉那类），它们的 comboHeat 是"借来的热"，
+                        // 再对外报一次等于把同一份热又送一遍（会自馈翻倍）。
+                        total += m.getComboHeat();
+                    } else {
+                        // 需热成员（heatcrafter）不算产热：它们的 comboHeat 是"能拿到多少热"，
+                        // 再对外报一次等于把借来的热又送一遍（会自馈翻倍）
+                        continue;
+                    }
+                    if (touchesExternalHeatSink(m))
+                        outlets++;
+                }
+                l.comboExposedHeat = total;
+                l.comboHeatOutlets = outlets;
+            }
+            float total = l.comboExposedHeat;
+            int outlets = l.comboHeatOutlets;
+            // 没人贴着外用热端：按原版语义各报各的（此时也没人会读）
+            if (outlets <= 0)
+                return producerHeat;
+            return total / outlets;
+        }
+
+        /**
+         * 这一台贴着"组外的用热端"、而且**按原版朝向规则真的能把热送过去**吗
+         * （原版导热管 / 热路由器 / 热熔炉 / 可变反应堆等 HeatConsumer）。
+         *
+         * <p>判据必须和 {@code BuildingComp.calculateHeat} 里那条朝向规则一致，否则会把
+         * "贴着但朝向不对、根本收不到热"的成员也算进分母，整组热量被摊薄。
+         */
+        private boolean touchesExternalHeatSink(CombinedCrafterBuild m) {
+            if (m.proximity == null)
+                return false;
+            for (Building b : m.proximity) {
+                if (b == null || !b.isValid() || b.team != m.team)
+                    continue;
+                if (b instanceof CombinedCrafterBuild || b instanceof CombinedGeneratorBuild)
+                    continue; // 组合体自己（含发电机簇）走内部池，不算"外用热端"
+                if (b instanceof mindustry.world.blocks.heat.HeatConsumer && canSendHeatTo(m, b))
+                    return true;
+            }
+            return false;
+        }
+
+        /** 原版 calculateHeat 的朝向规则：m 的热能不能被 b 读到。 */
+        private boolean canSendHeatTo(CombinedCrafterBuild m, Building b) {
+            boolean split = b.block instanceof mindustry.world.blocks.heat.HeatConductor cond && cond.splitHeat;
+            int rel = b.relativeTo(m);
+            if(split) return !m.block.rotate || rel != m.rotation;
+            return !m.block.rotate || (rel + 2) % 4 == m.rotation;
         }
 
         public float heatFrac() {
             CombinedCrafter cb = (CombinedCrafter) block;
             if (cb.mode == Mode.heatcrafter)
                 return availableHeat() / Math.max(cb.heatRequirement * cb.maxEfficiency, 1f);
-            if (cb.mode == Mode.heatproducer)
-                return heat() / Math.max(cb.heatOutput, 0.001f);
+            if (cb.mode == Mode.heatproducer) {
+                // 分母要跟着"整组"走：heat() 现在对外报的是整组热量（见 exposedHeatTotal），
+                // 拿单台的 heatOutput 当分母会让血条/热量贴图溢出（比如 41.8/8）
+                float max = Math.max(cb.heatOutput, 0.001f);
+                Seq<CombinedCrafterBuild> g = group();
+                if (g != null && g.size > 1) {
+                    int producers = 0;
+                    for (CombinedCrafterBuild m : g)
+                        if (m.isValid() && ((CombinedCrafter) m.block).mode == Mode.heatproducer) producers++;
+                    max *= Math.max(producers, 1);
+                }
+                return Mathf.clamp(heat() / Math.max(max, 0.001f), 0f, 1f);
+            }
             return availableHeat() / Math.max(getComboHeatCap(), 1f);
         }
 
@@ -1632,30 +1725,27 @@ public class CombinedCrafter extends GenericCrafter {
                     }
                 }
             }
-            // 液体同理：整组的产出液体都能从本格的输出口外送（方向优先取本格自己的配置）
-            if (liquids != null) {
+            // 【液体输出只能从生产它的工厂出口】
+            // 原来写的是"整组的产出液体都能从本格的输出口外送"（逐 id 遍历组级聚合产率）——
+            // 两种组合工厂接在一起（各自产不同的液体）时，两种液体都会从**同一个**出口混着出来
+            // （用户报的"输出两种不同液体的两种组合工厂组合后输出液体会混"）。
+            // 现在只外送**本方格自己的配方产出**的那些液体（方向也取本方格自己的配置）。
+            // 液体模块照样共享：组里别的机器产的液体仍然进这口池子，本格的配方可以拿来当原料。
+            if (liquids != null && cb.outputLiquids != null) {
                 lead.ensureComboAggregate();
                 float[] produceLiquid = lead.comboLiquidProduceRate;
                 if (produceLiquid != null) {
-                    for (int id = 0; id < produceLiquid.length; id++) {
-                        if (produceLiquid[id] <= 0.0001f)
-                            continue;
-                        Liquid liquid = content.liquid(id);
+                    for (int k = 0; k < cb.outputLiquids.length; k++) {
+                        LiquidStack out = cb.outputLiquids[k];
+                        Liquid liquid = out == null ? null : out.liquid;
                         if (liquid == null)
                             continue;
-                        int dir = -1;
-                        if (cb.outputLiquids != null) {
-                            for (int k = 0; k < cb.outputLiquids.length; k++) {
-                                if (cb.outputLiquids[k].liquid == liquid) {
-                                    dir = liquidOutputDirections.length > k ? liquidOutputDirections[k] : -1;
-                                    break;
-                                }
-                            }
-                        }
+                        // 组里确实在产这种液体（本方格就是产出方之一）才外送
+                        if (liquid.id >= produceLiquid.length || produceLiquid[liquid.id] <= 0.0001f)
+                            continue;
+                        int dir = liquidOutputDirections.length > k ? liquidOutputDirections[k] : -1;
                         boolean isIntermediate = isLiquidConsumedInCombo(liquid);
-                        // FIX[矿渣外流]: 旧逻辑"产率>耗率就外送"——熔炉名义产率远大于分离机
-                        // 消耗, 矿渣被当过剩产物不断导出: 共享池恒空, 只泼溅邻近方块(越远越少)。
-                        // 改为: 中间产物只在池子>=90%满容时才外送, 平时留在组内共享池
+                        // FIX[矿渣外流]: 中间产物只在池子>=90%满容时才外送, 平时留在组内共享池
                         // 阈值看"这种产出液体自己"占了多少容量（每种液体独立储存）
                         float liqAmt = liquids.get(liquid);
                         boolean shouldDump = !isIntermediate
@@ -2073,7 +2163,6 @@ public class CombinedCrafter extends GenericCrafter {
             table.left();
             table.add("[lightgray]组合体构成:").left();
             table.row();
-
             ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
             for (Building member : ComboNet.displayMembers(this, group().size)) {
                 if (member.isValid()) {
@@ -2081,12 +2170,10 @@ public class CombinedCrafter extends GenericCrafter {
                     blockCounts.put(member.block, old + 1);
                 }
             }
-
             Seq<Block> sortedBlocks = new Seq<>();
             for (Block b : blockCounts.keys())
                 sortedBlocks.add(b);
             sortedBlocks.sort(b -> b.id);
-
             boolean hasContent = false;
             for (Block b : sortedBlocks) {
                 int count = blockCounts.get(b, 0);
