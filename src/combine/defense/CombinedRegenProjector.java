@@ -600,7 +600,7 @@ public class CombinedRegenProjector extends RegenProjector {
         @Override
         public void display(Table table) {
           // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
-          ComboUi.safe("combinedregenprojector:display", () -> displayInner(table));
+          ComboUi.safe("combinedregenprojector:display", () -> ComboUi.scrollPanel(table, t -> displayInner(t)));
         }
 
         void displayInner(Table table) {
@@ -756,32 +756,7 @@ public class CombinedRegenProjector extends RegenProjector {
 
         public void buildComboIO(Table table) {
             table.left();
-            table.add("[lightgray]组合体构成:").left();
-            table.row();
-            ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (Building member : ComboNet.displayMembers(this, group().size)) {
-                if (member.isValid()) {
-                    int old = blockCounts.get(member.block, 0);
-                    blockCounts.put(member.block, old + 1);
-                }
-            }
-            Seq<Block> sortedBlocks = new Seq<>();
-            for (Block b : blockCounts.keys())
-                sortedBlocks.add(b);
-            sortedBlocks.sort(b -> b.id);
-            boolean hasContent = false;
-            for (Block b : sortedBlocks) {
-                int count = blockCounts.get(b, 0);
-                if (count > 0) {
-                    hasContent = true;
-                    table.add(b.localizedName + "*" + count).color(Color.white).left();
-                    table.row();
-                }
-            }
-            if (!hasContent) {
-                table.add("[darkGray]无").left();
-                table.row();
-            }
+            combine.util.ComboUi.memberList(table, this, group().size);
         }
 
         // 地图区里只写"原版那一份字节"（RegenProjectorBuild 就是 Building），
