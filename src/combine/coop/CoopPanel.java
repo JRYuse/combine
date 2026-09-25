@@ -234,7 +234,11 @@ public class CoopPanel {
       }
 
       // 共享液体池（每行 3 个）
-      float liquidCap = Math.max(combine.net.ComboNet.panelLiquidCap(build), Math.max(build.block.liquidCapacity, 1f));
+      // 【分母不能用假容量】组合方块的 block.liquidCapacity 被抬成了 9999（防管道算出负流量），
+      // 所以这里必须取"真实的单台/整组容量"：协作组合的方块取 CoopCombo 记的那份，
+      // 组合方块取 baseLiquidCapacity —— 全在 ComboReflect.baseLiquidCap() 里。
+      float liquidCap = Math.max(combine.net.ComboNet.panelLiquidCap(build),
+          Math.max(combine.util.ComboReflect.baseLiquidCap(build), 1f));
       mindustry.world.modules.LiquidModule lpool = combine.net.ComboNet.panelLiquidPool(build);
       Seq<Liquid> liquids = new Seq<>();
       if (lpool != null) {
