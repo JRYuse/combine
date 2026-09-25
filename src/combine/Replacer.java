@@ -417,6 +417,11 @@ public class Replacer {
   /** 上一轮回填了几处（只用于启动日志）。 */
   static int capturedCount = 0;
 
+  /** 这个对象要是"被换掉的老方块" → 它的组合实例，否则 null。 */
+  static Block comboOf(Object o) {
+    return o instanceof Block b ? replaced.get(b) : null;
+  }
+
   /** 这些包里的对象不钻：贴图/绘制/UI/统计这些图又大又没有方块引用。 */
   static boolean heavyType(Class<?> c) {
     if (c.isPrimitive())
@@ -466,9 +471,133 @@ public class Replacer {
     Class<?> cls = o.getClass();
 
     if (cls.isArray()) {
+      // 数组元素里装方块（Constructor.filter 那种）就地换成组合实例
       int len = java.lang.reflect.Array.getLength(o);
-      for (int i = 0; i < len; i++)
-        scanCaptured(java.lang.reflect.Array.get(o, i), visited, depth + 1);
+      Class<?> comp = cls.getComponentType();
+      for (int i = 0; i < len; i++) {
+        Object v = java.lang.reflect.Array.get(o, i);
+        Block combo = comp.isPrimitive() ? null : comboOf(v);
+        if (combo != null && comp.isAssignableFrom(combo.getClass())) {
+          java.lang.reflect.Array.set(o, i, combo);
+          capturedCount++;
+        } else {
+          scanCaptured(v, visited, depth + 1);
+        }
+      }
+      return;
+    }
+
+    // ------------------------------------------------------------------
+    // 【容器里的元素也要换】这里以前漏了一整类：容器元素（Seq<Block>/数组/Map 的键值）里
+    // 装的老方块实例不会被换回组合实例 —— 只换"对象字段里直接抓着的方块"和 PayloadStack.item。
+    //
+    // 用户报的"ve（VanillaExpansion）的单位组装厂不能输入建筑"就是这一处：ve 的组装打包机
+    // （ve-assemble-packer，Constructor 子类）的 filter 是 JSON 里按名字抓的 Seq<Block>：
+    //   "filter": [ "super-assemble-pack","ultra-assemble-pack","hyper-assemble-pack", … ]
+    // 组装套件本身是 Wall → 被本模组换成了 LinkWall（内容表里现在是它），而 filter 里攥着的
+    // 还是替换前的老 Wall 实例：
+    //   · `canProduce(内容表里的套件)` = `filter.contains(组合实例)` 恒 false；
+    //   · 打包机面板直接拿 filter 当选项表（Constructor#buildConfiguration）→ 玩家选中的其实是
+    //     **老实例**，打出来的建筑载荷 content 也是老实例；
+    //   · 而组装厂的配方要求（PayloadStack，见下面那段注释）已经被换回组合实例，于是原版
+    //     `b.item == payload.content()` 身份比较不成立 → 建筑载荷永远塞不进去。
+    // 结论：凡是"容器元素/Map 键值里被替换掉的老方块"都要就地换成组合实例。
+    // ------------------------------------------------------------------
+    if (o instanceof Seq<?> seq) {
+      @SuppressWarnings("unchecked")
+      Seq<Object> s = (Seq<Object>) seq;
+      for (int i = 0; i < s.size; i++) {
+        Object v = s.get(i);
+        Block combo = comboOf(v);
+        if (combo != null) {
+          s.set(i, combo);
+          capturedCount++;
+        } else {
+          scanCaptured(v, visited, depth + 1);
+        }
+      }
+      return;
+    }
+
+    if (o instanceof java.util.List<?> list) {
+      @SuppressWarnings("unchecked")
+      java.util.List<Object> l = (java.util.List<Object>) list;
+      for (int i = 0; i < l.size(); i++) {
+        Object v = l.get(i);
+        Block combo = comboOf(v);
+        if (combo != null) {
+          try {
+            l.set(i, combo);
+            capturedCount++;
+            continue;
+          } catch (Throwable ignored) {
+          }
+        }
+        scanCaptured(v, visited, depth + 1);
+      }
+      return;
+    }
+
+    if (o instanceof arc.struct.ObjectSet<?> set) {
+      // 集合没法按位置改：摘掉老实例、塞进组合实例
+      @SuppressWarnings("unchecked")
+      arc.struct.ObjectSet<Object> st = (arc.struct.ObjectSet<Object>) set;
+      Seq<Object> snapshot = new Seq<>();
+      for (Object e : st)
+        snapshot.add(e);
+      for (Object e : snapshot) {
+        Block combo = comboOf(e);
+        if (combo != null) {
+          try {
+            st.remove(e);
+            st.add(combo);
+            capturedCount++;
+            continue;
+          } catch (Throwable ignored) {
+          }
+        }
+        scanCaptured(e, visited, depth + 1);
+      }
+      return;
+    }
+
+    if (o instanceof java.util.Set<?> set) {
+      @SuppressWarnings("unchecked")
+      java.util.Set<Object> st = (java.util.Set<Object>) set;
+      for (Object e : new java.util.ArrayList<>(st)) {
+        Block combo = comboOf(e);
+        if (combo != null) {
+          try {
+            st.remove(e);
+            st.add(combo);
+            capturedCount++;
+            continue;
+          } catch (Throwable ignored) {
+          }
+        }
+        scanCaptured(e, visited, depth + 1);
+      }
+      return;
+    }
+
+    if (o instanceof java.util.Map<?, ?> map) {
+      @SuppressWarnings("unchecked")
+      java.util.Map<Object, Object> m = (java.util.Map<Object, Object>) map;
+      for (Object k : new java.util.ArrayList<>(m.keySet())) {
+        Object v = m.get(k);
+        Block kCombo = comboOf(k), vCombo = comboOf(v);
+        if (kCombo != null || vCombo != null) {
+          try {
+            m.remove(k);
+            m.put(kCombo != null ? kCombo : k, vCombo != null ? vCombo : v);
+            capturedCount++;
+            continue;
+          } catch (Throwable ignored) {
+          }
+        }
+        scanCaptured(k, visited, depth + 1);
+        scanCaptured(v, visited, depth + 1);
+      }
       return;
     }
 
@@ -479,9 +608,26 @@ public class Replacer {
     }
 
     if (o instanceof ObjectMap<?, ?> map) {
-      for (ObjectMap.Entry<?, ?> e : map.entries()) {
-        scanCaptured(e.key, visited, depth + 1);
-        scanCaptured(e.value, visited, depth + 1);
+      // 键/值里的老方块也要换（键得连键一起改，重插一遍）；先快照键，避免边遍历边改
+      Seq<Object> keys = new Seq<>();
+      for (Object k : map.keys())
+        keys.add(k);
+      @SuppressWarnings("unchecked")
+      ObjectMap<Object, Object> m = (ObjectMap<Object, Object>) map;
+      for (Object k : keys) {
+        Object v = m.get(k);
+        Block kCombo = comboOf(k), vCombo = comboOf(v);
+        if (kCombo != null || vCombo != null) {
+          try {
+            m.remove(k);
+            m.put(kCombo != null ? kCombo : k, vCombo != null ? vCombo : v);
+            capturedCount++;
+            continue;
+          } catch (Throwable ignored) {
+          }
+        }
+        scanCaptured(k, visited, depth + 1);
+        scanCaptured(v, visited, depth + 1);
       }
       return;
     }

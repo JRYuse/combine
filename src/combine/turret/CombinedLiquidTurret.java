@@ -489,7 +489,8 @@ public class CombinedLiquidTurret extends LiquidTurret {
       if (eff == null)
         return false;
       BulletType type = ammoTypes.get(eff);
-      return type != null && liquids.get(eff) >= 1f / type.ammoMultiplier;
+      // 与 peekAmmo() 一致：非 null 才算"有弹药"；作弊模式下不要求攒够一发（原版 cheat 分支同理）
+      return type != null && (cheating() || liquids.get(eff) >= 1f / type.ammoMultiplier);
     }
 
     @Override

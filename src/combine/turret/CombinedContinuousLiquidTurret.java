@@ -502,7 +502,9 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
     @Override
     public boolean hasAmmo() {
       Liquid l = effectiveLiquid();
-      return hasCorrectAmmo() && l != null && ammoTypes.containsKey(l)
+      // ammoTypes.get(l) != null（而不是 containsKey）：弹药类型为空时 peekAmmo() 也是 null，
+      // 而原版 findEnemy/range 会直接解引用它 —— 判定必须与 peekAmmo() 严格一致
+      return hasCorrectAmmo() && l != null && ammoTypes.get(l) != null
           && liquids != null && liquids.get(l) > 0f && activated;
     }
 

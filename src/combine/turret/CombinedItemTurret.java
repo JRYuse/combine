@@ -124,7 +124,7 @@ public class CombinedItemTurret extends ItemTurret {
       @Override
       public float efficiency(Building build) {
         if (build instanceof CombinedItemTurretBuild it) {
-          Turret.AmmoEntry e = it.effectiveEntry();
+          Turret.AmmoEntry e = it.usableEntry();
           return e != null && (e.amount >= CombinedItemTurret.this.ammoPerShot || it.cheating()) ? 1f : 0f;
         }
         return super.efficiency(build);
@@ -259,7 +259,7 @@ public class CombinedItemTurret extends ItemTurret {
 
       @Override
       public boolean any() {
-        return effectiveEntry() != null;
+        return usableEntry() != null;
       }
     }
 
@@ -393,7 +393,7 @@ public class CombinedItemTurret extends ItemTurret {
       // FIX: 只要 amount > 0 即允许使用；selected 耗尽后自动回退，不再返回 null 卡死
       if (selected != null && acceptsAmmo(selected)) {
         Turret.AmmoEntry e = findEntry(selected);
-        if (e != null && e.amount > 0)
+        if (e != null && e.amount > 0 && typeForEntry(e) != null)
           return e;
       }
       // 不再按 lastInput 自动改选，避免后输入的弹药抢占第一发选择的弹药。
@@ -405,6 +405,31 @@ public class CombinedItemTurret extends ItemTurret {
           return e;
       }
       return null;
+    }
+
+    /**
+     * 这一发**真正打得出去**的弹药条目：本塔能收（ammoTypes 里有这个物品）而且弹药类型非空。
+     *
+     * <p>存在的意义是同一条不变量只写一遍：原版 {@code TurretBuild} 里有三处会**无检查**解引用
+     * {@code peekAmmo()} ——
+     * {@code findEnemy()} 第一行 {@code var ammo = peekAmmo(); Sortf sort = ammo.unitSort…}、
+     * {@code range()}、{@code canHeal()}；而 {@code updateTile()} 里"找目标 / 开火"整段套在
+     * {@code if(hasAmmo())} 里。所以只要 {@code hasAmmo()} 为真而 {@code peekAmmo()} 为 null，
+     * 就是用户报的那个崩溃：
+     * <pre>java.lang.NullPointerException: Attempt to read from field
+     * 'mindustry.entities.Units$Sortf mindustry.entities.bullet.BulletType.unitSort' on a null object reference
+     *   at Turret$TurretBuild.findEnemy
+     *   at Turret$TurretBuild.findTarget
+     *   at Turret$TurretBuild.updateTile
+     *   at combine.turret.CombinedItemTurret$CombinedItemTurretBuild.updateTile</pre>
+     */
+    public Turret.AmmoEntry usableEntry() {
+      Turret.AmmoEntry e = effectiveEntry();
+      if (!(e instanceof ItemTurret.ItemEntry ie) || ie.item == null)
+        return null;
+      if (!acceptsAmmo(ie.item) || typeForEntry(e) == null)
+        return null;
+      return e;
     }
 
     public void syncAmmo() {
@@ -629,17 +654,20 @@ public class CombinedItemTurret extends ItemTurret {
       // 邻塔弹药（如双管池顶的散裂 metaglass）会让 hasAmmo()==true 而 peekAmmo()
       // =effectiveEntry()==null，TurretBuild.findEnemy 第一行读 ammo.unitSort 直接 NPE。
       // 修复：换顶只考虑本塔可接受弹药，判定与 effectiveEntry()/peekAmmo() 严格一致。
-      if (ammo == null)
+      //
+      // 【作弊模式漏网】上面那条修复只照顾了非作弊分支，`cheating()`（team.rules().cheat，
+      // 作弊图/无敌模组/沙盒规则都会开）那条早退仍然写着"ammo 非空就算有弹药"：
+      // 池子里只有邻塔弹药时 hasAmmo() 依旧为 true，peekAmmo() 依旧是 null → 同一个 NPE。
+      // 现在两边共用 usableEntry()，不变量是 hasAmmo()==true ⇒ peekAmmo()!=null。
+      if (ammo == null || !canConsume())
         return false;
-      int perShot = ((Turret) block).ammoPerShot;
+      Turret.AmmoEntry e = usableEntry();
+      if (e == null)
+        return false;
       // 不调整共享弹药队列：两台炮塔若各自 swap，会让 ammo.peek() 在两塔之间来回变化，
       // 原版弹药显示读取 ammo.peek()，表现为当前弹药图标闪烁。
-      if (!canConsume())
-        return false;
-      if (cheating())
-        return !ammo.isEmpty();
-      Turret.AmmoEntry e = effectiveEntry();
-      return e != null && e.amount >= perShot;
+      // 作弊模式下不要求攒够一发（原版 ItemTurretBuild.hasAmmo 的 cheat 分支同理）
+      return cheating() || e.amount >= ((Turret) block).ammoPerShot;
     }
 
     @Override
@@ -659,6 +687,18 @@ public class CombinedItemTurret extends ItemTurret {
       applyCoolantChoice();
       pullAmmoFromPool();
       super.updateTile();
+    }
+
+    /**
+     * 兜底：原版 {@code findEnemy} 第一行就是 {@code peekAmmo().unitSort}（无检查）。
+     * 万一 hasAmmo()/peekAmmo() 又不一致（别的模组改弹药池、旧存档的怪数据、对端快照…），
+     * 宁可这一帧没有目标，也不能让整局游戏崩在 updateTile 里。
+     */
+    @Override
+    protected mindustry.gen.Posc findEnemy(float range) {
+      if (peekAmmo() == null)
+        return null;
+      return super.findEnemy(range);
     }
 
     /** 选定的冷却液（null = 自动用池子里效果最好的那种）。 */
@@ -915,7 +955,7 @@ public class CombinedItemTurret extends ItemTurret {
     public BulletType useAmmo() {
       if (cheating())
         return peekAmmo();
-      Turret.AmmoEntry selectedEntry = effectiveEntry();
+      Turret.AmmoEntry selectedEntry = usableEntry();
       if (selectedEntry == null)
         return null;
 
@@ -949,13 +989,15 @@ public class CombinedItemTurret extends ItemTurret {
 
     @Override
     public @arc.util.Nullable BulletType peekAmmo() {
-      Turret.AmmoEntry e = effectiveEntry();
+      // 与 hasAmmo() 共用同一个判定：hasAmmo()==true 时这里必须非 null（原版 findEnemy/range/canHeal
+      // 都会直接解引用返回值）
+      Turret.AmmoEntry e = usableEntry();
       return e == null ? null : typeForEntry(e);
     }
 
     @Override
     public UnlockableContent getAmmoContent() {
-      Turret.AmmoEntry e = effectiveEntry();
+      Turret.AmmoEntry e = usableEntry();
       return e == null ? null : ((ItemTurret.ItemEntry) e).item;
     }
 
