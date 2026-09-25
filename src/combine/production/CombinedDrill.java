@@ -1390,7 +1390,7 @@ public class CombinedDrill extends Block {
         @Override
         public void display(Table table) {
           // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
-          ComboUi.safe("combineddrill:display", () -> ComboUi.scrollPanel(table, t -> displayInner(t)));
+          ComboUi.safe("combineddrill:display", () -> displayInner(table));
         }
 
         void displayInner(Table table) {
@@ -1516,7 +1516,32 @@ public class CombinedDrill extends Block {
 
         public void buildComboIO(Table table) {
             table.left();
-            combine.util.ComboUi.memberList(table, this, group().size);
+            table.add("[lightgray]组合体构成:").left();
+            table.row();
+            ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
+            for (Building member : ComboNet.displayMembers(this, group().size)) {
+                if (member.isValid()) {
+                    int old = blockCounts.get(member.block, 0);
+                    blockCounts.put(member.block, old + 1);
+                }
+            }
+            Seq<Block> sortedBlocks = new Seq<>();
+            for (Block b : blockCounts.keys())
+                sortedBlocks.add(b);
+            sortedBlocks.sort(b -> b.id);
+            boolean hasContent = false;
+            for (Block b : sortedBlocks) {
+                int count = blockCounts.get(b, 0);
+                if (count > 0) {
+                    hasContent = true;
+                    table.add(b.localizedName + "*" + count).color(Color.white).left();
+                    table.row();
+                }
+            }
+            if (!hasContent) {
+                table.add("[darkGray]无").left();
+                table.row();
+            }
             // 【整组挖速】用户报"矿机组合挖速没变化"：以前面板每一台只显示**本机**那一份
             // （矿种 × 钻速 × 覆盖格数），组合多少台数字都一样。这里补一行整组合计：
             // 每台各自挖、共用一口池子，整组产量就是 Σ 各成员那一份。

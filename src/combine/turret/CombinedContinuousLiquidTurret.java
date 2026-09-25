@@ -661,7 +661,7 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
     @Override
     public void display(Table table) {
       // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
-      ComboUi.safe("combinedcontinuousliquidturret:display", () -> ComboUi.scrollPanel(table, t -> displayInner(t)));
+      ComboUi.safe("combinedcontinuousliquidturret:display", () -> displayInner(table));
     }
 
     void displayInner(Table table) {
@@ -701,7 +701,32 @@ public class CombinedContinuousLiquidTurret extends ContinuousLiquidTurret {
 
     public void buildComboIO(Table table) {
       table.left();
-      combine.util.ComboUi.memberList(table, this, group().size);
+      table.add("[lightgray]组合体构成:").left();
+      table.row();
+      ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
+      for (Building member : ComboNet.displayMembers(this, group().size)) {
+        if (member.isValid()) {
+          int old = blockCounts.get(member.block, 0);
+          blockCounts.put(member.block, old + 1);
+        }
+      }
+      Seq<Block> sorted = new Seq<>();
+      for (Block b : blockCounts.keys())
+        sorted.add(b);
+      sorted.sort(b -> b.id);
+      boolean hasContent = false;
+      for (Block b : sorted) {
+        int count = blockCounts.get(b, 0);
+        if (count > 0) {
+          hasContent = true;
+          table.add(b.localizedName + "*" + count).color(Color.white).left();
+          table.row();
+        }
+      }
+      if (!hasContent) {
+        table.add("[darkGray]无").left();
+        table.row();
+      }
       // 共享液体池状态
       LiquidModule liq = liquids;
       if (liq == null) {

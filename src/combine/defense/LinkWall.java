@@ -738,7 +738,7 @@ public class LinkWall extends Wall {
     @Override
     public void display(Table table) {
       // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
-      ComboUi.safe("linkwall:display", () -> ComboUi.scrollPanel(table, t -> displayInner(t)));
+      ComboUi.safe("linkwall:display", () -> displayInner(table));
     }
 
     void displayInner(Table table) {

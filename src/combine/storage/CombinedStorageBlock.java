@@ -725,7 +725,7 @@ public class CombinedStorageBlock extends StorageBlock {
     @Override
     public void display(Table table) {
       // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
-      ComboUi.safe("combinedstorageblock:display", () -> ComboUi.scrollPanel(table, t -> displayInner(t)));
+      ComboUi.safe("combinedstorageblock:display", () -> displayInner(table));
     }
 
     void displayInner(Table table) {
