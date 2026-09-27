@@ -209,7 +209,13 @@ public class NodeNetPoolSwingTest implements ApplicationListener{
                     + " panelItemCap=" + panelCap);
                 System.out.println("[NSW]   （视频现场是 poolMax(" + poolMax + ") 远大于本地容量 " + localCap
                     + "；本用例的合成基地可能还没走到那个状态，所以这里只做信息输出）");
-                check("修后分母跟着池子走（panelItemCap ≥ 池子里的量）", panelCap >= poolMax);
+                // 【只看"同源"，不比大小】这个用例是自己往基地里**灌**了 3135 件（本来就超容），
+                // 而模组的既定口径是"不截断存量"（面板分子可以大于容量，比如拆组/并组之后）。
+                // 真正要保证的是"面板显示的那份池子就是它所在网络里那一份模块"，所以这里比身份：
+                boolean sameSource = false;
+                for (Building m : (arc.struct.Seq<Building>) net.getMethod("componentMembers", Building.class).invoke(null, drillInGroup))
+                    if (m != null && m.items == panelPool) { sameSource = true; break; }
+                check("修后分母跟着池子走（面板显示的池子就是网络里那一份模块）", sameSource);
             }
 
             System.out.println("[NSW] RESULT " + (fail == 0 ? "ALL PASS" : (fail + " FAILED")) + " (pass=" + pass + ")");

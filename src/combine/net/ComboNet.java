@@ -941,6 +941,28 @@ public class ComboNet {
             ObjectMap<Building, Seq<Building>> edges = new ObjectMap<>();
             for(Building v : vertices) edges.put(v, new Seq<>());
 
+            // 【相邻的不同"组合类"也算连上】用户报"挖铅钻头就没有和窑炉组合在一起"：
+            // CombinedCrafter/CombinedDrill/CombinedGenerator… 各自的本地分组只认**同一种方块**
+            // （allowCrossTypeCombo 只在同类内部生效），跨类型以前只能靠连接器/节点。
+            // 而"两种工厂相邻放置就当一台整机"正是这个模组最初的玩法，所以这里把
+            // 「相邻 + 两边都声明 allowCrossTypeCombo」的两个本地组合体直接连一条边 ——
+            // 后续并池/容量/面板/电网全走连接器那套现成逻辑（热量本来就靠原版 proximity 直传，不受影响）。
+            for(Building leader : groupLeaders){
+                if(!crossTypeCombinable(leader)) continue;
+                Seq<Building> group = ComboReflect.group(leader);
+                if(group == null || group.isEmpty()) group = Seq.with(leader);
+                for(Building mem : group){
+                    if(mem == null || !mem.isValid() || mem.proximity == null) continue;
+                    for(Building nb : mem.proximity){
+                        if(nb == null || !nb.isValid() || !ComboReflect.isComboBuild(nb)) continue;
+                        Building other = ComboNode.groupRep(nb);
+                        if(other == null || other == leader) continue;
+                        if(!vertexSet.contains(other) || !crossTypeCombinable(other)) continue;
+                        addEdge(edges, leader, other);
+                    }
+                }
+            }
+
             for(Building v : vertices){
                 if(v instanceof ComboConnector.ComboConnectorBuild c){
                     for(Building nb : c.proximity){
@@ -1108,6 +1130,31 @@ public class ComboNet {
             }
             if(!changed) return;
         }
+    }
+
+    /**
+     * 这个建筑愿不愿意跟**别的组合类**相邻合并（方块上声明 {@code allowCrossTypeCombo == true}）。
+     *
+     * <p>只有生产类组合方块（工厂/钻头/发电机/泵/抽油机/挖墙钻）声明了这个字段；
+     * 墙（LinkWall）、炮塔、仓库、核心都没有 —— 它们不会被拉进这种"相邻跨类型"合并里
+     * （墙尤其危险：它的血池按组算，混进一台工厂会把工厂血量也算进去）。
+     */
+    private static final ObjectMap<Block, Boolean> crossTypeCache = new ObjectMap<>();
+
+    static boolean crossTypeCombinable(Building b){
+        if(b == null || b.block == null) return false;
+        Block blk = b.block;
+        Boolean cached = crossTypeCache.get(blk);
+        if(cached != null) return cached;
+        boolean r;
+        try{
+            java.lang.reflect.Field f = blk.getClass().getField("allowCrossTypeCombo");
+            r = f.getBoolean(blk);
+        }catch(Throwable t){
+            r = false;
+        }
+        crossTypeCache.put(blk, r);
+        return r;
     }
 
     private static void addEdge(ObjectMap<Building, Seq<Building>> edges, Building a, Building b){
