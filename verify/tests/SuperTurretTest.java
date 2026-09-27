@@ -1123,6 +1123,34 @@ public class SuperTurretTest implements arc.ApplicationListener {
         int secondCells = loadedCells(second);
         System.out.println("[ST] 第二次合体（原料已被吃掉）：格数=" + secondCells + "（期望 0）");
         check("第二次合体拿不到免费炮台（" + secondCells + " 格）", secondCells == 0);
+
+        // (d) 重建 / 复制 / 蓝图：走的是 config()（只带布局），必须能把整台**完整**还原，
+        //     而且不许顺手拆掉世界里的原料炮台（用户报的"合体炮台无法完整重建，重建后是空的"）。
+        int rx = lx + 56, ry = ly + 24;
+        Building srcT1 = place(duo, rx, ry, Team.sharded);
+        Building srcT2 = place(duo, rx + 4, ry, Team.sharded);
+        run(10);
+        String mergeSrc = srcT1.tileX() + "," + srcT1.tileY() + ";" + srcT2.tileX() + "," + srcT2.tileY();
+        Block stSide3 = blockForSide(2);
+        Building made = place(stSide3, rx + 12, ry + 12, Team.sharded);
+        made.configured(null, (String) callStatic(clsST, "encodeConfig",
+            new Class<?>[] { String.class, String.class }, layout(cellBlock(duo), cellBlock(duo)), mergeSrc));
+        run(5);
+        check("（前置）合体出来 2 格", loadedCells(made) == 2);
+        // 现在拿它的 config()（= 重建/复制/蓝图那条路）在别处重建一台
+        String copyCfg = (String) call(made, "config", null);
+        Building rebuilt = place(stSide3, rx + 12, ry + 20, Team.sharded);
+        rebuilt.configured(null, copyCfg);
+        run(5);
+        int rebuiltCells = loadedCells(rebuilt);
+        // config() 必须是"只带布局、不带 sources"——带了就会在重建/粘贴时去拆世界里的炮台
+        String[] copyParts = (String[]) callStatic(clsST, "decodeConfig",
+            new Class<?>[] { String.class }, copyCfg);
+        boolean noSources = copyParts != null && copyParts.length > 1 && (copyParts[1] == null || copyParts[1].isEmpty());
+        System.out.println("[ST] 重建/复制: config 长度=" + (copyCfg == null ? -1 : copyCfg.length())
+            + " 重建后格数=" + rebuiltCells + "（期望 2） config 里的 sources=\"" + (copyParts == null ? "?" : copyParts[1]) + "\"");
+        check("重建/复制出来的合体炮台是完整的（" + rebuiltCells + " 格，用户报的'重建后是空的'）", rebuiltCells == 2);
+        check("重建/复制用的 config() 只带布局、不带 sources（不会顺手拆世界里的炮台）", noSources);
       }
 
       System.out.println("[ST] 结果: PASS=" + pass + " FAIL=" + fail);

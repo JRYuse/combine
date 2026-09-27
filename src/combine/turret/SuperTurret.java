@@ -2006,7 +2006,16 @@ public class SuperTurret extends Block {
     public Object config() {
       // 走紧凑编码：原版会把 config 塞进 ConstructFinish/TileConfig 包，
       // 客户端按 readObjectSafe（上限 1200 字符）读，超了会直接踢客户端（见 encodeConfig）。
-      return encodeConfig(layout, sources == null ? "" : sources);
+      //
+      // 【只带布局，不带 sources】用户报"合体炮台无法完整重建，重建后是空的"：
+      // 框选复制（F）、蓝图、以及核心机的重建都走 config() —— 以前这里把 sources 一起带出去，
+      // 于是重建/粘贴时又被当成"合体动作"去核对原料炮台；那些炮台早就没了 → 逐格判定把
+      // 每一格都清空 → 重建出来一台**空壳**。
+      // 现在 config() 只带布局：布局本身就定义了每格是哪台炮台（那些格子是方块内部的虚拟炮台，
+      // 不依赖世界里的原料），所以重建/粘贴能完整还原；同时也不会再去拆世界里的炮台
+      //（以前把蓝图贴到有炮台的地方会顺手把人家拆了）。
+      // 只会"吃原料"的合体动作仍然由 SuperTurretPlacer 显式带上 sources（见那边 encodeConfig(layout, sources)）。
+      return encodeConfig(layout, "");
     }
 
     @Override
