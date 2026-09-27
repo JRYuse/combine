@@ -853,6 +853,21 @@ public class Main extends Mod {
     return cls == target || (cls.isAnonymousClass() && cls.getSuperclass() == target);
   }
 
+  /**
+   * 方块（或其父类）的类名是不是 name。
+   * 用于"某些版本 / 某些客户端 jar 里压根没有这个类"的判定（如 AutoDoor）——
+   * 直接写 {@code instanceof AutoDoor} 会在类加载阶段就 NoClassDefFoundError，
+   * 用类名字符串比较则完全不受影响。
+   */
+  static boolean isClassNamed(Object o, String name) {
+    if (o == null || name == null)
+      return false;
+    for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass())
+      if (name.equals(c.getName()))
+        return true;
+    return false;
+  }
+
   /** 反射读字段, 兼容 159.7/160.1 字段差异 (X36 缺 heatConsumeRate 等), 缺字段回落默认值 */
   static float fieldFloat(Block b, String name, float def) {
     try {
@@ -1106,13 +1121,19 @@ public class Main extends Mod {
       boolean isWall = b instanceof Wall;
       boolean isDoor = isExact(b, mindustry.world.blocks.defense.Door.class);
       boolean isShield = isExact(b, mindustry.world.blocks.defense.ShieldWall.class); // 新增
-      if (!isWall && !isDoor && !isShield) // 条件加一个
+      // 自动门（原版 AutoDoor / blast-door）也 extends Wall，原来会被当成普通墙替换 ——
+      // 自动开关的行为就没了。这里单独认出来，作为 LinkWall 的 autodoor 模式融入。
+      // 按**类名**判断：低版本/别的客户端 jar 没有 AutoDoor 这个类，直接引用会在加载时
+      // NoClassDefFoundError（所以不能用 instanceof）。
+      boolean isAutoDoor = isClassNamed(b, "mindustry.world.blocks.defense.AutoDoor");
+      if (!isWall && !isDoor && !isShield && !isAutoDoor) // 条件加一个
         continue;
       try {
         LinkWall lw = createCombo(b, LinkWall.class);
         copyFields(b, lw);
         lw.mode = isShield ? LinkWall.Mode.shield
-            : (isDoor ? LinkWall.Mode.door : LinkWall.Mode.wall); // 三模式
+            : (isAutoDoor ? LinkWall.Mode.autodoor
+                : (isDoor ? LinkWall.Mode.door : LinkWall.Mode.wall)); // 四模式
         lw.update = true;
         lw.init();
         lw.postInit();

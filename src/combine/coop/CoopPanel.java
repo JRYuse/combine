@@ -165,6 +165,15 @@ public class CoopPanel {
   private static int side = 0;
 
   /**
+   * 面板相对屏幕的等比缩放（只在内容超宽/超高时缩小，从不放大）。
+   *
+   * <p>用户要求："点击组合工厂时他们上面会显示那个材料之类的，加个自适应缩放，不然有一些会很长" ——
+   * 超长的方块名 / 一大堆构成 / 多种物品·液体·弹仓会把面板撑得比屏幕还宽（两侧被裁掉、
+   * 面板也跟着上下翻面乱跳）。这里量一次面板尺寸，超出屏幕就整体缩小到塞得下。
+   */
+  private static float fitScale = 1f;
+
+  /**
    * 面板上"刚显示过"的物品/液体 + 最后一次有货的时刻（游戏秒）。
    *
    * <p>用户报："有的物品和液体在 0 和 1 的边缘跳，会导致面板也一直跳"。数量在 0/1 之间抖时，
@@ -406,12 +415,17 @@ public class CoopPanel {
     }
 
     table.pack();
+    // 【自适应缩放】内容太长时整体缩小到屏幕里（原点设在中心，位置逻辑按缩放后的尺寸算）。
+    fitScale = fitScaleFor(table);
+    table.setOrigin(Align.center);
     updatePosition();
     table.visible = true;
     table.touchable = Touchable.enabled;
     if (actions) {
-      table.setScale(0f, 1f);
-      table.actions(Actions.scaleTo(1f, 1f, 0.06f));
+      table.setScale(0f, fitScale);
+      table.actions(Actions.scaleTo(fitScale, fitScale, 0.06f));
+    } else {
+      table.setScale(fitScale, fitScale);
     }
 
     // 【不自动收起】面板打开后就一直留着，只在"点了其他位置 / 读档 / 目标失效"时关闭。
@@ -494,7 +508,8 @@ public class CoopPanel {
       arc.math.geom.Vec2 v2 = Core.input.mouseScreen(build.x, build.y - half);
       float belowY = v2.y - Core.scene.marginBottom + 4f;
       float sceneH = Core.scene.getHeight();
-      float h = table.getHeight();
+      // 用**缩放后**的尺寸判上下（否则缩小了还按原尺寸翻面）
+      float h = table.getHeight() * table.scaleY;
 
       if (side == 0) {
         // 第一次：上方塞得下就放上面（用户要的"浮在方块正上方"），塞不下才翻到下面
@@ -516,15 +531,30 @@ public class CoopPanel {
     }
   }
 
-  /** 按对齐方式摆好并夹在屏幕内。 */
+  /** 按对齐方式摆好并夹在屏幕内（尺寸一律按缩放后的算）。 */
   private static void placeClamped(float sx, float sy, int align) {
     float sceneW = Core.scene.getWidth(), sceneH = Core.scene.getHeight();
-    float halfW = table.getWidth() / 2f, h = table.getHeight();
+    float halfW = table.getWidth() * table.scaleX / 2f, h = table.getHeight() * table.scaleY;
     float cx = Mathf.clamp(sx, halfW + 4f, Math.max(halfW + 4f, sceneW - halfW - 4f));
-    float cy = (align & Align.top) != 0
-        ? Mathf.clamp(sy, 4f, Math.max(4f, sceneH - h - 4f))       // 面板在下方
-        : Mathf.clamp(sy, Math.min(h + 4f, sceneH), sceneH - 4f); // 面板在上方
-    table.setPosition(cx, cy, align);
+    // align=Align.top：面板在锚点下方；align=Align.bottom：面板在锚点上方。
+    float cy = (align & Align.top) != 0 ? sy - h / 2f : sy + h / 2f;
+    float minY = h / 2f + 4f, maxY = Math.max(minY, sceneH - h / 2f - 4f);
+    cy = Mathf.clamp(cy, minY, maxY);
+    table.setPosition(cx, cy, Align.center);
+  }
+
+  /** 面板相对屏幕的等比缩放：只在超出可用范围时缩小，从不放大。 */
+  static float fitScaleFor(Table t) {
+    try {
+      if (t == null || Core.scene == null)
+        return 1f;
+      float availW = Math.max(64f, Core.scene.getWidth() * 0.92f);
+      float availH = Math.max(64f, Core.scene.getHeight() * 0.92f);
+      float w = Math.max(t.getWidth(), 1f), h = Math.max(t.getHeight(), 1f);
+      return Math.min(1f, Math.min(availW / w, availH / h));
+    } catch (Throwable ignored) {
+      return 1f;
+    }
   }
 
   /**

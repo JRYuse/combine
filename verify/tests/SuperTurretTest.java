@@ -1040,6 +1040,62 @@ public class SuperTurretTest implements arc.ApplicationListener {
         }
       }
 
+      // ---------- 14) 联机安全：配置串长度 + 快照血量 ----------
+      {
+        // (a) 配置串不许超过原版 readObjectSafe 的 1200 上限，否则客户端会被
+        //     "String too long: 1200" 踢出去（用户 last_log (8).txt 里 ConstructFinish/TileConfig 两条栈）。
+        Block longest = duo;
+        for (Block b : Vars.content.blocks())
+          if (b instanceof Turret && cellBlock(b) != null && b.name.length() > longest.name.length())
+            longest = b;
+        StringBuilder lay = new StringBuilder();
+        for (int i = 0; i < 100; i++) {
+          if (i > 0)
+            lay.append(';');
+          lay.append(encodeCell(cellBlock(longest), 90f));
+        }
+        StringBuilder src = new StringBuilder();
+        for (int i = 0; i < 100; i++) {
+          if (i > 0)
+            src.append(';');
+          src.append(100 + i).append(',').append(200 + i);
+        }
+        String legacy = lay + "|" + src;
+        String cfg = (String) callStatic(clsST, "encodeConfig",
+            new Class<?>[] { String.class, String.class }, lay.toString(), src.toString());
+        System.out.println("[ST] 配置串: 旧文本 " + legacy.length() + " 字符 → 紧凑 " + (cfg == null ? -1 : cfg.length())
+            + " 字符（最长名字的炮台=" + longest.name + "）");
+        check("10x10 满格配置串 ≤ 1200（" + legacy.length() + " → " + (cfg == null ? -1 : cfg.length()) + "）",
+            cfg != null && cfg.length() <= 1200);
+        String[] back = (String[]) callStatic(clsST, "decodeConfig", new Class<?>[] { String.class }, cfg);
+        int backCells = back == null || back[0] == null || back[0].isEmpty() ? 0 : back[0].split(";", -1).length;
+        int backSrc = back == null || back[1] == null || back[1].isEmpty() ? 0 : back[1].split(";", -1).length;
+        check("紧凑配置串解码还原（格 " + backCells + " / 坐标 " + backSrc + "）", backCells == 100 && backSrc == 100);
+        String[] oldBack = (String[]) callStatic(clsST, "decodeConfig", new Class<?>[] { String.class }, legacy);
+        check("旧文本配置串仍然能读", oldBack != null && lay.toString().equals(oldBack[0]) && src.toString().equals(oldBack[1]));
+
+        // (b) 联机快照：服务端 writeSync 的字节在客户端 readSync 后，血量必须还是"整组累加"。
+        //     原版 readBase 会 health = min(read.f(), block.health)，不处理就会把整组血量夹回单台量级。
+        Block stSide = blockForSide(2);
+        Building server = place(stSide, lx + 30, ly + 24, Team.sharded);
+        server.configured(null, layout(cellBlock(duo), cellBlock(duo)));
+        run(10);
+        float expectedHp = 2 * duo.health;
+        server.health = server.maxHealth();
+        Building client = place(stSide, lx + 36, ly + 24, Team.sharded);
+        java.io.ByteArrayOutputStream snapBuf = new java.io.ByteArrayOutputStream();
+        arc.util.io.Writes snapW = new arc.util.io.Writes(new java.io.DataOutputStream(snapBuf));
+        server.writeSync(snapW);
+        byte[] snap = snapBuf.toByteArray();
+        arc.util.io.Reads snapR = new arc.util.io.Reads(new java.io.DataInputStream(new java.io.ByteArrayInputStream(snap)));
+        client.readSync(snapR, client.version());
+        run(3);
+        System.out.println("[ST] 快照血量: 服务端 " + server.maxHealth() + " / 客户端读到 " + client.health
+            + "（方块静态血量=" + stSide.health + "） 快照字节=" + snap.length);
+        check("客户端 readSync 后血量还是整组累加（" + client.health + " ≈ " + expectedHp + "）",
+            Math.abs(client.health - expectedHp) < 0.5f);
+      }
+
       System.out.println("[ST] 结果: PASS=" + pass + " FAIL=" + fail);
       Core.app.exit();
     } catch (Throwable t) {

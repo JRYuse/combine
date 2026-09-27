@@ -187,6 +187,134 @@ public class SuperTurret extends Block {
     }
   }
 
+  // ==================== 配置串（联机安全） ====================
+  //
+  // 【用户报】"文本数据包太长了超出上限会踢出客户端"：原版把方块的 config 用
+  // TypeIO.writeObject 塞进 ConstructFinish / TileConfig 包，客户端读的是
+  // TypeIO.readObjectSafe —— 里面有硬上限 1200 字符，超了直接抛
+  // "String too long: 1200" 把客户端踢掉（见 ~/sd/q/last_log (8).txt）。
+  // 老的 config() 返回 "方块名@朝向;…" + "x,y;…"，10x10 超级炮台（100 格）配上
+  // 长名字的模组炮台轻松过千、加上 sources 必超。这里改成紧凑二进制 + base64：
+  // 每格 4 字节（id + 朝向）、每个坐标 4 字节，100 格满载 ≈ 1070 字符，稳在 1200 以内。
+  // 老的 "layout|sources" 文本串仍然能读（旧存档/旧蓝图/旧客户端），只是不再往外写。
+
+  /** 紧凑配置串前缀：'~' + base64(二进制)。 */
+  public static final String CONFIG_TAG = "~";
+  /** 原版 readObjectSafe 的上限是 1200，留点余量。 */
+  public static final int CONFIG_MAX = 1150;
+
+  /** 把 layout + sources 编成"短到能过联机"的配置串。 */
+  public static String encodeConfig(String layout, String sources) {
+    try {
+      String enc = CONFIG_TAG + pack64(layout, sources);
+      if (enc.length() <= CONFIG_MAX)
+        return enc;
+      // 极端情况（格子/名字多到超限）：先丢掉 sources（只影响"落地后拆掉被框选的炮台"这一步），
+      // 还不够就只保留前 N 个格子 —— 绝不返回一个超限的串把客户端踢出去。
+      enc = CONFIG_TAG + pack64(layout, "");
+      if (enc.length() <= CONFIG_MAX)
+        return enc;
+      String[] toks = cellTokens(layout);
+      int keep = toks.length;
+      while (keep > 0 && (CONFIG_TAG + pack64(joinCells(toks, keep), "")).length() > CONFIG_MAX)
+        keep--;
+      return CONFIG_TAG + pack64(joinCells(toks, keep), "");
+    } catch (Throwable t) {
+      Log.err("[combine] 超级组合炮台：配置串编码失败（改用逐格文本）", t);
+      return layout == null ? "" : layout;
+    }
+  }
+
+  static String joinCells(String[] toks, int keep) {
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < keep && i < toks.length; i++) {
+      if (i > 0)
+        sb.append(';');
+      sb.append(toks[i]);
+    }
+    return sb.toString();
+  }
+
+  /** 逐格文本 layout/sources → base64(紧凑二进制)。 */
+  static String pack64(String layout, String sources) {
+    java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+    java.io.DataOutputStream d = new java.io.DataOutputStream(buf);
+    try {
+      String[] toks = cellTokens(layout);
+      d.writeByte(1);
+      d.writeShort(toks.length);
+      for (String tok : toks) {
+        Block cb = blockOfToken(tok);
+        d.writeShort(cb == null ? 0xFFFF : (cb.id & 0xFFFF));
+        d.writeShort(Math.round(rotOfToken(tok)) & 0xFFFF);
+      }
+      String[] src = (sources == null || sources.isEmpty()) ? new String[0] : sources.split(";");
+      d.writeShort(src.length);
+      for (String s : src) {
+        int comma = s == null ? -1 : s.indexOf(',');
+        if (comma < 0) {
+          d.writeShort(0);
+          d.writeShort(0);
+          continue;
+        }
+        try {
+          d.writeShort(Integer.parseInt(s.substring(0, comma).trim()) & 0xFFFF);
+          d.writeShort(Integer.parseInt(s.substring(comma + 1).trim()) & 0xFFFF);
+        } catch (Throwable t) {
+          d.writeShort(0);
+          d.writeShort(0);
+        }
+      }
+      d.flush();
+    } catch (Throwable ignored) {
+    }
+    return new String(arc.util.serialization.Base64Coder.encode(buf.toByteArray()))
+        .replace("\n", "").replace("\r", "");
+  }
+
+  /** 解出 {layout(逐格文本), sources(逐格文本)}；老的 "layout|sources" 文本串也认。 */
+  public static String[] decodeConfig(String cfg) {
+    if (cfg == null || cfg.isEmpty())
+      return new String[] { "", "" };
+    if (!cfg.startsWith(CONFIG_TAG)) {
+      int bar = cfg.indexOf('|');
+      return bar < 0 ? new String[] { cfg, "" } : new String[] { cfg.substring(0, bar), cfg.substring(bar + 1) };
+    }
+    try {
+      byte[] raw = arc.util.serialization.Base64Coder.decode(cfg.substring(CONFIG_TAG.length()).trim());
+      java.io.DataInputStream d = new java.io.DataInputStream(new java.io.ByteArrayInputStream(raw));
+      d.readByte(); // 格式号
+      int n = d.readUnsignedShort();
+      StringBuilder lay = new StringBuilder();
+      for (int i = 0; i < n; i++) {
+        int id = d.readUnsignedShort();
+        int rot = d.readShort();
+        if (i > 0)
+          lay.append(';');
+        if (id == 0xFFFF)
+          continue;
+        Block b = content.block(id);
+        Block cb = cellBlock(b);
+        String nm = cb != null ? cb.name : (b == null ? "" : b.name);
+        if (nm == null || nm.isEmpty())
+          continue;
+        lay.append(nm).append('@').append(rot);
+      }
+      StringBuilder src = new StringBuilder();
+      int sc = d.readUnsignedShort();
+      for (int i = 0; i < sc; i++) {
+        int x = d.readShort(), y = d.readShort();
+        if (i > 0)
+          src.append(';');
+        src.append(x).append(',').append(y);
+      }
+      return new String[] { lay.toString(), src.toString() };
+    } catch (Throwable t) {
+      Log.err("[combine] 超级组合炮台：配置串解码失败（按空布局处理）", t);
+      return new String[] { "", "" };
+    }
+  }
+
   /** 多格方块的格子在"原点 tile"基础上的偏移（和原版 setBlock 的多格展开一致）。 */
   public static int cellTile(int origin, int size, int index) {
     return origin - (size - 1) / 2 + index;
@@ -289,7 +417,8 @@ public class SuperTurret extends Block {
       drawDefaultPlanRegion(plan, list); // 底板 + 队伍色 + config 预览
     if (plan.block != this)
       return;
-    String[] tokens = cellTokens(plan.config instanceof String s ? s : null);
+    // 计划里的 config 可能是紧凑串（~base64，见 encodeConfig），先解成逐格文本再画虚影。
+    String[] tokens = cellTokens(decodeConfig(plan.config instanceof String s ? s : null)[0]);
     for (int i = 0; i < tokens.length && i < side * side; i++) {
       Block b = blockOfToken(tokens[i]);
       if (b == null)
@@ -1875,18 +2004,20 @@ public class SuperTurret extends Block {
 
     @Override
     public Object config() {
-      return layout + "|" + (sources == null ? "" : sources);
+      // 走紧凑编码：原版会把 config 塞进 ConstructFinish/TileConfig 包，
+      // 客户端按 readObjectSafe（上限 1200 字符）读，超了会直接踢客户端（见 encodeConfig）。
+      return encodeConfig(layout, sources == null ? "" : sources);
     }
 
     @Override
     public void configured(@Nullable mindustry.gen.Unit builder, @Nullable Object value) {
       if (value instanceof String s) {
-        int bar = s.indexOf('|');
-        applyLayout(bar < 0 ? s : s.substring(0, bar));
-        if (bar >= 0) {
-          sources = s.substring(bar + 1);
+        // 紧凑串（本模组新格式）和老文本串 "layout|sources" 都认。
+        String[] parts = decodeConfig(s);
+        applyLayout(parts[0]);
+        sources = parts[1] == null ? "" : parts[1];
+        if (!sources.isEmpty())
           consumeSources();
-        }
       } else if (value instanceof Integer packed) {
         // 选弹药：(格号 | ((物品id+1) << 16))，0 = 自动
         int idx = packed & 0xFFFF;
@@ -1936,6 +2067,29 @@ public class SuperTurret extends Block {
     @Override
     public byte version() {
       return 1;
+    }
+
+    /**
+     * 【联机血量】原版 {@code Building.readBase} 会 {@code health = Math.min(read.f(), block.health)} ——
+     * 这个 {@code block.health} 是"方块静态血量"（超级炮台按边长²估出来的一个小值，和多格炮台
+     * 累加出来的真实整组血量差一个量级）。联机快照（NetClient.blockSnapshot → readSync）和存档
+     * 读回的"整组血量"一过这里就被夹回单台量级 —— 用户报的"多人游戏时一段时间后合体炮台的
+     * 血量会回到一个炮台的血量"就是这个。
+     *
+     * <p>读的这一刻临时把静态上限放开，读完再按本台真实的 {@code maxHealth}（read() 里
+     * applyLayout → buildCells 按成员重算过）夹一次。
+     */
+    @Override
+    public void readAll(Reads read, byte revision) {
+      int old = block.health;
+      try {
+        block.health = Integer.MAX_VALUE;
+        super.readAll(read, revision);
+      } finally {
+        block.health = old;
+      }
+      if (maxHealth > 0.5f)
+        health = Mathf.clamp(health, 0f, maxHealth);
     }
 
     @Override
