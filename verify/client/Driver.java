@@ -253,8 +253,10 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::hideDialogs, 3f);
                 Timer.schedule(Driver::setupBigComboScene, 5f);
                 Timer.schedule(Driver::bigComboBuild, 8f);
+                Timer.schedule(Driver::floatPanelFillAll, 17f);
                 Timer.schedule(Driver::floatPanelTap, 18f);
                 Timer.schedule(() -> shot("floatpanel_open"), 26f);
+                Timer.schedule(Driver::floatPanelSizeReport, 27f);
                 Timer.schedule(Driver::floatPanelTapElsewhere, 28f);
                 Timer.schedule(() -> shot("floatpanel_after"), 34f);
                 Timer.schedule(() -> { Log.info("[drv] floatpanel 模式结束"); Core.app.exit(); }, 38f);
@@ -4552,6 +4554,61 @@ public class Driver extends Mod{
             Core.camera.position.set(pick.x, pick.y);
             installCameraLock();
         }catch(Throwable t){ Log.err("[drv] floatPanelTap failed", t); }
+    }
+
+    /** 把被点方块的池子灌满所有物品种类 —— 让悬浮面板内容足够高，能看出"封顶 + 可滚动"。 */
+    static void floatPanelFillAll(){
+        try{
+            if(bigComboMembers.isEmpty()) return;
+            Building pick = bigComboMembers.get(bigComboMembers.size() / 2);
+            if(pick.items != null){
+                int i = 0;
+                for(mindustry.type.Item it : Vars.content.items()){
+                    pick.items.add(it, 3 + (i % 5));
+                    i++;
+                }
+            }
+            if(pick.liquids != null){
+                int i = 0;
+                for(mindustry.type.Liquid lq : Vars.content.liquids()){
+                    pick.liquids.add(lq, 5f + i);
+                    i++;
+                }
+            }
+            Log.info("[drv] 悬浮面板灌满所有物品/液体（内容会变高，用来看滚动）");
+        }catch(Throwable t){ Log.err("[drv] floatPanelFillAll failed", t); }
+    }
+
+    /** 悬浮面板尺寸检查：面板必须封顶、内容在 ScrollPane 里（用户要求"大小限制一下、改成可滑动面板"）。 */
+    static void floatPanelSizeReport(){
+        try{
+            Class<?> cp = Class.forName("combine.coop.CoopPanel", true, ml);
+            arc.scene.Element el = Core.scene == null ? null : Core.scene.find("coopinventory");
+            if(el == null){ Log.err("[drv] 悬浮面板不在场景里"); return; }
+            arc.scene.ui.ScrollPane sp = null;
+            if(el instanceof arc.scene.Group g)
+                for(arc.scene.Element c : g.getChildren())
+                    if(c instanceof arc.scene.ui.ScrollPane p2){ sp = p2; break; }
+            float pw = el.getWidth(), ph = el.getHeight();
+            float sceneW = Core.scene.getWidth(), sceneH = Core.scene.getHeight();
+            Log.info("[drv] 悬浮面板尺寸: 面板=@x@ 屏幕=@x@ 有滚动条容器=@", (int)pw, (int)ph,
+                (int)sceneW, (int)sceneH, sp != null);
+            if(sp != null){
+                arc.scene.Element inner = sp.getWidget();
+                Log.info("[drv] 悬浮面板: 内容=@x@ 可滚高度=@ 当前滚动=@",
+                    (int)inner.getWidth(), (int)inner.getHeight(), (int)sp.getMaxY(), (int)sp.getScrollY());
+                // 内容比面板高 → 必须能滚（maxY>0）；内容本来就装得下 → 不算失败
+                boolean fits = inner.getHeight() + 12f <= ph + 1f;
+                if(ph <= sceneH * 0.78f && pw <= sceneW * 0.96f && (sp.getMaxY() > 1f || fits))
+                    Log.info("[drv] PASS 悬浮面板尺寸封顶（@x@ ≤ 屏幕 @x@ 的 78%/96%），内容可滚动=@（内容高 @ / 面板高 @）",
+                        (int)pw, (int)ph, (int)sceneW, (int)sceneH, sp.getMaxY() > 1f, (int)inner.getHeight(), (int)ph);
+                else
+                    Log.err("[drv] FAIL 面板没封顶 / 没滚动（面板 @x@ 屏幕 @x@ 可滚 @）",
+                        (int)pw, (int)ph, (int)sceneW, (int)sceneH, (int)sp.getMaxY());
+            }else{
+                Log.err("[drv] FAIL 悬浮面板里没有 ScrollPane");
+            }
+        }catch(Throwable t){ Log.err("[drv] floatPanelSizeReport failed", t); }
     }
 
     /** 点别处（空格子）：悬浮面板应该收起。 */

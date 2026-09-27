@@ -194,6 +194,9 @@ public class Main extends Mod {
     // "不组合"名单（设置界面里切换的）从 Core.settings 读回来
     CoopCombo.loadBlacklist();
 
+    // 悬浮面板：点击非己方建筑时要不要弹（设置界面里的复选框，见 CoopPanel/ComboBlockList）
+    combine.coop.CoopPanel.loadForeignSetting();
+
     // "只和玩家队友组合"总开关（设置界面里的复选框）
     combine.util.ComboTeams.load();
 

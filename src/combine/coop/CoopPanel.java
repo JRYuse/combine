@@ -46,7 +46,49 @@ public class CoopPanel {
   /** 总开关（想关掉点击面板就置 false）。 */
   public static boolean enabled = true;
 
+  /**
+   * "点击非自己队伍的建筑时也弹悬浮面板"（设置里可关）。
+   *
+   * <p>关掉之后只对自己队伍的方块弹面板 —— 玩家看敌人家门口的建筑时，
+   * 那块面板老是糊在屏幕上、还会挡住点击。
+   */
+  public static final String FOREIGN_KEY = "combine-panel-foreign";
+  public static boolean showForeign = true;
+
+  public static void loadForeignSetting() {
+    try {
+      showForeign = Core.settings.getBool(FOREIGN_KEY, true);
+    } catch (Throwable ignored) {
+    }
+  }
+
+  public static void setShowForeign(boolean value) {
+    showForeign = value;
+    try {
+      Core.settings.put(FOREIGN_KEY, value);
+    } catch (Throwable ignored) {
+    }
+  }
+
+  /** 这台建筑该不该弹面板：自己队伍的照旧；别人的看设置。 */
+  public static boolean teamAllowed(Building b) {
+    if (b == null)
+      return false;
+    if (showForeign)
+      return true;
+    try {
+      return Vars.player != null && b.team == Vars.player.team();
+    } catch (Throwable ignored) {
+      return true;
+    }
+  }
+
   private static final Table table = new Table();
+  /** 面板**内容**那一张表——rebuild 里所有行都加在它上面，再由 ScrollPane 包起来（见 rebuild 收尾）。
+   *  注意别叫 content：本文件静态导入了 {@code Vars.content}（内容表），重名会把它遮住。 */
+  private static final Table contentRows = new Table();
+  /** 内容的滚动容器（内容太长时只滚它，面板本身不再被撑到屏幕外）。 */
+  private static arc.scene.ui.ScrollPane scroll;
   private static Building build;
   private static boolean built = false;
 
@@ -81,7 +123,7 @@ public class CoopPanel {
       // 而 showFor 对"同一台建筑"是切换语义 —— 于是面板会"闪一下就没了"。
       // 这里做一次去抖：短时间内对同一台的重复点击直接忽略。
       if (!acceptTap(b)) return;
-      if (showable(b)) {
+      if (showable(b) && teamAllowed(b)) {
         showFor(b);
       } else {
         hide();
@@ -244,12 +286,18 @@ public class CoopPanel {
       return;
     }
     Table table = CoopPanel.table;
-    table.clearChildren();
+    // 【内容改成可滚动的那一张表】所有行都加到 content 上，最后由 ScrollPane 包起来
+    // —— 用户要求"悬浮面板的大小限制一下，改成可滑动面板"。
+    // 实时重画时保留当前滚动位置，免得池子数字一变（几乎每帧都在变）就跳回顶部。
+    float keepScroll = scroll == null ? 0f : scroll.getScrollY();
+    Table rows = CoopPanel.contentRows;
+    rows.clearChildren();
     // 只有"显示动画"那次才清动作：实时重画内容时清掉会把正在跑的缩放动画打断（面板卡在半截大小）
     if (actions) table.clearActions();
     table.background(mindustry.gen.Tex.inventory);
     try {
-      table.margin(4f);
+      rows.margin(4f);
+      table = rows; // 下面所有 table.add(...) 都落到内容表上
 
       Seq<Building> members = members(build);
       // 标题 + 构成
@@ -418,24 +466,53 @@ public class CoopPanel {
       return;
     }
 
-    table.pack();
-    // 【自适应缩放】内容太长时整体缩小到屏幕里（原点设在中心，位置逻辑按缩放后的尺寸算）。
-    fitScale = fitScaleFor(table);
-    table.setOrigin(Align.center);
+    // 【面板尺寸封顶 + 内容可滚动】内容再长也不把面板撑出屏幕（以前靠整块等比缩小，
+    // 内容一多就缩到看不清；现在宽度/高度封顶，超出部分在面板里滚）。
+    rows.pack();
+    if (scroll == null) {
+      scroll = new arc.scene.ui.ScrollPane(rows, mindustry.ui.Styles.smallPane);
+      scroll.setScrollingDisabled(true, false);   // 只纵向滚，横向不滚
+      scroll.setFadeScrollBars(false);
+      scroll.setOverscroll(false, false);
+    }
+    float sceneW = Core.scene == null ? 400f : Core.scene.getWidth();
+    float sceneH = Core.scene == null ? 400f : Core.scene.getHeight();
+    float capW = Math.max(200f, sceneW * 0.92f);
+    float capH = Math.max(160f, sceneH * 0.70f);
+    CoopPanel.table.clearChildren();
+    CoopPanel.table.background(mindustry.gen.Tex.inventory);
+    CoopPanel.table.margin(4f);
+    CoopPanel.table.add(scroll)
+        .width(Math.min(rows.getWidth() + 14f, capW))
+        .height(Math.min(rows.getHeight() + 10f, capH));
+    if (keepScroll > 0f) {
+      try {
+        scroll.setScrollY(Math.min(keepScroll, Math.max(0f, scroll.getMaxY())));
+        scroll.updateVisualScroll();
+      } catch (Throwable ignored) {
+      }
+    }
+    CoopPanel.table.pack();
+    // 【自适应缩放】兜底：万一还是超过屏幕（超小窗口）就整体缩一点
+    // 注意这里必须用**外层面板** CoopPanel.table —— 上面 table 这个局部变量已经被
+    // 换成了内容表（rows），拿它设 visible/缩放就会出现"面板尺寸算对了、但一直是隐藏的"。
+    fitScale = fitScaleFor(CoopPanel.table);
+    CoopPanel.table.setOrigin(Align.center);
     updatePosition();
-    table.visible = true;
-    table.touchable = Touchable.enabled;
+    CoopPanel.table.visible = true;
+    CoopPanel.table.touchable = Touchable.enabled;
     if (actions) {
-      table.setScale(0f, fitScale);
-      table.actions(Actions.scaleTo(fitScale, fitScale, 0.06f));
+      CoopPanel.table.setScale(0f, fitScale);
+      CoopPanel.table.actions(Actions.scaleTo(fitScale, fitScale, 0.06f));
     } else {
-      table.setScale(fitScale, fitScale);
+      CoopPanel.table.setScale(fitScale, fitScale);
     }
 
     // 【不自动收起】面板打开后就一直留着，只在"点了其他位置 / 读档 / 目标失效"时关闭。
     // （以前有个"池子空置 30 秒自动收起"，但计时器不清零，重开后会瞬间到期，
     //   表现成"闪一下就没了"；按需求直接去掉这类定时收起。）
-    table.update(() -> {
+    // 同理：实时刷新挂在**外层面板**上（局部 table 现在是内容表）
+    CoopPanel.table.update(() -> {
       if (state.isMenu() || build == null || !build.isValid()) {
         lastSignature = null;
         hide();
