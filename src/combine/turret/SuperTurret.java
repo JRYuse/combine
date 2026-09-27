@@ -699,7 +699,13 @@ public class SuperTurret extends Block {
     Turret t = (Turret) cb;
     if (!(t.drawer instanceof DrawTurret dt))
       return;
-    float x = c.x + c.recoilOffset.x, y = c.y + c.recoilOffset.y;
+    // 【后坐力也要跟着缩】每格按 k 缩到 1x1 之后，后坐的两部分原来还按原尺寸算：
+    //   ① 整台位移 c.recoilOffset（= pow(curRecoil, recoilPow) * block.recoil 像素）；
+    //   ② 各部件按 PartProgress.recoil 的像素位移（写在 part.moves 里，mulPartOffsets 没动它）。
+    // 于是缩小的炮台一开火，炮管会"飞出格子"（用户报的"炮台缩放到 1*1 后相应的后坐力也要缩放"）。
+    // 这里把整台位移乘 k、把传给部件的后坐进度也乘 k —— 两处一起缩，视觉比例才和贴图一致。
+    float rec = cellScale(cb);
+    float x = c.x + c.recoilOffset.x * rec, y = c.y + c.recoilOffset.y * rec;
     float rot = c.drawrot();
     // 【z 层照原版 DrawTurret】原版在 turretLayer(50) 画本体/部件、49.99 画描边、
     // heatLayer(50.1) 画热量 —— 之前在调用方的 z(30,方块层)画，炮管被底板/别的方块
@@ -728,7 +734,7 @@ public class SuperTurret extends Block {
 
     // 3) 描边 + parts（原版同一段；逐件隔离，一件坏了不拖垮整格）
     // 部件偏移随 k 缩放（见 mulPartOffsets；缩 0.5 的大炮台必须缩偏移否则零件飞出格外）
-    float pk = cellScale(cb);
+    float pk = rec; // 同一个缩放系数（cellScale）：上面算过一次，这里复用，别算两遍
     if (pk != 1f)
       for (mindustry.entities.part.DrawPart part : dt.parts)
         mulPartOffsets(part, pk);
@@ -741,10 +747,10 @@ public class SuperTurret extends Block {
       }
       float progress = c.progress();
       mindustry.entities.part.DrawPart.PartParams params = mindustry.entities.part.DrawPart.params
-          .set(c.warmup(), 1f - progress, 1f - progress, c.heat, c.curRecoil, c.charge, x, y, c.rotation);
+          .set(c.warmup(), 1f - progress, 1f - progress, c.heat, c.curRecoil * rec, c.charge, x, y, c.rotation);
       for (mindustry.entities.part.DrawPart part : dt.parts) {
         try {
-          params.setRecoil(part.recoilIndex >= 0 && c.curRecoils != null ? c.curRecoils[part.recoilIndex] : c.curRecoil);
+          params.setRecoil((part.recoilIndex >= 0 && c.curRecoils != null ? c.curRecoils[part.recoilIndex] : c.curRecoil) * rec);
           part.draw(params);
         } catch (Throwable e) {
           // 这一个部件画不出来就算了，别像原版那样把整段（描边+所有部件）全带丢
@@ -763,10 +769,10 @@ public class SuperTurret extends Block {
         float progress = c.progress();
         // 注意：ammoParts 的"除回去"统一放 finally 里，别在这里再除一遍
         mindustry.entities.part.DrawPart.PartParams params = mindustry.entities.part.DrawPart.params
-            .set(c.warmup(), 1f - progress, 1f - progress, c.heat, c.curRecoil, c.charge, x, y, c.rotation);
+            .set(c.warmup(), 1f - progress, 1f - progress, c.heat, c.curRecoil * rec, c.charge, x, y, c.rotation);
         for (mindustry.entities.part.DrawPart part : parts) {
           try {
-            params.setRecoil(part.recoilIndex >= 0 && c.curRecoils != null ? c.curRecoils[part.recoilIndex] : c.curRecoil);
+            params.setRecoil((part.recoilIndex >= 0 && c.curRecoils != null ? c.curRecoils[part.recoilIndex] : c.curRecoil) * rec);
             part.draw(params);
           } catch (Throwable ignored) {
           }

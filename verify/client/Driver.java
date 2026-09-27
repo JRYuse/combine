@@ -197,7 +197,12 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::setupSuperTurretScene, 6f);
                 Timer.schedule(Driver::checkSuperTurretButton, 14f);
                 Timer.schedule(() -> shot("mergebtn_row"), 17f);
-                Timer.schedule(() -> { Log.info("[drv] mergebtn 模式结束"); Core.app.exit(); }, 20f);
+                // 用户要求："炮台缩放到 1*1 后相应的后坐力也要缩放" —— 摆一台带大炮台格子的
+                // 超级炮台，把每格后坐拉满，截图 + 报"缩放前后"的后坐位移。
+                Timer.schedule(Driver::superTurretRecoilShot, 19f);
+                Timer.schedule(Driver::superTurretRecoilReport, 22f);
+                Timer.schedule(() -> shot("superturret_recoil"), 23f);
+                Timer.schedule(() -> { Log.info("[drv] mergebtn 模式结束"); Core.app.exit(); }, 26f);
                 Timer.schedule(() -> { Log.info("[drv] mergebtn 超时结束"); Core.app.exit(); }, 120f);
             }else if(mode.equals("rep")){
                 // 用户复现存档（stainedMountains）：读档 → 存档 → 再读档，看物品会不会变多。
@@ -3638,6 +3643,63 @@ public class Driver extends Mod{
         } catch (Throwable t) {
             Log.err("[drv] 7x7 测试失败", t);
         }
+    }
+
+    /**
+     * 用户要求："炮台缩放到 1*1 后相应的后坐力也要缩放"。
+     * 摆一台带"大炮台"格子的超级炮台（大炮台每格缩放 < 1），把每格后坐拉满，
+     * 报"缩放前/缩放后"的后坐位移，并留一张放大截图看炮管有没有飞出格子。
+     */
+    /** 后坐用例摆放出来的那台（每帧把它的后坐钉在最大值）。 */
+    static Building recoilDemo;
+
+    static void superTurretRecoilShot(){
+        try{
+            Class<?> st = superTurretCls();
+            Block b3 = (Block) invokeStatic(st, "blockForSide", new Class<?>[] { int.class }, 3);
+            if(b3 == null){ Log.err("[drv] 3x3 超级炮台没装配出来"); return; }
+            // 2 台小炮台（k≈0.94）+ 1 台大炮台（k=0.25，foreshadow 的后坐位移 5px 最明显）
+            String lay = "duo@0;duo@0;foreshadow@0";
+            Building b = directPlace(b3, 96, 96, lay);
+            if(b == null){ Log.err("[drv] 后坐用例摆放失败"); return; }
+            recoilDemo = b;
+            // 每帧把每格后坐钉在 1（原版会自己衰减），这样截图那一刻炮管就在最大后坐位置
+            arc.Events.run(mindustry.game.EventType.Trigger.update, () -> {
+                try{
+                    if(recoilDemo == null || !recoilDemo.isValid()) return;
+                    Object[] cs = (Object[]) getField(recoilDemo, "cells");
+                    for(Object o : cs){
+                        if(!(o instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild c)) continue;
+                        c.curRecoil = 1f;
+                        if(c.curRecoils != null)
+                            for(int i = 0; i < c.curRecoils.length; i++) c.curRecoils[i] = 1f;
+                    }
+                }catch(Throwable ignored){}
+            });
+            ensurePlayerUnit((96 + 1) * 8f + 4f, (96 + 3) * 8f);
+            Core.camera.position.set((96 + 1) * 8f + 4f, (96 + 1) * 8f + 4f);
+        }catch(Throwable t){ Log.err("[drv] superTurretRecoilShot failed", t); }
+    }
+
+    /** 后坐用例：把"缩放前/缩放后"的后坐位移抄到日志（格子 update 跑过几帧之后再调用）。 */
+    static void superTurretRecoilReport(){
+        try{
+            if(recoilDemo == null || !recoilDemo.isValid()){ Log.err("[drv] 后坐用例不在场"); return; }
+            Class<?> st = superTurretCls();
+            Object[] cells = (Object[]) getField(recoilDemo, "cells");
+            float maxDelta = 0f;
+            for(Object o : cells){
+                if(!(o instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild c)) continue;
+                Block cb = c.block;
+                float scale = ((Number) invokeStatic(st, "cellScale", new Class<?>[] { Block.class }, cb)).floatValue();
+                float off = c.recoilOffset.len();
+                float scaled = off * scale;
+                maxDelta = Math.max(maxDelta, off - scaled);
+                Log.info("[drv] 后坐缩放: 格=@ 每格缩放=@ 方块recoil=@ 后坐位移@ → 缩放后@",
+                    cb.name, scale, ((mindustry.world.blocks.defense.turrets.Turret) cb).recoil, off, scaled);
+            }
+            Log.info("[drv] 后坐缩放: 最大被缩掉的位移=@px（不缩就是大炮台炮管飞出格子的那一截）", maxDelta);
+        }catch(Throwable t){ Log.err("[drv] superTurretRecoilReport failed", t); }
     }
 
     /** 这台超级炮台里面所有格子一共打了几发。 */
