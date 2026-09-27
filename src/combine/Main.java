@@ -17,6 +17,7 @@ import combine.production.CombinedGenerator;
 import combine.production.CombinedPump;
 import combine.production.CombinedSolidPump;
 import combine.production.CombinedWallCrafter;
+import combine.production.CombinedVariableReactor;
 import combine.saves.SafeW11;
 import combine.saves.SafeWLegacy;
 import combine.saves.SafeWShort;
@@ -89,6 +90,7 @@ import mindustry.world.blocks.production.BurstDrill;
 import mindustry.world.blocks.production.Drill;
 import mindustry.world.blocks.production.GenericCrafter;
 import mindustry.world.blocks.production.HeatCrafter;
+import mindustry.world.blocks.power.VariableReactor;
 import mindustry.world.blocks.production.Incinerator;
 import mindustry.world.blocks.production.Fracker;
 import mindustry.world.blocks.production.Pump;
@@ -968,6 +970,10 @@ public class Main extends Mod {
       boolean isGenerator = isExact(b, ConsumeGenerator.class)
           || isExact(b, ImpactReactor.class)
           || isExact(b, NuclearReactor.class) || isExact(b, HeaterGenerator.class);
+      // 通量反应堆（flux-reactor, Erekir VariableReactor）：既不是 ConsumeGenerator 也不是
+      // 上面几种，以前完全没被接管 → "通量反应堆无法组合"（用户报的）。单独走
+      // CombinedVariableReactor（继承原版，存/读档和原版一致）。
+      boolean isFlux = isExact(b, VariableReactor.class);
       boolean isLaunchPad = isExact(b, LaunchPad.class);
       // 接收台（campaign LandingPad）：组合类 CombinedLandingPad 一直写好了但**从没接进来**，
       // 于是"接收台"从来没被组合过（用户报的"CombinedLandingPad 的组合怎么没了"）。
@@ -1013,7 +1019,7 @@ public class Main extends Mod {
           && !isLogic && !isContLiquidTurret && !isLiquidTurret && !isItemTurret
           && !isPowerTurret && !isLaserTurret
           && !isPump && !isSolidPump && !isFracker && !isWallCrafter
-          && !isUnitFactory && !isReconstructor)
+          && !isUnitFactory && !isReconstructor && !isFlux)
         continue;
 
       // 防止重复处理已转换类型
@@ -1029,11 +1035,14 @@ public class Main extends Mod {
           || b instanceof CombinedFracker
           || b instanceof CombinedWallCrafter
           || b instanceof CombinedUnitFactory
-          || b instanceof CombinedReconstructor)
+          || b instanceof CombinedReconstructor
+          || b instanceof CombinedVariableReactor)
         continue;
 
       Block combo;
-      if (isFactory || isHeatCrafter || isHeatProducer || isSeparator || isAttribute) {
+      if (isFlux) {
+        combo = createCombo(b, CombinedVariableReactor.class);
+      } else if (isFactory || isHeatCrafter || isHeatProducer || isSeparator || isAttribute) {
         CombinedCrafter cc = createCombo(b, CombinedCrafter.class);
         if (isExact(b, HeatProducer.class))
           cc.mode = CombinedCrafter.Mode.heatproducer;

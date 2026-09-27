@@ -204,6 +204,9 @@ public class CombinedTurret extends Turret {
     public Seq<CombinedTurretBuild> comboGroup = new Seq<>();
     public boolean comboDirty = true;
     public float comboTotalLiquidCap = 0f;
+    /** 整组可得的组合热量池（与 CombinedCrafter.availableHeat 同一口径）。 */
+    public float comboPooledHeat = 0f;
+    public float lastPooledHeatTime = -1f;
     /** laser 模式：维持中的光束（复刻 LaserTurretBuild.bullets） */
     public Seq<BulletEntry> bullets = new Seq<>();
 
@@ -248,6 +251,57 @@ public class CombinedTurret extends Turret {
       if (l.comboGroup == null)
         l.comboGroup = new Seq<>();
       return l.comboGroup;
+    }
+
+    /**
+     * 【组合热量共享】整组可得的需热池。
+     *
+     * <p>原版 {@code TurretBuild.updateTile} 只按 {@code calculateHeat(proximity)} 取"贴着"的热源，
+     * 于是组合体里只有贴到产热机的那一台有热、其余全是 0（用户报的"热量相关炮台/劫难/魔灵
+     * 无法共享热量"）。这里和 {@link CombinedCrafter} 的 {@code availableHeat} 用同一口径：
+     * 逐台把【直接相邻】的外部热源汇进来（组合发电机/组合工厂按整组产量、去重），
+     * 再加跨距离的组合网络热量 —— 但绝不调用其它建筑的 heat() 递归。
+     */
+    public float pooledHeatAvailable() {
+      CombinedTurretBuild l = leader();
+      if (l.lastPooledHeatTime != Time.time) {
+        l.lastPooledHeatTime = Time.time;
+        float sum = 0f;
+        ObjectSet<Object> counted = new ObjectSet<>();
+        for (CombinedTurretBuild member : l.group()) {
+          if (!member.isValid())
+            continue;
+          for (Building b : member.proximity) {
+            if (b == null || !b.isValid() || b.team != team)
+              continue;
+            if (b instanceof combine.production.CombinedGenerator.CombinedGeneratorBuild gb) {
+              // 发电机簇（电制热机/核反应堆）：贴到任意一台即读整簇共享热量
+              if (counted.add(gb.leader()))
+                sum += gb.getComboHeat();
+            } else if (b instanceof CombinedCrafter.CombinedCrafterBuild other) {
+              CombinedCrafter ob = (CombinedCrafter) other.block;
+              if (ob.mode == CombinedCrafter.Mode.heatproducer) {
+                if (counted.add(other.leader()))
+                  for (CombinedCrafter.CombinedCrafterBuild p : other.group())
+                    if (p.isValid())
+                      sum += p.producerHeat;
+              } else if (ob.heatOutput > 0) {
+                if (counted.add(other.leader()))
+                  sum += other.getComboHeat();
+              }
+            } else if (b instanceof mindustry.world.blocks.heat.HeatBlock hb
+                && !(b instanceof CombinedCrafter.CombinedCrafterBuild)
+                && !(b instanceof combine.production.CombinedGenerator.CombinedGeneratorBuild)
+                && b != this) {
+              // 原版热源（原版电热器、热路由器等）
+              sum += hb.heat();
+            }
+          }
+        }
+        sum += ComboNet.heatFor(l);
+        l.comboPooledHeat = sum;
+      }
+      return l.comboPooledHeat;
     }
 
     public void rebuildCombo() {
@@ -669,7 +723,7 @@ public class CombinedTurret extends Turret {
       // ComboNet 已把整张网络的热量按各组需求比例分配到组 leader（与组合工厂同一个池），
       // 这里每帧并取最大值：贴着连接件时原版路径已经算过、远程时由网络分配补上。
       if (heatRequirement > 0) {
-        heatReq = Math.max(heatReq, ComboNet.heatFor(leader()));
+        heatReq = Math.max(heatReq, pooledHeatAvailable());
       }
     }
 

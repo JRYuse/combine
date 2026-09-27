@@ -22,6 +22,7 @@ import mindustry.game.Team;
 import mindustry.gen.Building;
 import mindustry.graphics.Pal;
 import mindustry.type.Item;
+import mindustry.type.Liquid;
 import mindustry.ui.Bar;
 import mindustry.world.Block;
 import mindustry.world.Tile;
@@ -38,6 +39,8 @@ import static mindustry.Vars.*;
 public class CombinedWallCrafter extends WallCrafter {
     public boolean allowCrossTypeCombo = true;
     public float itemCapacityMultiplier = 1f;
+    /** 单台液容（记在 init 第一次，之后 liquidCapacity 被抬成 9999 假容量）。 */
+    public float baseLiquidCapacity = 10f;
 
     public Seq<Item> cachedItems = new Seq<>();
 
@@ -53,6 +56,11 @@ public class CombinedWallCrafter extends WallCrafter {
     public void init() {
         super.init();
         hasItems = true;
+        // 【组合液池】把 liquidCapacity 抬到 9999（和别的组合建筑一个口径），
+        // 否则共享池一超过单台液容(10)，原版管道就判定"满了"彻底断流 —— 组里其它台永远没氢可用。
+        if (combine.util.ComboReflect.captureBaseLiquidCapOnce(this))
+            baseLiquidCapacity = liquidCapacity;
+        liquidCapacity = 9999f;
         cachedItems.clear();
         conductivePower = true;
         if (output != null)
@@ -165,9 +173,15 @@ public class CombinedWallCrafter extends WallCrafter {
             for (CombinedWallCrafterBuild b : newGroup)
                 if (b.isValid())
                     totalItemCap += b.block.itemCapacity;
+            float totalLiquidCap = 0f;
             for (CombinedWallCrafterBuild b : newGroup)
                 if (b.isValid())
+                    totalLiquidCap += b.liquidCapacityForCombo();
+            for (CombinedWallCrafterBuild b : newGroup)
+                if (b.isValid()) {
                     b.comboTotalItemCap = totalItemCap;
+                    b.comboTotalLiquidCap = totalLiquidCap;
+                }
 
             if (oldGroup.size > newGroup.size)
                 splitAssets(oldGroup, newGroup);
@@ -179,8 +193,14 @@ public class CombinedWallCrafter extends WallCrafter {
                     old.comboGroup = new Seq<>();
                     old.comboDirty = true;
                     old.comboTotalItemCap = 0;
+                    old.comboTotalLiquidCap = 0f;
                 }
             }
+        }
+
+        /** 单台液容（block.liquidCapacity 被抬成 9999 假容量，这里取 init 记下的基础值）。 */
+        public float liquidCapacityForCombo() {
+            return ((CombinedWallCrafter) block).baseLiquidCapacity;
         }
 
         public void splitAssets(Seq<CombinedWallCrafterBuild> oldGroup,
@@ -261,8 +281,12 @@ public class CombinedWallCrafter extends WallCrafter {
                 for (CombinedWallCrafterBuild b : newGroup)
                     if (b.isValid())
                         b.items = oldItems;
-            for (int i = 0; i < kicked.size; i++)
+            for (int i = 0; i < kicked.size; i++) {
                 kicked.get(i).items = newItemMods[i];
+                // 拆出去的成员拿一口空液池：液体留在组池里（和物品"留在组里"同一口径），
+                // 避免它继续 alias 组池后被后续独立运行搬空/重复写档。
+                kicked.get(i).liquids = new LiquidModule();
+            }
         }
 
         public void shareModules(CombinedWallCrafterBuild leader) {
@@ -299,6 +323,37 @@ public class CombinedWallCrafter extends WallCrafter {
                     if (m.isValid())
                         m.items = leader.items;
                 if (leader.items != null) leader.items.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
+            }
+
+            // ---- 液体池同理：整组共用一份 liquids（去重后每口池子只写一份）----
+            if (leader.liquids == null) {
+                for (CombinedWallCrafterBuild m : group())
+                    if (m.liquids != null) {
+                        leader.liquids = m.liquids;
+                        break;
+                    }
+            }
+            ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(group());
+            LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
+            if (sharedLiquids != null) leader.liquids = sharedLiquids;
+            ObjectSet<LiquidModule> processedLiquids = new ObjectSet<>();
+            if (leader.liquids != null) {
+                processedLiquids.add(leader.liquids);
+                for (CombinedWallCrafterBuild m : group()) {
+                    if (m != leader && m.isValid() && m.liquids != null && !processedLiquids.contains(m.liquids)
+                            && !sharedLiquidPools.contains(m.liquids)) {
+                        processedLiquids.add(m.liquids);
+                        for (Liquid liquid : content.liquids()) {
+                            float amt = m.liquids.get(liquid);
+                            if (amt > 0f)
+                                leader.liquids.add(liquid, amt); // 全额并入
+                        }
+                    }
+                }
+                for (CombinedWallCrafterBuild m : group())
+                    if (m.isValid())
+                        m.liquids = leader.liquids;
+                leader.liquids.stopFlow(); // 组内搬池子不算流量
             }
         }
 
@@ -337,6 +392,16 @@ public class CombinedWallCrafter extends WallCrafter {
                     if (shared)
                         items = new ItemModule();
                 }
+                if (liquids != null) {
+                    boolean shared = false;
+                    for (CombinedWallCrafterBuild m : members)
+                        if (m != this && m.isValid() && m.liquids == this.liquids) {
+                            shared = true;
+                            break;
+                        }
+                    if (shared)
+                        liquids = new LiquidModule();
+                }
             }
             if (wasLeader) {
                 Seq<CombinedWallCrafterBuild> survivors = new Seq<>();
@@ -374,10 +439,12 @@ public class CombinedWallCrafter extends WallCrafter {
                 for (int i = 0; i < survivors.size; i++) {
                     CombinedWallCrafterBuild b = survivors.get(i);
                     b.items = itemMods[i];
+                    b.liquids = new LiquidModule(); // 液体整池留在原组长那一份，幸存者各自空池
                     b.comboLeader = null;
                     b.comboGroup = new Seq<>();
                     b.comboDirty = true;
                     b.comboTotalItemCap = 0;
+                    b.comboTotalLiquidCap = 0f;
                 }
             } else {
                 CombinedWallCrafterBuild leader = leader();
@@ -394,7 +461,39 @@ public class CombinedWallCrafter extends WallCrafter {
         // -------------------- 核心逻辑 --------------------
         @Override
         public boolean acceptItem(Building source, Item item) {
-            return false; // 产出型方块，不接受外部物品
+            // 【石墨强化】原版 WallCrafter 的 itemConsumer（高级墙壁粉碎机 = consumeItem(graphite).boost()）
+            // 是"吃物品加速"的，必须能收进来。以前一律 false，石墨永远进不去（用户报的）。
+            // 和原版 Building.acceptItem 同款：只收本机/本组用得到的物品，且不超过整组物品上限。
+            return block.hasItems && block.consumesItem(item)
+                    && items != null && items.get(item) < getMaximumAccepted(item);
+        }
+
+        @Override
+        public boolean acceptLiquid(Building source, Liquid liquid) {
+            if (!block.hasLiquids || liquid == null)
+                return false;
+            // 只收本机真正消费的液体（高级墙壁粉碎机 = 氢气）；纯产出的墙切割机仍然拒收。
+            return block.consumesLiquid(liquid)
+                    && liquids != null && liquids.get(liquid) < Math.max(comboTotalLiquidCap, 1f) - 0.01f;
+        }
+
+        @Override
+        public void handleLiquid(Building source, Liquid liquid, float amount) {
+            if (amount <= 0.001f)
+                return;
+            float room = Math.max(comboTotalLiquidCap, 0f) - liquids.get(liquid);
+            if (room <= 0f)
+                return;
+            super.handleLiquid(source, liquid, Math.min(amount, room));
+        }
+
+        @Override
+        public void dumpLiquid(Liquid liquid, float scaling, int outputDir) {
+            // 池子是整组的，管道要按整组液容算填充度，否则共享池超过单台液容就断流。
+            float oldCap = block.liquidCapacity;
+            block.liquidCapacity = Math.max(comboTotalLiquidCap, 1f);
+            super.dumpLiquid(liquid, scaling, outputDir);
+            block.liquidCapacity = oldCap;
         }
 
         @Override
