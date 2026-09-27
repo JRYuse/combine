@@ -624,6 +624,7 @@ public class CombinedTurret extends Turret {
 
     @Override
     public void updateTile() {
+      if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
       if (isLeader() && comboDirty)
         rebuildCombo();
       if (isLeader())
@@ -666,6 +667,15 @@ public class CombinedTurret extends Turret {
         }
       } else {
         super.updateTile();
+      }
+
+      // 【组合网络热量】原版 Turret 只在 updateTile 里用 calculateHeat(proximity 贴着的邻居)
+      // 算 heatReq ——  afflict 这类被替换的需热炮台一旦离节点/连接器有距离，跨距离连线
+      // 传来的组合热量永远并不到 heatReq 上（用户报的"组合体有热量但 afflict 收不到"）。
+      // ComboNet 已把整张网络的热量按各组需求比例分配到组 leader（与组合工厂同一个池），
+      // 这里每帧并取最大值：贴着连接件时原版路径已经算过、远程时由网络分配补上。
+      if (heatRequirement > 0) {
+        heatReq = Math.max(heatReq, ComboNet.heatFor(leader()));
       }
     }
 
@@ -850,10 +860,18 @@ public class CombinedTurret extends Turret {
         cont.row();
         if (team != player.team())
           return;
-        // ===== 仿原版：血量/液体/电力等全部 bars（displayBars 遍历 block 注册的 bar） =====
+        // 只留过程量条（血量）：物品池 / 液体池 / 电力条挪到悬浮面板（用户要求
+        // display() 里别再列物品/液体/电力）。
         cont.table(bars -> {
           bars.defaults().growX().height(18f).pad(4);
-          displayBars(bars);
+          if (!Mathf.zero(block.health, 0.001f)) {
+            final float h = health, mh = maxHealth;
+            bars.add(new Bar(
+                () -> Core.bundle.get("stat.health", "Health") + " " + (int) Math.max(h, 0),
+                () -> Pal.health,
+                () -> Mathf.clamp(h / mh)));
+            bars.row();
+          }
         }).growX();
         cont.row();
 
@@ -869,44 +887,8 @@ public class CombinedTurret extends Turret {
 
     public void buildComboIO(Table table) {
       table.left();
-      table.add("[lightgray]组合体构成:").left();
-      table.row();
-      ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-      for (Building member : ComboNet.displayMembers(this, group().size)) {
-        if (member.isValid()) {
-          int old = blockCounts.get(member.block, 0);
-          blockCounts.put(member.block, old + 1);
-        }
-      }
-      Seq<Block> sorted = new Seq<>();
-      for (Block b : blockCounts.keys())
-        sorted.add(b);
-      sorted.sort(b -> b.id);
-      boolean hasContent = false;
-      for (Block b : sorted) {
-        int count = blockCounts.get(b, 0);
-        if (count > 0) {
-          hasContent = true;
-          table.add(b.localizedName + "*" + count).color(Color.white).left();
-          table.row();
-        }
-      }
-      if (!hasContent) {
-        table.add("[darkGray]无").left();
-        table.row();
-      }
-      LiquidModule liq = liquids;
-      if (liq == null) {
-        CombinedTurretBuild l = leader();
-        if (l != null)
-          liq = l.liquids;
-      }
-      if (liq != null && liq.currentAmount() > 0.001f && liq.current() != null) {
-        table.add("[lightgray]共享液体池:[] " + liq.current().localizedName + " "
-            + Strings.fixed(liq.currentAmount(), 1) + "/" + Strings.fixed(Math.max(comboTotalLiquidCap, 1f), 1))
-            .left();
-        table.row();
-      }
+      // 共享液体池那行也去掉了（悬浮面板里有液体池）。
+      ComboUi.addComposition(table, this, group().size);
     }
   }
 }

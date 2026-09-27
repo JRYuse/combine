@@ -102,8 +102,84 @@ public class DrillComboSpeedTest implements ApplicationListener{
 
         check("组合矿机（3 台）比单台挖得多（" + b + " > " + a + "）", b > a);
         check("组合矿机产量按台数成倍（≥ 2 倍单台）", a > 0 && b >= a * 2);
+
+        // ---- C：面板上的"每种物品的挖掘总速率"（用户要求：统计组合体里所有组合钻头） ----
+        try{
+            java.lang.reflect.Method m = b1.getClass().getMethod("groupDrillRates", arc.struct.ObjectFloatMap.class);
+            m.setAccessible(true);
+            Rates r1 = ratesOf(m, b1);
+            Rates r2 = ratesOf(m, b2);
+            System.out.println("[DS] 整组挖速(每种物品): " + r1.text);
+            check("组里三台的每种物品挖速都统计到（" + r1.text + "）", r1.sum > 0.001f);
+            check("同一组里任意一台报的整组速率一致（" + r1.sum + " == " + r2.sum + "）",
+                Math.abs(r1.sum - r2.sum) < 0.01f);
+
+            // 口径核对：整组速率 == Σ 每台"自己的钻速"（= 每台面板那条 bar.drillspeed 的值）
+            float expect = 0f, one = 0f;
+            for (Building mm : new Building[] { b1, b2, b3 }) {
+                float own = ownDrillRate(mm);
+                expect += own;
+                one = Math.max(one, own);
+                System.out.println("[DS] 台 " + mm.tileX() + "," + mm.tileY()
+                    + " dominantItem=" + fieldStr(mm, "dominantItem")
+                    + " dominantItems=" + fieldStr(mm, "dominantItems")
+                    + " lastDrillSpeed=" + fieldStr(mm, "lastDrillSpeed")
+                    + " lastItem=" + fieldStr(mm, "lastItem")
+                    + " mode=" + fieldStr(mm.block, "mode"));
+            }
+            System.out.println("[DS] 每台自己的钻速之和=" + expect + " 单台最大=" + one
+                + "（整组报的=" + r1.sum + "）");
+            check("整组速率 = 各台自身钻速之和（不是某一台的）", Math.abs(r1.sum - expect) < 0.02f);
+            check("整组速率明显大于单台（" + r1.sum + " > " + one + "）", r1.sum > one * 1.5f);
+        }catch(Throwable t){
+            System.out.println("[DS] 整组挖速检查异常: " + t);
+            check("整组挖速检查能跑起来", false);
+        }
         System.out.println("[DS] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
         System.exit(fail==0?0:1);
       }catch(Throwable t){ t.printStackTrace(); System.exit(2); }
+    }
+
+    /** 调一次 groupDrillRates，把结果抄成可打印的文本 + 合计。 */
+    /** 某一台自己的钻速（件/秒）——面板上那条 bar.drillspeed 读的就是 lastDrillSpeed。 */
+    static String fieldStr(Object o, String name) {
+        try {
+            for (Class<?> c = o.getClass(); c != null; c = c.getSuperclass()) {
+                try {
+                    var f = c.getDeclaredField(name);
+                    f.setAccessible(true);
+                    Object v = f.get(o);
+                    return v instanceof mindustry.type.Item it ? it.name : String.valueOf(v);
+                } catch (NoSuchFieldException ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return "?";
+    }
+    static float ownDrillRate(Building b) {
+        try {
+            Object ls = b.getClass().getField("lastDrillSpeed").get(b);
+            Object ts = b.getClass().getMethod("timeScale").invoke(b);
+            return ((Number) ls).floatValue() * 60f * ((Number) ts).floatValue();
+        } catch (Throwable t) {
+            System.out.println("[DS] 读 lastDrillSpeed 失败: " + t);
+            return -1f;
+        }
+    }
+    static class Rates{ float sum; String text = ""; }
+    static Rates ratesOf(java.lang.reflect.Method m, Building b) throws Exception{
+        Rates r = new Rates();
+        arc.struct.ObjectFloatMap<mindustry.type.Item> map = new arc.struct.ObjectFloatMap<>();
+        m.invoke(b, map);
+        StringBuilder sb = new StringBuilder();
+        for(Object o : (Iterable<?>) map){
+            var e = (arc.struct.ObjectFloatMap.Entry<?>) o;
+            float v = ((Number) e.value).floatValue();
+            r.sum += v;
+            sb.append(e.key).append(' ').append(String.format(java.util.Locale.ROOT, "%.2f", v)).append("/s  ");
+        }
+        r.text = sb.toString().trim();
+        return r;
     }
 }

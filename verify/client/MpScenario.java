@@ -88,6 +88,9 @@ public class MpScenario{
                 // 【物品总量】按**模块身份**去重（共享池只算一次）：两端各打一行，脚本按毫秒对齐比对。
                 // 用户报的"组合节点瞎连导致物品涨到 11m / 变负数"就是这一步该抓的。
                 System.out.println("[MP-ITEMS] ms=" + System.currentTimeMillis() + " total=" + worldItemTotal());
+                // 【建造网络包】服务端排的"原地改方向"计划（见 queueRotatePlans）：这一排传送带
+                // 的方向是**服务端权威**的，客户端必须跟着一模一样（脚本拿这行和客户端的对账）。
+                if(rotQueued) System.out.println(rotLine());
                 // 逐个单位的明细默认关着（一秒 4 行×单位数，正常跑一次就刷几千行）；
                 // 排查"客户端少看到哪个单位"时用服务端加 -Ddrv.mpVerbose=1 打开。
                 if("1".equals(System.getProperty("drv.mpVerbose"))){
@@ -141,6 +144,13 @@ public class MpScenario{
                 System.out.println("[MP-HOST] 已停止挖矿，物品总量进入静默期（基线 " + worldItemTotal() + "）");
             }
             else if(phase == 6 && t >= 76){ /* 连/断由**客户端**在做（见 Driver.mpNodeMess），服务端只摆基地 */ }
+            // 【建造网络包取证】用户报"联机时服务端和客户端拐角处水管/传送带方向对不上"：
+            // 给核心机排一排"原地改方向"计划（= 玩家拖一排传送带改方向），服务端给这一排铺好
+            // 传送带后由建造武器并行改方向。改方向是原版"当场完成、不生成施工格"的那类计划，
+            // 只有 `Call.beginPlace`（服务端执行 + 转发）才能让客户端跟着转。
+            // 放在剧本很早的位置（t=13s）：这台机器上软渲染+43 线程会把服务端的 tick 拖慢，
+            // 后面那些重剧本（20 只合体等）会把服务端卡到跑不到更晚的时间点。
+            if(!rotQueued && t >= 13) queueRotatePlans();
             // 【用户报的 bug】一次合 20 只（快照 ~3.4KB）：客户端应当照样看得到这只大单位
             // （看不到 = 快照没同步过去，harness 的"服务端每种状态客户端都看到"会 FAIL）。
             // 【用户报的 bug】一次合 20 只：客户端应当照样看得到这只大单位（看不到 = 快照没同步
@@ -170,6 +180,87 @@ public class MpScenario{
         }catch(Throwable t){
             Log.err("[MP-HOST] 剧本异常", t);
         }
+    }
+
+    // ==================== 建造网络包取证（用户报的"拐角处方向对不上"） ====================
+
+    /** 一排传送带的格数。 */
+    static final int ROT_N = 8;
+    static boolean rotQueued = false;
+    static int rotX = -1, rotY = -1;
+    static final int[] rotPlanX = new int[ROT_N], rotPlanY = new int[ROT_N];
+
+    /**
+     * 给玩家（核心机）排一排"原地改方向"计划：先铺好 8 格方向的传送带，再排 8 条
+     * "把这一格转成方向 1"的计划 —— 这正是玩家在游戏里拖一排传送带改方向时生成的计划。
+     *
+     * <p>队首那条计划由原版 {@code BuilderComp} 处理（它走 `Call.beginPlace`，本来就同步），
+     * 其余几条由本模组的建造武器并行处理 —— 修前它们直接调 `Build.beginPlace`（只改本机世界），
+     * 客户端永远收不到这一格的方向变化。
+     */
+    static void queueRotatePlans(){
+        if(rotQueued) return;
+        rotQueued = true;
+        try{
+            int[] row = findRotRow();
+            if(row == null){ System.out.println("[MP-HOST] 改方向取证：找不到空地，跳过"); rotQueued = false; return; }
+            rotX = row[0]; rotY = row[1];
+            for(int i = 0; i < ROT_N; i++){
+                rotPlanX[i] = rotX + i;
+                rotPlanY[i] = rotY;
+                Vars.world.tile(rotX + i, rotY).setNet(mindustry.content.Blocks.conveyor, Team.sharded, 0);
+            }
+            Unit playerUnit = Groups.player.size() == 0 ? null : Groups.player.first().unit();
+            if(playerUnit == null){
+                System.out.println("[MP-HOST] 改方向取证：玩家没有单位（核心机），跳过");
+                return;
+            }
+            for(int i = 0; i < ROT_N; i++){
+                playerUnit.addBuild(new mindustry.entities.units.BuildPlan(rotX + i, rotY, 1,
+                    mindustry.content.Blocks.conveyor, null));
+            }
+            System.out.println("[MP-HOST] 改方向取证：传送带一排 (" + rotX + "," + rotY + ") 起 " + ROT_N
+                + " 格（离核心机 " + (int)arc.math.Mathf.dst(playerUnit.x, playerUnit.y,
+                    (rotX + ROT_N / 2f) * 8f, rotY * 8f) + "px，武器射程 236px），已给核心机排 "
+                + ROT_N + " 条「原地改方向」计划");
+        }catch(Throwable t){
+            System.out.println("[MP-HOST] 改方向取证失败: " + t);
+        }
+    }
+
+    /**
+     * 在**玩家单位附近**找一排 8 格空地（建造武器的射程只有 236px，扫全图会选到够不着的格子 ——
+     * 第一版就是这么写的，服务端那 8 条计划一条都没被认领）。
+     */
+    static int[] findRotRow(){
+        Unit pu = Groups.player.size() == 0 ? null : Groups.player.first().unit();
+        int cx = pu == null ? Vars.world.width() / 2 : (int)(pu.x / 8f);
+        int cy = pu == null ? Vars.world.height() / 2 : (int)(pu.y / 8f);
+        for(int r = 3; r <= 14; r++){
+            for(int y = cy - r; y <= cy + r; y++){
+                for(int x = cx - r; x <= cx + r; x++){
+                    boolean ok = true;
+                    for(int i = 0; i < ROT_N && ok; i++){
+                        if(!mindustry.world.Build.validPlaceIgnoreUnits(mindustry.content.Blocks.conveyor,
+                            Team.sharded, x + i, y, 0, true, true)) ok = false;
+                    }
+                    if(ok) return new int[]{x, y};
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 服务端视角：这一排传送带现在的方向。 */
+    static String rotLine(){
+        StringBuilder b = new StringBuilder("[MP-ROT] ms=" + System.currentTimeMillis() + " tiles=");
+        for(int i = 0; i < ROT_N; i++){
+            if(rotPlanX[i] == 0 && rotPlanY[i] == 0) continue;
+            mindustry.gen.Building bl = Vars.world.build(rotPlanX[i], rotPlanY[i]);
+            b.append(rotPlanX[i]).append(',').append(rotPlanY[i]).append(':')
+                .append(bl == null ? -1 : bl.rotation).append(' ');
+        }
+        return b.toString();
     }
 
     static void spawnAndMerge(int n, boolean mechOnly){

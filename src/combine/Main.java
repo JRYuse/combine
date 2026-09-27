@@ -189,6 +189,9 @@ public class Main extends Mod {
     // "不组合"名单（设置界面里切换的）从 Core.settings 读回来
     CoopCombo.loadBlacklist();
 
+    // "只和玩家队友组合"总开关（设置界面里的复选框）
+    combine.util.ComboTeams.load();
+
     // 协作组合（机制本体在 CoopCombo 里）：给"继承原版类但写了新功能的方块"（isExact 过滤掉
     // 的那些子类 / JS 模组方块）用另一条路组合 —— 不替换方块、不动它们的 build 类，
     // 只把相邻同类机器的库存模块接在一起，因此它们自己的配方/配置/更新逻辑全部保留。
@@ -199,10 +202,10 @@ public class Main extends Mod {
 
     // 【单位侧机制已经拆到 combineunit 模组】（组合巨兽、共享承伤/修复、共享火力、手动编组 UI）
     // 这里不再注册：那些机制连同镜像实体类都在 combineunit 仓库里维护
-    //（MegaUnitEntity 固定占用自定义实体槽 250；combineunit 的 UnitComboDamage.register() 等
+    // （MegaUnitEntity 固定占用自定义实体槽 250；combineunit 的 UnitComboDamage.register() 等
     // 由它自己的 Main 调）。本仓库只留"建筑侧"：组合单位工厂/升级厂/构造机/发射台/着陆台，
     // 它们造出单位后靠 combine.util.UnitComboBridge 反射叫一句 combineunit 的 tagProduced
-    //（没装 combineunit 时静默跳过，工厂照常工作，只是造出来的单位不进组合）。
+    // （没装 combineunit 时静默跳过，工厂照常工作，只是造出来的单位不进组合）。
 
     // 组合体↔电网的对账（共用一份 PowerModule 的组合建筑在原版并网/拆网里会掉队，
     // 表现就是"读档/拆东西之后要动一下电网才来电"，见 combine.util.ComboPower）
@@ -211,6 +214,12 @@ public class Main extends Mod {
     // 设置里的"建筑组合开关"界面（客户端才有 UI，服务端自动跳过）
 //    combine.ui.ComboBlockList.register();
 //    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
+    combine.ui.ComboBlockList.register();
+
+    // 超级组合炮台：快捷键/按钮 → 框选炮台 → 按数量生成对应边长的组合体（纯客户端交互）
+    combine.turret.SuperTurretPlacer.register();
+
+    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
     // 客户端在这之后才把蓝图库从磁盘读进来（assets.load(schematics)），再兜一次键；
     // 顺带把内置发射蓝图里的核心实例再对齐一遍（幂等）。
     Events.on(ClientLoadEvent.class, e -> {
@@ -390,6 +399,9 @@ public class Main extends Mod {
       initRequirementTables();
       createLinkBlocks();
       createLiquidBlocks();
+      // 跨距离传热用的探针（组合节点/连接器把热喂给"连线接进来的"需热建筑；和超级炮台开关无关）
+      combine.util.ComboHeatProbe.create();
+      createSuperTurrets();
       for (var entry : Replacer.replaced) {
         postInit(entry.value);
       }
@@ -458,13 +470,13 @@ public class Main extends Mod {
   // （Items.load()）里赋值，而模组主类的静态初始化发生在更早的 mods.load()：
   // 那时候 Items.* 全是 null，ItemStack.with(...) 造出来的每一项 item 都是 null。
   // 真机实测的后果（安卓崩溃堆栈就是这条链）：
-  //   1) Block.requirements() 内部 Arrays.sort(i -> i.item.id) 直接 NPE ——
-  //      方块剩下的 init()/postInit()/贴图全被跳过，建造菜单里是个残废方块；
-  //   2) TechNode.setupRequirements() 读 requirements[i].item.name 又 NPE ——
-  //      科技树节点根本建不出来，"装在两个科技树上"静默失败；
-  //   3) 残留的 null 造价数据留在 block.requirements / TechNode 里，原版
-  //      PlacementFragment（建造菜单）和 ResearchDialog.canSpend（科技树）都是无检查取值：
-  //      ItemModule.has(stack.item) / finishedRequirements[i].amount → 一打开就崩。
+  // 1) Block.requirements() 内部 Arrays.sort(i -> i.item.id) 直接 NPE ——
+  // 方块剩下的 init()/postInit()/贴图全被跳过，建造菜单里是个残废方块；
+  // 2) TechNode.setupRequirements() 读 requirements[i].item.name 又 NPE ——
+  // 科技树节点根本建不出来，"装在两个科技树上"静默失败；
+  // 3) 残留的 null 造价数据留在 block.requirements / TechNode 里，原版
+  // PlacementFragment（建造菜单）和 ResearchDialog.canSpend（科技树）都是无检查取值：
+  // ItemModule.has(stack.item) / finishedRequirements[i].amount → 一打开就崩。
   // 所以造价一律在 content.load() 之后（Mod.init）现造；顺带把 null 项丢掉，
   // 宁可少一项造价，也绝不让 null 进游戏数据。
   static ItemStack[] connReqSerpulo, connReqErekir;
@@ -518,7 +530,8 @@ public class Main extends Mod {
       return;
 
     // 【防 NPE 崩溃】v8 里 Mod.init() 在 content.load() 全部跑完之后才调用（ClientLauncher：
-    // createModContent -> content.init()/load() -> assets 加载完 -> eachClass(Mod::init)），
+    // createModContent -> content.init()/load() -> assets 加载完 ->
+    // eachClass(Mod::init)），
     // 所以这里注册的方块永远吃不到游戏的自动 loadIcon —— 图标全靠下面的手动调用。
     // 进建造菜单列表的方块只要 uiIcon 为 null，PlacementFragment 重建时
     // new TextureRegionDrawable(null) 就直接崩游戏。
@@ -566,7 +579,7 @@ public class Main extends Mod {
     try {
       // 两棵科技树分别挂节点，研究材料分星球：塞普罗树用铜/铅/硅，埃里克尔树用铍/钨/氧化物。
       // （之前 addTech(child.requirements) 两棵树都给塞普罗材料 —— 埃里克尔根本凑不齐，
-      //  节点等于废的；这是"放到两个科技树上"的正确挂法。）
+      // 节点等于废的；这是"放到两个科技树上"的正确挂法。）
       // 显式接住返回的节点引用：TechNode 构造会把 content.techNode 改写成最新一个，
       // 第二次 addTech(comboConnector, ...) 挂在哪棵树上完全取决于引用顺序，容易挂错。
       TechNode serpuloConn = new TechNode(mindustry.content.Blocks.coreShard.techNode, comboConnector,
@@ -631,12 +644,74 @@ public class Main extends Mod {
   }
 
   /**
+   * 超级组合炮台：每种边长一个方块实例（2x2 ~ 6x6）。
+   *
+   * <p>
+   * 这些方块不进科技树（也不给造价）：它们不是"造"出来的，而是用快捷键/建造菜单里的按钮
+   * 框选一片炮台之后，按炮台数量自动生成对应边长的那一台（见 combine.turret.SuperTurretPlacer）。
+   * 为了走原版那套放置流程（虚影、合法染色、建造队列、联机同步），buildVisibility 必须是
+   * shown（hidden 的方块 Build.validPlace 直接拒绝），所以它们在建造菜单里也会出现一行
+   * —— 点它等于"按下框选按钮"。
+   */
+  void createSuperTurrets() {
+    // 【停用中】用户 2026-09-25：「超级组合炮台先停用，我后面补充描述」。
+    // 开关在 combine.turret.SuperTurret.enabled；关着的时候一个方块都不注册（入口也不挂）。
+    if (!combine.turret.SuperTurret.enabled) {
+      Log.info("[combine] 超级组合炮台当前停用（SuperTurret.enabled=false）");
+      return;
+    }
+    if (combine.turret.SuperTurret.bySide[combine.turret.SuperTurret.MIN_SIDE] != null)
+      return;
+    // 内部用的热量探针（不落地、不进建造菜单）：把整台的热量喂给每一格
+    try {
+      combine.turret.SuperTurret.heatProbe = new combine.turret.SuperTurret.HeatProbe("super-turret-heat");
+      combine.turret.SuperTurret.heatProbe.init();
+      combine.turret.SuperTurret.heatProbe.postInit();
+      // 隐藏方块也要有非空图标，免得别的界面顺手画到它
+      combine.turret.SuperTurret.HeatProbe hp = combine.turret.SuperTurret.heatProbe;
+      if (visuals()) {
+        arc.graphics.g2d.TextureRegion reg = arc.Core.atlas.find("heat-source", arc.Core.atlas.find("error"));
+        hp.region = reg;
+        hp.fullIcon = reg;
+        hp.uiIcon = reg;
+      }
+    } catch (Throwable t) {
+      Log.err("[combine] 超级组合炮台热量探针装配失败（热量会退回逐格相邻）", t);
+    }
+    for (int side = combine.turret.SuperTurret.MIN_SIDE; side <= combine.turret.SuperTurret.MAX_SIDE; side++) {
+      combine.turret.SuperTurret st = new combine.turret.SuperTurret("super-turret-" + side, side);
+      try {
+        st.requirements(Category.turret, BuildVisibility.shown, new ItemStack[0]);
+        st.localizedName = "超级组合炮台 " + side + "x" + side;
+        st.description = "在建造菜单里点它（或按快捷键，默认 G）= 框选炮台："
+            + "按框里的炮台数量生成对应边长的一台（2~4 台→2x2，5~9 台→3x3 …），"
+            + "每格一台炮台、不够的格子留空；物品/液体/电力整台共用，各格各自开火、各自冷却。"
+            + "虚影跟着鼠标走，左键确定位置，右键/Q/Esc 取消。";
+        st.alwaysUnlocked = true;
+        // 两个星球都能用（不挂科技树，显式声明，免得 onPlanet 过滤掉）
+        st.shownPlanets.add(Planets.serpulo);
+        st.shownPlanets.add(Planets.erekir);
+        st.init();
+        st.postInit();
+      } catch (Throwable t) {
+        Log.err("[combine] 超级组合炮台 @x@ 装配失败（已兜底）", side, side, t);
+      } finally {
+        ensureIcons(st);
+      }
+      combine.turret.SuperTurret.bySide[side] = st;
+    }
+    Log.info("[combine] 超级组合炮台：@ 种边长已装配",
+        combine.turret.SuperTurret.MAX_SIDE - combine.turret.SuperTurret.MIN_SIDE + 1);
+  }
+
+  /**
    * 内容数据兜底：把"带 null 的 ItemStack 数组"从游戏数据里清掉。
    *
    * 为什么必须有：原版这两个地方都是无检查取值，模组改不了它们（都是原版类）——
-   *   - PlacementFragment（建造菜单）：ItemModule.has(stack.item) → 造价表里 item=null 就 NPE；
-   *   - ResearchDialog$View.canSpend（科技树）：finishedRequirements[i].amount / requirements[i].amount
-   *     → 数组里出现 null 元素就 NPE（用户报的"打开科技树崩溃"就是这条）。
+   * - PlacementFragment（建造菜单）：ItemModule.has(stack.item) → 造价表里 item=null 就 NPE；
+   * - ResearchDialog$View.canSpend（科技树）：finishedRequirements[i].amount /
+   * requirements[i].amount
+   * → 数组里出现 null 元素就 NPE（用户报的"打开科技树崩溃"就是这条）。
    * 坏数据的典型来源：别的模组在**节点已经进 TechTree.all 之后**再调 TechNode.setupRequirements()
    * 重设造价（按 JSON 解析科技树的模组都这么干），只要有一项找不到对应物品，
    * setupRequirements 就会在填 finishedRequirements 的中途抛异常：节点留在树里、
@@ -652,7 +727,10 @@ public class Main extends Mod {
         ItemStack[] req = b.requirements;
         boolean bad = false;
         for (ItemStack s : req)
-          if (s == null || s.item == null) { bad = true; break; }
+          if (s == null || s.item == null) {
+            bad = true;
+            break;
+          }
         if (!bad)
           continue;
         ItemStack[] fixed = filterStacks(req);
@@ -691,11 +769,17 @@ public class Main extends Mod {
         boolean bad = req == null || fin == null || fin.length != req.length;
         if (!bad) {
           for (ItemStack s : req)
-            if (s == null || s.item == null) { bad = true; break; }
+            if (s == null || s.item == null) {
+              bad = true;
+              break;
+            }
         }
         if (!bad) {
           for (ItemStack s : fin)
-            if (s == null || s.item == null) { bad = true; break; }
+            if (s == null || s.item == null) {
+              bad = true;
+              break;
+            }
         }
         if (!bad)
           continue;
@@ -1068,7 +1152,7 @@ public class Main extends Mod {
       // 同上：只按类排除，不看设置界面里的手动黑名单
       if (NoCombo.blockedByClass(b))
         continue;
-      boolean isWall = isExact(b, Wall.class);
+      boolean isWall = b instanceof Wall;
       boolean isDoor = isExact(b, mindustry.world.blocks.defense.Door.class);
       boolean isShield = isExact(b, mindustry.world.blocks.defense.ShieldWall.class); // 新增
       if (!isWall && !isDoor && !isShield) // 条件加一个

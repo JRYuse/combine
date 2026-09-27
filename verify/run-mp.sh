@@ -319,6 +319,39 @@ else
   fi
 fi
 
+# 8) 【建造网络包对账】用户报"联机时服务端和客户端拐角处水管/传送带方向对不上"：
+#    服务端 t≈86s 给核心机排了一排"原地改方向"计划（它在 [MP-ROT] 里报每格方向），
+#    客户端每秒报全图传送带的方向 —— 服务端报的每一格都必须在客户端那一串里对上（方向也得一样）。
+HROT="$(strip_ansi < "$HOST_LOG" | grep -oE '\[MP-ROT\] ms=[0-9]+ tiles=.*' | tail -1)"
+CROT="$(strip_ansi < "$CLIENT_LOG" | grep -oE '\[MP-ROT\] ms=[0-9]+ world=.*' | tail -1)"
+if [ -z "$HROT" ]; then
+  echo "[mp] 注：服务端没有 [MP-ROT] 行（剧本没跑到改方向那一步？），跳过建造方向对账"
+else
+  HRT="$(echo "$HROT" | sed -E 's/^\[MP-ROT\] ms=[0-9]+ tiles=//')"
+  CRW="$(echo "$CROT" | sed -E 's/^\[MP-ROT\] ms=[0-9]+ world=//')"
+  echo "[mp] ===== 建造方向对账（服务端改方向的 $(echo "$HRT" | wc -w) 格，客户端全图传送带 $(echo $CRW | wc -w) 格）====="
+  echo "  host   $HRT"
+  # 先确认服务端自己真的把那一排转过去了（不然"两端都是 0"会假过）
+  HSTUCK=""
+  for tok in $HRT; do
+    [ "${tok##*:}" = "1" ] || HSTUCK="$HSTUCK $tok"
+  done
+  if [ -n "$HSTUCK" ]; then
+    echo "[mp] FAIL：服务端这一排没转到方向 1（缺 = 该格没方块）：$HSTUCK"
+    exit 1
+  fi
+  BAD=""
+  for tok in $HRT; do
+    case " $CRW " in *" $tok "*) ;; *) BAD="$BAD $tok";; esac
+  done
+  if [ -n "$BAD" ]; then
+    echo "[mp] FAIL：以下格子服务端的方向客户端没有（= 建造/改方向没发包，两端方向对不上）："
+    echo "  $BAD"
+    exit 1
+  fi
+  echo "[mp] PASS：服务端报的每一格方向客户端都一致（建造/改方向走了网络包）"
+fi
+
 # 8) 物品总量对账（抓"组合节点瞎连 → 物品暴涨/变负数"）：两端每秒各打一行
 #      [MP-ITEMS] ms=<epoch> total=<按模块身份去重的世界物品总量>
 #    判定两条：①两端数量必须一样（客户端看到的就是玩家看到的）；②全程不能出现负数。

@@ -531,14 +531,32 @@ public class CoopCombo {
   public static void rescan() {
     tracked.clear();
     trackedNodes.clear();
-    if (world != null && world.tiles != null) {
+    if (world != null && world.tiles != null && anyEligibleBlock()) {
+      // 【性能】"只玩家组合"打开时，AI 敌人那些协作组合方块根本不参与分组 ——
+      // 别把它们登记进来（大型基地图上是几万台：登记了每轮 rebuild 都要过一遍）。
+      boolean playersOnly = combine.util.ComboTeams.playersOnly;
       for (Tile tile : world.tiles) {
         if (tile == null || tile.build == null) continue;
+        if (playersOnly && !combine.util.ComboTeams.playerTeam(tile.build.team)) continue;
         if (eligible(tile.block())) tracked.add(tile.build);
         if (tile.build instanceof ComboNode.ComboNodeBuild) trackedNodes.add(tile.build);
       }
     }
     dirty = true;
+  }
+
+  /**
+   * 内容表里还有没有任何"可协作组合"的方块？没有的话 rescan 连全图都不用扫
+   * （纯原版地图上这张表是空的，而 rescan 要遍历 512×512=26 万格，读档后第一帧能吃掉几十毫秒）。
+   */
+  private static boolean anyEligibleBlock() {
+    try {
+      for (Block b : mindustry.Vars.content.blocks())
+        if (eligible(b))
+          return true;
+    } catch (Throwable ignored) {
+    }
+    return false;
   }
 
   /**
@@ -746,6 +764,9 @@ public class CoopCombo {
       ObjectMap<Building, Seq<Building>> linkedByNodes = new ObjectMap<>();
       for (Building nb : trackedNodes) {
         if (!ComboReflect.inWorld(nb) || !(nb instanceof ComboNode.ComboNodeBuild node) || node.links == null) continue;
+        // 【共享配置里有一项没勾就不跨这个节点】两端不再是一台机器，剩下的部分由 ComboNet
+        // 在网络层逐项共享（见 combine.net.ComboShare）；否则"没勾的那项"还是混在一起。
+        if (!combine.net.ComboShare.allowLocalJoin(node)) continue;
         for (int i = 0; i < node.links.size; i++) {
           Building link = world.build(node.links.get(i));
           if (link == null || !link.isValid() || !eligible(link.block)) continue;
@@ -768,27 +789,32 @@ public class CoopCombo {
           Building cur = queue.removeFirst();
           // 连接件只当"导线"穿过去，不进成员表（它没有物品/液体模块）
           if (!isLinker(cur)) comp.add(cur);
-          for (Building nb : cur.proximity) {
-            if (joinable(nb) && linkable(cur, nb) && seen.add(nb)) {
-              if (!isLinker(nb)) visited.add(nb);
-              queue.addLast(nb);
+          // 【共享配置里有一项没勾的连接件不通】这条连接件两端不再是一台机器
+          //（见 combine.net.ComboShare.allowLocalJoin），剩下的部分交给 ComboNet 逐项共享。
+          boolean cross = !isLinker(cur) || combine.net.ComboShare.allowLocalJoin(cur);
+          if (cross) {
+            for (Building nb : cur.proximity) {
+              if (joinable(nb) && combine.util.ComboTeams.playerTeam(nb.team) && linkable(cur, nb) && seen.add(nb)) {
+                if (!isLinker(nb)) visited.add(nb);
+                queue.addLast(nb);
+              }
             }
-          }
-          // 被"远处组合节点"链到的成员：从该成员出发也能走到那些节点（节点再连回它的其它目标）
-          Seq<Building> viaNodes = linkedByNodes.get(cur);
-          if (viaNodes != null) {
-            for (Building n : viaNodes) {
-              if (seen.add(n)) queue.addLast(n);
+            // 被"远处组合节点"链到的成员：从该成员出发也能走到那些节点（节点再连回它的其它目标）
+            Seq<Building> viaNodes = linkedByNodes.get(cur);
+            if (viaNodes != null) {
+              for (Building n : viaNodes) {
+                if (seen.add(n)) queue.addLast(n);
+              }
             }
-          }
-          // 组合节点：它激光连出去的 links 也算连通
-          if (cur instanceof ComboNode.ComboNodeBuild node && node.links != null) {
-            for (int i = 0; i < node.links.size; i++) {
-              Building link = world.build(node.links.get(i));
-              if (link != null && link.isValid() && link.team == cur.team
-                  && joinable(link) && seen.add(link)) {
-                if (!isLinker(link)) visited.add(link);
-                queue.addLast(link);
+            // 组合节点：它激光连出去的 links 也算连通
+            if (cur instanceof ComboNode.ComboNodeBuild node && node.links != null) {
+              for (int i = 0; i < node.links.size; i++) {
+                Building link = world.build(node.links.get(i));
+                if (link != null && link.isValid() && link.team == cur.team
+                    && joinable(link) && seen.add(link)) {
+                  if (!isLinker(link)) visited.add(link);
+                  queue.addLast(link);
+                }
               }
             }
           }
@@ -1205,6 +1231,8 @@ public class CoopCombo {
     ObjectSet<Block> grouped = new ObjectSet<>();
     for (Seq<Building> comp : comps) {
       if (comp.size <= 1) continue;
+      // 共享配置里没勾"电力"：这组不当导电体（各接各的电）
+      if (!combine.net.ComboShare.shares(comp.first(), combine.net.ComboShare.POWER)) continue;
       for (Building b : comp) grouped.add(b.block);
     }
 
@@ -1252,6 +1280,8 @@ public class CoopCombo {
     if (!enabled || !shareHeat) return;
     for (Seq<Building> comp : intakeGroups) {
       if (comp.size <= 1) continue;
+      // 共享配置里没勾"热量"：这组不通热
+      if (!combine.net.ComboShare.shares(comp.first(), combine.net.ComboShare.HEAT)) continue;
 
       float supply = 0f;
       for (Building m : comp) {
@@ -1322,6 +1352,10 @@ public class CoopCombo {
     if (!enabled) return;
     for (Seq<Building> comp : intakeGroups) {
       if (comp.size <= 1) continue;
+      boolean shareItems = combine.net.ComboShare.shares(comp.first(), combine.net.ComboShare.ITEMS);
+      boolean shareLiquids = combine.net.ComboShare.shares(comp.first(), combine.net.ComboShare.LIQUIDS);
+      // 没勾共享就别替组收料：那等于把料塞进"不共享"的那口池子
+      if (!shareItems && !shareLiquids) continue;
       ItemModule pool = comp.first().items;
       LiquidModule liquidPool = comp.first().liquids;
       Building sample = comp.first();
@@ -1339,7 +1373,7 @@ public class CoopCombo {
               && sb.group != mindustry.world.meta.BlockGroup.liquids)) continue;
 
           // 物品
-          if (pool != null && src.items != null && src.items.total() > 0) {
+          if (shareItems && pool != null && src.items != null && src.items.total() > 0) {
             for (Item item : content.items()) {
               int available = src.items.get(item);
               if (available <= 0) continue;
@@ -1355,7 +1389,7 @@ public class CoopCombo {
           }
 
           // 液体
-          if (liquidPool != null && src.liquids != null && src.liquids.currentAmount() > 0.001f) {
+          if (shareLiquids && liquidPool != null && src.liquids != null && src.liquids.currentAmount() > 0.001f) {
             for (Liquid liquid : content.liquids()) {
               float available = src.liquids.get(liquid);
               if (available <= 0.001f) continue;

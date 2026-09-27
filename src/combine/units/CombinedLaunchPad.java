@@ -63,7 +63,7 @@ public class CombinedLaunchPad extends LaunchPad {
     @Override
     public void init() {
         super.init();
-        if (liquidCapacity != 9999f) {
+        if (ComboReflect.captureBaseLiquidCapOnce(this)) {
             baseLiquidCapacity = liquidCapacity;
             displayLiquid = liquidCapacity;
         }
@@ -523,6 +523,7 @@ public class CombinedLaunchPad extends LaunchPad {
 
         @Override
         public void updateTile() {
+          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
             if (pendingLeaderPos != -1) {
                 Building b = world.build(pendingLeaderPos);
                 if (b instanceof CombinedLaunchPadBuild leaderBuild && leaderBuild.isValid()
@@ -660,17 +661,6 @@ public class CombinedLaunchPad extends LaunchPad {
                         () -> Pal.health, () -> Mathf.clamp(h / mh)));
                 table.row();
             }
-            float totalPower = 0f;
-            for (CombinedLaunchPadBuild member : group()) {
-                if (member.isValid() && member.block.consPower != null)
-                    totalPower += member.block.consPower.usage;
-            }
-            if (totalPower > 0 && power != null) {
-                final float tp = totalPower;
-                table.add(new Bar(() -> "电力 " + Strings.fixed(tp * power.status * 60f, 1) + " ⚡/s", () -> Pal.power,
-                        () -> power.status));
-                table.row();
-            }
             // 发射进度条
             final float lc = launchCounter, lt = launchTime;
             if (lt > 0.001f) {
@@ -680,83 +670,13 @@ public class CombinedLaunchPad extends LaunchPad {
                         () -> lc / lt));
                 table.row();
             }
-            Seq<Item> involvedItems = new Seq<>();
-            for (CombinedLaunchPadBuild member : group()) {
-                if (member.isValid()) {
-                    for (Item item : ((CombinedLaunchPad) member.block).cachedItems) {
-                        if (!involvedItems.contains(item))
-                            involvedItems.add(item);
-                    }
-                }
-            }
-            if (items != null) {
-                for (Item item : combine.util.ComboReflect.displayItems(items, involvedItems)) {
-                    int total = items.get(item);
-                    if (total > 0) {
-                        final int t = total, c = Math.max(comboTotalItemCap, 1);
-                        table.add(new Bar(() -> item.localizedName + ": " + t + "/" + c, () -> item.color,
-                                () -> (float) t / c));
-                        table.row();
-                    }
-                }
-            }
-            LiquidModule sharedLiq = this.liquids;
-            if (sharedLiq == null) {
-                CombinedLaunchPadBuild l = leader();
-                if (l != null)
-                    sharedLiq = l.liquids;
-            }
-            if (sharedLiq == null) {
-                for (CombinedLaunchPadBuild member : group()) {
-                    if (member.liquids != null) {
-                        sharedLiq = member.liquids;
-                        break;
-                    }
-                }
-            }
-            // FIX: 根据实际存在的液体实时显示 bar，不依赖 cachedLiquids
-            if (sharedLiq != null) {
-                for (Liquid liquid : content.liquids()) {
-                    float total = sharedLiq.get(liquid);
-                    if (total > 0.001f) {
-                        final float t = total, c = Math.max(comboTotalLiquidCap, 1f);
-                        table.add(new Bar(
-                                () -> liquid.localizedName + ": " + Strings.fixed(t, 1) + "/" + Strings.fixed(c, 1),
-                                () -> liquid.barColor != null ? liquid.barColor : liquid.color, () -> t / c));
-                        table.row();
-                    }
-                }
-            }
+            // 物品池 / 液体池 / 电力条挪到悬浮面板（用户要求 display() 只留组合体构成）；
+            // 这里只留过程量条（血量 / 发射进度）。
         }
 
         public void buildComboIO(Table table) {
             table.left();
-            table.add("[lightgray]组合体构成:").left();
-            table.row();
-            ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (Building member : ComboNet.displayMembers(this, group().size)) {
-                if (member.isValid()) {
-                    int old = blockCounts.get(member.block, 0);
-                    blockCounts.put(member.block, old + 1);
-                }
-            }
-            Seq<Block> sortedBlocks = new Seq<>();
-            for (Block b : blockCounts.keys())
-                sortedBlocks.add(b);
-            sortedBlocks.sort(b -> b.id);
-            boolean hasContent = false;
-            for (Block b : sortedBlocks) {
-                int count = blockCounts.get(b, 0);
-                if (count > 0) {
-                    hasContent = true;
-                    table.add(b.localizedName + "*" + count).color(Color.white).left();
-                    table.row();
-                }
-            }
-            if (!hasContent) {
-                table.add("[darkGray]无").left();
-                table.row();
-            }
+            ComboUi.addComposition(table, this, group().size);
         }
 
         // -------------------- 序列化 --------------------

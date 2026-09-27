@@ -44,4 +44,44 @@ public class ComboUi {
         () -> pw.status)).growX().height(18f).pad(4).left();
     table.row();
   }
+
+  /** "组合体构成"那一行文字的宽度（信息面板固定 260 宽，留点内边距）。 */
+  public static final float COMPOSITION_WIDTH = 236f;
+
+  /**
+   * 信息面板上的"组合体构成"：**一行文字、超宽自动换行**。
+   *
+   * <p>用户要求："既然有悬浮面板了，组合建筑 display() 里就别再列物品/液体/电力了，
+   * 只显示组合体构成，而且会换行"。以前各组合类都是一台一行地列构成，组合体一大就把
+   * 右侧信息面板顶穿（用户早先也报过"组合的东西过多时显示面板非常大"）。现在统一成
+   * 一行 `构成: duo x4  scatter x3  …`，按面板宽度换行后高度有限。
+   *
+   * <p>成员口径和悬浮面板一致：{@link combine.net.ComboNet#displayMembers}（连接器/节点
+   * 接起来的整张网络都算"一个组合体"）。{@code localCount} 传本地组合体的成员数。
+   */
+  public static void addComposition(arc.scene.ui.layout.Table table, mindustry.gen.Building self, int localCount) {
+    if (table == null || self == null) return;
+    arc.struct.ObjectIntMap<mindustry.world.Block> counts = new arc.struct.ObjectIntMap<>();
+    try {
+      for (mindustry.gen.Building m : combine.net.ComboNet.displayMembers(self, localCount)) {
+        if (m != null && m.isValid() && m.block != null) counts.increment(m.block, 1);
+      }
+    } catch (Throwable t) {
+      // 统计失败也别让面板空着/崩：退回"只有自己"
+      counts.clear();
+      counts.increment(self.block, 1);
+    }
+    arc.struct.Seq<mindustry.world.Block> blocks = new arc.struct.Seq<>();
+    for (mindustry.world.Block b : counts.keys()) blocks.add(b);
+    blocks.sort(b -> b.id);
+    StringBuilder sb = new StringBuilder();
+    for (mindustry.world.Block b : blocks) {
+      if (sb.length() > 0) sb.append("  ");
+      String name = b.localizedName == null ? b.name : String.valueOf(b.localizedName);
+      sb.append(name).append(" x").append(counts.get(b, 0));
+    }
+    if (sb.length() == 0) sb.append("无");
+    table.add("[lightgray]构成: " + sb + "[]").left().width(COMPOSITION_WIDTH).wrap();
+    table.row();
+  }
 }

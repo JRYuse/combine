@@ -40,7 +40,7 @@ import static mindustry.Vars.world;
  */
 public class ComboReflect {
 
-    public static boolean isComboBuild(Building b){
+  public static boolean isComboBuild(Building b){
         if(b == null) return false;
         if(b.block instanceof CombinedStorageBlock) return true;
         // 被替换出来的组合墙等功能方块：自己维护分组（IComboGrouped），
@@ -53,7 +53,34 @@ public class ComboReflect {
     }
 
     /**
-     * 让"自己维护分组"的组合建筑（组合墙等）重算分组 —— 组合节点/连接器的连线变了就要叫一次，
+     * 和"热量"有关的建筑：产热 / 导热 / 需热的，或者方块上写着 heatRequirement / heatOutput 的
+     * （很多 mod 的炮台就是这种"字段型"需热方）。
+     *
+     * <p>用来让组合节点/连接器能连上**没被本模组替换过**的热相关方块 —— 用户报的
+     * "afflict 和 slag-heater 用组合节点连接和没组合一样"就是这么来的：那些方块不在
+     * 组合白名单里（是炮台 / 只传热不存物品液体），节点连线直接把它们拒了。
+     */
+    public static boolean isHeatBuild(Building b){
+        if(b == null || b.block == null) return false;
+        try{
+            // HeatBlock / HeatConsumer 是 build 层接口，HeatConductor / HeatProducer 是方块类型
+            if(b instanceof mindustry.world.blocks.heat.HeatBlock
+                || b instanceof mindustry.world.blocks.heat.HeatConsumer
+                || b.block instanceof mindustry.world.blocks.heat.HeatConductor
+                || b.block instanceof mindustry.world.blocks.heat.HeatProducer) return true;
+            Float req = getFloat(b.block, "heatRequirement");
+            if(req != null && req > 0f) return true;
+            Float out = getFloat(b.block, "heatOutput");
+            if(out != null && out > 0f) return true;
+            Float prod = getFloat(b, "producerHeat");
+            if(prod != null && prod > 0f) return true;
+        }catch(Throwable ignored){
+        }
+        return false;
+    }
+
+  /**
+   * 让"自己维护分组"的组合建筑（组合墙等）重算分组 —— 组合节点/连接器的连线变了就要叫一次，
      * 否则玩家连上了线、墙却还是两组（血池不共享）。
      */
     public static void markGroupDirty(Building b){
@@ -90,6 +117,10 @@ public class ComboReflect {
     public static Seq<Building> linkedReachable(Building start,
                                                 java.util.function.Predicate<Building> memberTest,
                                                 java.util.function.BiPredicate<Building, Building> edgeAllowed){
+        // 【只和玩家队友组合】总开关打开时，AI 敌人队伍的建筑不参与分组
+        //（所有 Combined* 方块的本地分组都从这里走，一处闸门全覆盖）
+        java.util.function.Predicate<Building> innerTest = memberTest;
+        memberTest = b -> innerTest.test(b) && ComboTeams.playerTeam(b.team);
         Seq<Building> found = new Seq<>();
         if(start == null || start.dead()) return found;
         ObjectSet<Building> visited = new ObjectSet<>();
@@ -138,6 +169,9 @@ public class ComboReflect {
                                     ObjectSet<Building> seenLinkers, ObjectSet<Building> visited,
                                     Queue<Building> queue, Building entry){
         if(!seenLinkers.add(start)) return;
+        // 【共享配置里有一项没勾就不穿这里】两端不再被当成"一台大机器"，
+        // 剩下的部分交给 ComboNet 在网络层逐项共享（见 combine.net.ComboShare）。
+        if(!combine.net.ComboShare.allowLocalJoin(start)) return;
         Queue<Building> linkers = new Queue<>();
         linkers.addLast(start);
         while(!linkers.isEmpty()){
@@ -147,7 +181,7 @@ public class ComboReflect {
                 for(Building nb : cur.proximity){
                     if(nb == null || !nb.isValid()) continue;
                     if(isLinker(nb)){
-                        if(seenLinkers.add(nb)) linkers.addLast(nb);
+                        if(seenLinkers.add(nb) && combine.net.ComboShare.allowLocalJoin(nb)) linkers.addLast(nb);
                     }else if(memberTest.test(nb) && edgeAllowed.test(entry, nb) && visited.add(nb)){
                         queue.addLast(nb);
                     }
@@ -156,7 +190,8 @@ public class ComboReflect {
             // 2) 顺着连接件之间的连线继续走
             if(cur instanceof ComboConnectorBuild c){
                 for(Building nb : c.proximity){
-                    if(nb != null && nb.isValid() && isLinker(nb) && seenLinkers.add(nb))
+                    if(nb != null && nb.isValid() && isLinker(nb) && seenLinkers.add(nb)
+                        && combine.net.ComboShare.allowLocalJoin(nb))
                         linkers.addLast(nb);
                 }
             }else if(cur instanceof ComboNodeBuild n){
@@ -164,7 +199,7 @@ public class ComboReflect {
                     Building nb = world.build(n.links.get(i));
                     if(nb == null || !nb.isValid()) continue;
                     if(isLinker(nb)){
-                        if(seenLinkers.add(nb)) linkers.addLast(nb);
+                        if(seenLinkers.add(nb) && combine.net.ComboShare.allowLocalJoin(nb)) linkers.addLast(nb);
                     }else if(memberTest.test(nb) && edgeAllowed.test(entry, nb) && visited.add(nb)){
                         queue.addLast(nb);
                     }
@@ -272,6 +307,28 @@ public class ComboReflect {
     public static void setLiquidCap(Building b, float value){
         if(b == null) return;
         setFloat(b, "comboTotalLiquidCap", value);
+        // 【用户报】"组合体/合体炮台的液体容量之和超过 9999 还是被限制在 9999"。
+        // 组合建筑为了不让原版管道算出负流量，block.liquidCapacity 平时是 9999 假容量；
+        // 可原版 transferLiquid / moveLiquid 是拿**目标方块的 block.liquidCapacity** 限流的
+        // （flow = cap - 池内已有量），池子一到 9999 管道就再也送不进去 —— 真正的上限
+        // （组容量，见 acceptLiquid/handleLiquid 的 comboTotalLiquidCap 判定）根本用不上。
+        // 这里顺手把方块容量抬到"见过的最大组容量"（和 CoopCombo.applyCapacities 同一套口径：
+        // 只松上限、永不回缩）。同一方块类型的多组共用这个字段，取最大值不会把任何一组的
+        // 真实上限放宽 —— 每组该有的上限仍由 acceptLiquid 自己按 comboTotalLiquidCap 拦。
+        if (b.block != null && value > b.block.liquidCapacity) b.block.liquidCapacity = value;
+    }
+
+    /**
+     * 已经捕获过"基础液体容量"的方块。内容加载器可能对同一个方块再次 {@code init()}，
+     * 那时 {@code block.liquidCapacity} 早已被改成 9999 假容量（甚至被 {@link #setLiquidCap}
+     * 抬成了组容量）——再捕获一次就会把假容量/放大值记成"基础容量"，容量直接翻 N 倍。
+     * 所以只认第一次。
+     */
+    private static final ObjectSet<Block> baseLiquidCapCaptured = new ObjectSet<>();
+
+    /** 第一次 init 时返回 true（调用方据此把当前的 {@code liquidCapacity} 记为基础容量）。 */
+    public static boolean captureBaseLiquidCapOnce(Block block){
+        return block != null && baseLiquidCapCaptured.add(block);
     }
 
     public static void markClean(Building b){
@@ -629,6 +686,12 @@ public class ComboReflect {
             if(b.items != null) mods.add(b.items);
         }
         if(mods.isEmpty()) return out;
+        // 【性能】只有一台成员时"并池"根本无从谈起：调用方只会拿这份结果去挑"并到哪一份模块"、
+        // 判断"某个非组长成员的模块能不能整体搬走" —— 单台组里两者都用不上，直接返回空即可。
+        // 不早退的话这里要扫全图（ComboNet.allComboBuildings() 会为 1 万多台建筑建一份 Seq）：
+        // 大型敌方基地里每台"没组合的机器"每次重算分组都要付这份钱（实测每台每次 3.35ms，
+        // 一个 3 万建筑的进攻图每帧 100+ms，卡成幻灯片）。
+        if(mine.size <= 1) return out;
         for(Building b : ComboNet.allComboBuildings()){
             if(b == null || mine.contains(b) || b.items == null) continue;
             if(mods.contains(b.items)) out.add(b.items);
@@ -648,6 +711,7 @@ public class ComboReflect {
             if(b.liquids != null) mods.add(b.liquids);
         }
         if(mods.isEmpty()) return out;
+        if(mine.size <= 1) return out;   // 单台组：同上，不用扫全图
         for(Building b : ComboNet.allComboBuildings()){
             if(b == null || mine.contains(b) || b.liquids == null) continue;
             if(mods.contains(b.liquids)) out.add(b.liquids);

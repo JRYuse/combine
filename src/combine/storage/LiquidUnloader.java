@@ -88,6 +88,7 @@ public class LiquidUnloader extends Block {
 
         @Override
         public void updateTile() {
+          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
             if (lastSort != sortLiquid) {
                 liquids.clear();
                 lastSort = sortLiquid;

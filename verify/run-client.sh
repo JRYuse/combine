@@ -35,6 +35,15 @@ esac
 
 mkdir -p "$HERE/build" "$DRV_OUT" "$data/mods"
 
+# 【防呆】数据目录里的 combine.jar 是旧的、而 build/libs 里刚编好的包更新 → 刷进去。
+# 踩过：改了模组只跑了 ./gradlew deploy、忘了同步数据目录，客户端拿旧包跑出"假结果"
+#（刚改的 HUD 按钮位置 / 面板逻辑根本没生效，看着像"没修好"）。
+if [ -f "$data/mods/combine.jar" ] && [ -f "$ROOT/build/libs/combine.jar" ] \
+   && [ "$ROOT/build/libs/combine.jar" -nt "$data/mods/combine.jar" ]; then
+  echo "[verify] 同步新编的 combine.jar → $data/mods/"
+  cp "$ROOT/build/libs/combine.jar" "$data/mods/combine.jar"
+fi
+
 # 客户端被强杀/崩在模组初始化中途时，Mindustry 会把模组记成 mod-xxx-failed（写进数据目录的
 # settings），下次进游戏这个模组就被跳过 —— 会把之后所有测试都带偏。跑之前先把那份 settings 挪走。
 for f in settings.bin settings_backup.bin; do

@@ -111,6 +111,19 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::setupConnScene, 5f);
                 Timer.schedule(Driver::stepConn, 8f, 0.5f);
                 Timer.schedule(() -> { Log.info("[drv] conn 模式超时结束"); Core.app.exit(); }, 90f);
+            }else if(mode.equals("share")){
+                // 组合节点/组合连接器的「共享哪些部分」配置面板：
+                // 点开节点/连接器 → 勾选框截图 → 改一次配置（取消"液体"）→ 再看勾选框有没有跟着变。
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupShareScene, 5f);
+                // 弹窗/面板有淡入动画：打开和截图要隔开几秒，否则截到的是 alpha≈0 的空画面
+                Timer.schedule(Driver::shareOpenNode, 12f);
+                Timer.schedule(() -> shot("share_node_panel"), 19f);
+                Timer.schedule(Driver::shareStepToggle, 24f);
+                Timer.schedule(() -> shot("share_node_panel_after"), 31f);
+                Timer.schedule(Driver::shareOpenConn, 36f);
+                Timer.schedule(() -> shot("share_conn_panel"), 43f);
+                Timer.schedule(() -> { Log.info("[drv] share 模式结束"); Core.app.exit(); }, 52f);
             }else if(mode.equals("wall")){
                 // 组合墙：3 面铜墙成一组 → 打成残血 → 修复投影修 → 截图看还破不破损（裂纹）
                 installFrameCounter();
@@ -125,6 +138,14 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::setupBlueprintScene, 5f);
                 Timer.schedule(() -> shot("blueprint_dialog"), 25f);
                 Timer.schedule(() -> { Log.info("[drv] bp 模式结束"); Core.app.exit(); }, 30f);
+            }else if(mode.equals("veasm")){
+                // ve（VanillaExpansion）单位组装厂的"建筑载荷"：要求里的方块实例与世界里/打包机
+                // 产出的实例必须是同一个（原版 acceptPayload 用的是 == 身份比较）。
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupVeAsmScene, 5f);
+                Timer.schedule(Driver::veAsmCheck, 12f, 2f);
+                Timer.schedule(() -> { Log.info("[drv] veasm 模式结束"); Core.app.exit(); }, 30f);
+                Timer.schedule(() -> { Log.info("[drv] veasm 超时退出"); Core.app.exit(); }, 180f);
             }else if(mode.equals("rebuild")){
                 // 用户报："核心单位修废墟/重建不会立刻全做完，只做几个；批量改传送带方向也一样"。
                 // 真客户端走一遍原版 B 键框选（InputHandler.rebuildArea）+ 拖一排原地转向计划。
@@ -134,6 +155,40 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::rebuildGo, 12f);
                 Timer.schedule(Driver::rebuildStep, 14f, 0.5f);
                 Timer.schedule(() -> { Log.info("[drv] rebuild 模式超时结束"); Core.app.exit(); }, 200f);
+            }else if(mode.equals("superturret")){
+                // 超级组合炮台：按快捷键/点按钮 → 框选炮台 → 对应边长的虚影跟着鼠标 → 放下。
+                // 要看的：① 框选时的高亮 + 数量/边长提示；② 虚影里每格的炮台图标；
+                //        ③ 放好之后每格真的画出一台炮台（空格子留白）。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupSuperTurretScene, 6f);
+
+                // 功能停用中（SuperTurret.enabled=false）：方块没注册，这个模式直接跳过
+                if (superTurretDisabled()) {
+                    Log.info("[drv] 超级组合炮台当前停用，superturret 模式跳过");
+                    // 但还是验一下"用户看不到"：用建造菜单自己的取列表函数看 turret 类目
+                    Timer.schedule(Driver::checkBuildMenuNoSuperTurret, 14f);
+                    Timer.schedule(() -> Core.app.exit(), 18f);
+                    return;
+                }
+                Timer.schedule(Driver::superTurretGo, 16f);
+                // 截图要在状态改完之后**下一帧**再拍：ScreenUtils 抓的是上一帧的画面
+                Timer.schedule(() -> shot("superturret_select"), 18f);
+                // 回归：框选模式下点建造菜单里的方块，必须点得动（用户报的"建筑列表一个建筑都无法点击"）
+                Timer.schedule(Driver::superTurretClickList, 19f);
+                // 框选期间"玩家不能动"的检查：必须在下面那个"点建造菜单"的检查之前跑
+                // （那次点击会把框选模式取消掉，之后再测就没意义了）
+                Timer.schedule(Driver::superTurretWorldLockCheck, 18.5f);
+                // 那次回归检查会往建造菜单上真点一下，可能顺手点开小地图：马上收掉
+                Timer.schedule(Driver::closeMinimap, 19.5f);
+                Timer.schedule(Driver::superTurretGo, 22f);
+                Timer.schedule(Driver::superTurretFinish, 26f);
+                // 相机就位后**下一帧**再瞄准鼠标（mouseWorld 读的是上一帧的相机矩阵）
+                Timer.schedule(Driver::superTurretAim, 27f);
+                Timer.schedule(() -> shot("superturret_ghost"), 28f);
+                Timer.schedule(Driver::superTurretPlace, 32f);
+                Timer.schedule(Driver::superTurretStep, 36f, 2f);
+                Timer.schedule(() -> { Log.info("[drv] superturret 模式超时结束"); Core.app.exit(); }, 200f);
             }else if(mode.equals("rep")){
                 // 用户复现存档（stainedMountains）：读档 → 存档 → 再读档，看物品会不会变多。
                 // 这些模组（ve 建 GL shader、饱和火力要 Java 25）在 headless 里跑不起来，所以用真客户端。
@@ -177,6 +232,44 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::megaCommandMode, 42f);
                 Timer.schedule(() -> shot("mega_command"), 47f);
                 Timer.schedule(() -> { Log.info("[drv] mega 模式结束 frames=@", frames); Core.app.exit(); }, 53f);
+            }else if(mode.equals("floatpanel")){
+                // 用户要求："不要塞进原版信息面板，搞一个大的悬浮面板，跟 js/java 扩展建筑的一样"。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupBigComboScene, 5f);
+                Timer.schedule(Driver::bigComboBuild, 8f);
+                Timer.schedule(Driver::floatPanelTap, 18f);
+                Timer.schedule(() -> shot("floatpanel_open"), 26f);
+                Timer.schedule(Driver::floatPanelTapElsewhere, 28f);
+                Timer.schedule(() -> shot("floatpanel_after"), 34f);
+                Timer.schedule(() -> { Log.info("[drv] floatpanel 模式结束"); Core.app.exit(); }, 38f);
+                Timer.schedule(() -> { Log.info("[drv] floatpanel 超时"); Core.app.exit(); }, 200f);
+            }else if(mode.equals("bigcombo")){
+                // 用户报的"组合的东西过多时显示面板非常大"：组合体构成列表要放进滚动窗、高度封顶。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupBigComboScene, 5f);
+                Timer.schedule(Driver::bigComboBuild, 8f);
+                Timer.schedule(Driver::bigComboPanel, 20f);
+                Timer.schedule(() -> shot("bigcombo_top"), 26f);
+                Timer.schedule(Driver::bigComboScrollBottom, 28f);
+                Timer.schedule(() -> shot("bigcombo_bottom"), 34f);
+                Timer.schedule(Driver::bigComboReport, 36f);
+                Timer.schedule(() -> { Log.info("[drv] bigcombo 模式结束"); Core.app.exit(); }, 40f);
+                Timer.schedule(() -> { Log.info("[drv] bigcombo 超时"); Core.app.exit(); }, 200f);
+            }else if(mode.equals("beastname")){
+                // 巨兽悬浮信息栏里的"类型名"（用户报的"mi2 在游戏上方显示组合巨兽的 type"）：
+                // 巨兽派生类型共用一个占位类型，名字是通用名"组合巨兽"；这里换成成员构成。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupMegaScene, 5f);
+                Timer.schedule(Driver::megaMerge, 14f);
+                Timer.schedule(Driver::beastInspect, 18f);
+                Timer.schedule(() -> shot("beastname_vanilla"), 24f);
+                Timer.schedule(Driver::beastMi2, 27f);
+                Timer.schedule(() -> shot("beastname_mi2"), 34f);
+                Timer.schedule(() -> { Log.info("[drv] beastname 模式结束"); Core.app.exit(); }, 40f);
+                Timer.schedule(() -> { Log.info("[drv] beastname 超时"); Core.app.exit(); }, 180f);
             }else if(mode.equals("shipmega")){
                 // 用户报："两艘船组合后速度变得超级慢 / 没处理水的阻力"。
                 // 两艘 risso 在**深水**里合体：看它还在不在水面、速度系数是不是和原版船一致
@@ -1343,6 +1436,10 @@ public class Driver extends Mod{
                 Vars.player.unit() == null ? -1 : Vars.player.unit().id, ids);
             // 【物品总量】按模块身份去重（共享池算一次）：和服务端 MpScenario 的 [MP-ITEMS] 对齐比对
             Log.info("[MP-ITEMS] ms=@ total=@", System.currentTimeMillis(), worldItemTotal());
+            // 【建造网络包】全图传送带的方向：服务端 [MP-ROT] 里那一排（它排了"原地改方向"计划）
+            // 必须都能在下面这一串里找到**同样的方向** —— 用户报的"联机时两端拐角处方向对不上"
+            // 就是这一步该抓的（修前服务端的建造武器只改本机世界，客户端一直停在旧方向）。
+            Log.info("[MP-ROT] ms=@ world=@", System.currentTimeMillis(), conveyorRots());
             // 每秒把每个单位逐个打出来（排查"幽灵/看不见/成员数不对"时用）：默认关着，
             // 免得正常跑一次就刷几千行；要排查就加参数 -Ddrv.mpVerbose=1。
             if("1".equals(System.getProperty("drv.mpVerbose"))){
@@ -1390,6 +1487,17 @@ public class Driver extends Mod{
 
     static Seq<String> mpStates(){
         return mpSeen;
+    }
+
+    /** 全图传送带 → {@code x,y:方向}（服务端 [MP-ROT] 的每一格都要能在这一串里找到同样的方向）。 */
+    static String conveyorRots(){
+        StringBuilder b = new StringBuilder();
+        for(mindustry.world.Tile t : Vars.world.tiles){
+            if(t == null || t.build == null) continue;
+            if(!(t.block() instanceof mindustry.world.blocks.distribution.Conveyor)) continue;
+            b.append(t.x).append(',').append(t.y).append(':').append(t.build.rotation).append(' ');
+        }
+        return b.toString();
     }
 
     /** 镜头对准组合巨兽（截"联机时巨兽长什么样"的证据图用）。 */
@@ -1746,11 +1854,22 @@ public class Driver extends Mod{
 
     static void shot(String name){
         try{
+            closeMinimap(); // 万一哪一步误点开了小地图，之后的截图就全是小地图了
             if(counter < 0) counter = nextIndex();
             arc.files.Fi f = Core.files.absolute(outDir).child(String.format("%03d_%s.png", counter++, name));
             ScreenUtils.saveScreenshot(f);
             Log.info("[drv] shot @  (@x@)", f.name(), Core.graphics.getWidth(), Core.graphics.getHeight());
         }catch(Throwable t){ Log.err("[drv] shot failed: @", name, t); }
+    }
+
+    /** 截图前把小地图收起来（它铺满屏幕会把世界挡住）。 */
+    static void closeMinimap(){
+        try{
+            if(Vars.ui != null && Vars.ui.minimapfrag != null && Vars.ui.minimapfrag.shown()){
+                Vars.ui.minimapfrag.toggle();
+                Log.info("[drv] 截图前收起了小地图");
+            }
+        }catch(Throwable ignored){}
     }
 
     /** 把 combine 的列表塞进一个独立对话框渲染（等同设置里那一页的内容）。 */
@@ -2328,8 +2447,1202 @@ public class Driver extends Mod{
 
     static int rdOx = -1, rdOy = -1;
 
+    // ---------------- 超级组合炮台：框选 → 虚影 → 放置 ----------------
+    static int stOx = -1, stOy = -1, stTx = -1, stTy = -1;
+    static int stPhase = 0;
+    static int stFrames = -1;
+    static int stTries = 0;
+    static String stLayout = "";
+
+    static void setStatic(Class<?> c, String name, Object value) {
+        try {
+            var f = c.getDeclaredField(name);
+            f.setAccessible(true);
+            f.set(null, value);
+        } catch (Throwable t) {
+            Log.err("[drv] 写静态字段 @ 失败", name, t);
+        }
+    }
+
+    static Object getStatic(Class<?> c, String name) {
+        try {
+            var f = c.getDeclaredField(name);
+            f.setAccessible(true);
+            return f.get(null);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    static Object getField(Object o, String name) {
+        try {
+            Class<?> c = o.getClass();
+            while (c != null) {
+                try {
+                    var f = c.getDeclaredField(name);
+                    f.setAccessible(true);
+                    return f.get(o);
+                } catch (NoSuchFieldException ignored) {
+                    c = c.getSuperclass();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    static Class<?> superTurretCls() throws ClassNotFoundException {
+        return Class.forName("combine.turret.SuperTurret", true, ml);
+    }
+
+    /** 总开关（SuperTurret.enabled）；停用时方块没注册，本模式要跳过。 */
+    static boolean superTurretDisabled() {
+        try {
+            return !(Boolean) superTurretCls().getField("enabled").get(null);
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    /** 停用检查：建造菜单里（= PlacementFragment 的取列表函数）不该再有超级组合炮台。 */
+    static void checkBuildMenuNoSuperTurret() {
+        try {
+            Class<?> pf = Class.forName("mindustry.ui.fragments.PlacementFragment");
+            var m = pf.getDeclaredMethod("getUnlockedByCategory", mindustry.type.Category.class);
+            m.setAccessible(true);
+            Object r = m.invoke(Vars.ui.hudfrag.blockfrag, mindustry.type.Category.turret);
+            if (!(r instanceof Seq<?> list)) {
+                Log.err("[drv] FAIL 拿不到建造菜单列表");
+                return;
+            }
+            int n = 0;
+            StringBuilder names = new StringBuilder();
+            for (Object o : list)
+                if (o instanceof Block b && b.name != null && b.name.startsWith("super-turret-")) {
+                    n++;
+                    names.append(b.name).append(' ');
+                }
+            Log.info("[drv] 建造菜单 turret 类目: 共 @ 个方块，super-turret-* = @ @", list.size, n, names);
+            if (n == 0)
+                Log.info("[drv] PASS 停用生效：建造菜单里没有超级组合炮台");
+            else
+                Log.err("[drv] FAIL 停用没生效：建造菜单里还有 @", names);
+        } catch (Throwable t) {
+            Log.err("[drv] checkBuildMenuNoSuperTurret failed", t);
+        }
+    }
+
+    /** 摆一排"要被框选"的炮台：4 台 duo + 2 台 scatter。 */
+    static void placeTurretRow(int tx, int ty) {
+        Block duo = null, scatter = null;
+        for (Block b : Vars.content.blocks()) {
+            if (duo == null && b.name.equals("duo"))
+                duo = b;
+            if (scatter == null && b.name.equals("scatter"))
+                scatter = b;
+        }
+        if (duo == null || scatter == null)
+            return;
+        for (int i = 0; i < 4; i++)
+            placeBL(duo, tx + i, ty);
+        placeBL(scatter, tx + 5, ty);
+        placeBL(scatter, tx + 7, ty); // 2x2 之间留一格：挨着放会重叠成一台（origin 只差 1 格）
+    }
+
+    /**
+     * 框选用的炮台：一排 6 台 1x1/2x2（duo/scatter）+ 一台 **4x4**（foreshadow）。
+     *
+     * <p>4x4 那台是给"一个 4*4 的炮台合体后只占一格"这条要求当样板的：
+     * 截图里它必须整台缩进 3x3 超级炮台的**一格**里（不是铺满 4 格）。
+     */
+    static void placeTurretSources(int tx, int ty) {
+        placeTurretRow(tx, ty);
+        Block big = findTurret4x4();
+        if (big != null)
+            placeBL(big, tx, ty + 2);
+        // 再塞一台 4x4 的 afflict（需热炮台）：超级炮台的悬浮面板"热量"行才有真实分母
+        // （afflict heatRequirement=20；旧代码会写死成单台标记值 10，一眼能看出区别）。
+        Block afflict = null;
+        for (Block b : Vars.content.blocks())
+            if (afflict == null && b.name.equals("afflict")) { afflict = b; break; }
+        if (afflict != null)
+            placeBL(afflict, tx + 4, ty + 2);
+    }
+
+    /**
+     * 再放一台"drawer 带 parts 的炮台"（foreshadow 的 parts 是 0 个，看不出这条要求）。
+     *
+     * <p>用户要求"合体炮台显示的时候要把 drawer 的部件画上"：截图里这一格的炮台
+     * 必须和世界里的原版炮台长得一样（有炮管/护板那些 parts），不是只剩底板。
+     */
+    static Block placePartsTurret(int tx, int ty) {
+        Block found = null;
+        try {
+            for (Block b : Vars.content.blocks()) {
+                if (b == null || b.name == null || b.name.startsWith("super-turret-"))
+                    continue;
+                if (b instanceof mindustry.world.blocks.defense.turrets.Turret t
+                        && t.drawer instanceof mindustry.world.draw.DrawTurret dt
+                        && dt.parts.size > 0 && b.size >= 2 && b.size <= 3) {
+                    found = b;
+                    break;
+                }
+            }
+        } catch (Throwable t) {
+            Log.err("[drv] 找带 parts 的炮台失败", t);
+        }
+        if (found != null) {
+            placeBL(found, tx, ty);
+            var dt = (mindustry.world.draw.DrawTurret) ((mindustry.world.blocks.defense.turrets.Turret) found).drawer;
+            Log.info("[drv] superturret 带部件样板: @ (size=@) parts=@ 虚影假 build=@",
+                    found.name, found.size, dt.parts.size, ghostCellOk(found));
+        } else {
+            Log.err("[drv] 这套内容里找不到带 parts 的炮台（这条要求只能看世界里的格子）");
+        }
+        return found;
+    }
+
+    /** 虚影用的假 build 能不能造出来（造不出来就只能退回整块贴图）。 */
+    static boolean ghostCellOk(Block b) {
+        try {
+            return invokeStatic(superTurretCls(), "ghostCell", new Class<?>[] { Block.class }, b) != null;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 一台 4x4 的原版炮台（foreshadow → meltdown → spectre…取第一个 size>=4 的）。 */
+    static Block findTurret4x4() {
+        for (String n : new String[] { "foreshadow", "meltdown", "spectre", "cyclone", "ripple" }) {
+            for (Block b : Vars.content.blocks())
+                if (b.name.equals(n) && b.size >= 4)
+                    return b;
+        }
+        return null;
+    }
+
+    static Class<?> placerCls() throws ClassNotFoundException {
+        return Class.forName("combine.turret.SuperTurretPlacer", true, ml);
+    }
+
+    /** 反射调静态方法（一律 setAccessible：模组那边有些方法是包级可见的）。 */
+    /** 反射调实例方法（取返回值，失败返回 null）。 */
+    static Object invokeVirtual(Object o, String name) {
+        if (o == null) return null;
+        for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            try {
+                var m = c.getDeclaredMethod(name);
+                m.setAccessible(true);
+                return m.invoke(o);
+            } catch (NoSuchMethodException ignored) {
+            } catch (Throwable t) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    static Object invokeStatic(Class<?> c, String name, Class<?>[] sig, Object... args) {
+        try {
+            var m = sig == null ? c.getDeclaredMethod(name) : c.getDeclaredMethod(name, sig);
+            m.setAccessible(true);
+            return m.invoke(null, args);
+        } catch (Throwable t) {
+            Log.err("[drv] 调用 @.@ 失败", c.getSimpleName(), name, t);
+            return null;
+        }
+    }
+
+    /** 保证玩家有一个建造单位（框选/放置都要求 player.isBuilder()）。 */
+    static Unit ensurePlayerUnit(float x, float y) {
+        Unit u = Vars.player.unit();
+        if (u == null) {
+            u = ((mindustry.world.blocks.storage.CoreBlock) Blocks.coreShard).unitType.create(Vars.player.team());
+            u.set(x, y);
+            u.add();
+            Vars.player.unit(u);
+            Log.info("[drv] 造了玩家核心单位 @（@,@）", u.type.name, (int) (x / 8), (int) (y / 8));
+        } else {
+            u.set(x, y);
+        }
+        // 【必须】单位身上的"执行建造计划"开关：真人操作时由 Player.unit() 打开，
+        // 驱动自己造出来的单位得手动开，否则 flushPlans 塞进队列的计划永远不执行。
+        try {
+            u.updateBuilding(true);
+        } catch (Throwable t) {
+            Log.err("[drv] 打开单位建造开关失败", t);
+        }
+        return u;
+    }
+
+    /**
+     * 把鼠标摆到屏幕 (mx,my)（拿不到 setter 的实现在字段上反射写），失败也不抛。
+     *
+     * <p>软渲染的离屏窗口里没人动鼠标，位置全看 SDL 初始值：不主动设的话虚影可能落在
+     * 屏幕角落/被 HUD 挡住，截图就白拍了。
+     */
+    static void setMouse(int mx, int my) {
+        try {
+            Class<?> c = Core.input.getClass();
+            while (c != null) {
+                for (String n : new String[] { "mouseX", "mouseY" }) {
+                    try {
+                        var f = c.getDeclaredField(n);
+                        f.setAccessible(true);
+                        f.setInt(Core.input, n.equals("mouseX") ? mx : my);
+                    } catch (NoSuchFieldException ignored) {
+                    }
+                }
+                c = c.getSuperclass();
+            }
+        } catch (Throwable t) {
+            Log.err("[drv] 设置鼠标位置失败（继续用当前位置）", t);
+        }
+    }
+
+    /**
+     * 让虚影（跟随鼠标）落在世界点 (wx,wy) 上：量出"屏幕像素 → 世界"的线性映射再反解鼠标坐标。
+     *
+     * <p>调用前相机必须已经就位并**过了一帧**（{@code mouseWorld()} 读的是上一帧的相机矩阵，
+     * 同一帧里改相机再量是量不准的，见 superTurretFinish → superTurretAim 分两步的原因）。
+     */
+    static void aimGhost(float wx, float wy) {
+        try {
+            // 注意：mouseWorld(x,y) 返回的是**同一个** mouseReturn 对象，必须当场把数值抄下来
+            arc.math.geom.Vec2 t = Core.input.mouseWorld(0, 0);
+            float ax = t.x, ay = t.y;
+            t = Core.input.mouseWorld(1, 0);
+            float kx = t.x - ax, ky = t.y - ay;
+            t = Core.input.mouseWorld(0, 1);
+            float lx = t.x - ax, ly = t.y - ay;
+            float det = kx * ly - lx * ky;
+            if (Math.abs(det) < 1e-6f) {
+                Log.err("[drv] 虚影瞄准失败：屏幕→世界映射退化（k=(@,@) l=(@,@)）", kx, ky, lx, ly);
+                return;
+            }
+            float dx = wx - ax, dy = wy - ay;
+            int mx = Math.round((dx * ly - lx * dy) / det);
+            int my = Math.round((kx * dy - dx * ky) / det);
+            int beforeX = Core.input.mouseX(), beforeY = Core.input.mouseY();
+            setMouse(mx, my);
+            arc.math.geom.Vec2 now = Core.input.mouseWorld();
+            Log.info("[drv] 虚影瞄准: 鼠标 (@,@)→(@,@) 想放 (@,@) 目标=(@,@) 现在指到=(@,@) 相机=(@,@) input=@",
+                    beforeX, beforeY, Core.input.mouseX(), Core.input.mouseY(), mx, my,
+                    (int) (wx / 8), (int) (wy / 8),
+                    (int) (now.x / 8), (int) (now.y / 8),
+                    (int) (Core.camera.position.x / 8), (int) (Core.camera.position.y / 8),
+                    Core.input.getClass().getSimpleName());
+        } catch (Throwable t) {
+            Log.err("[drv] 虚影瞄准失败", t);
+        }
+    }
+
+    static int superTurretCells(Building b) {
+        try {
+            Object v = invokeStatic(superTurretCls(), "loadedCells", new Class<?>[] { Building.class }, b);
+            return v instanceof Number n ? n.intValue() : -1;
+        } catch (Throwable t) {
+            Log.err("[drv] 读 loadedCells 失败", t);
+            return -1;
+        }
+    }
+
+    static void setupSuperTurretScene() {
+        try {
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.state.rules.infiniteResources = true; // 放下去立刻建成，省得等建造动画
+            Vars.logic.play();
+            if (Vars.state.isPaused())
+                Vars.state.set(mindustry.core.GameState.State.playing);
+            for (int y = 40; y < 150; y++)
+                for (int x = 30; x < 210; x++) {
+                    Tile t = Vars.world.tile(x, y);
+                    if (t != null && t.block() != Blocks.air)
+                        t.setBlock(Blocks.air);
+                }
+
+            // 一块 26x18 的平地：6 台炮台一行 + 右边留出 3x3 的放置位
+            int ox = -1, oy = -1;
+            outer:
+            for (int y = 45; y < 125; y++) {
+                for (int x = 35; x < 170; x++) {
+                    boolean ok = true;
+                    for (int dy = 0; dy < 18 && ok; dy++)
+                        for (int dx = 0; dx < 26; dx++) {
+                            Tile t = Vars.world.tile(x + dx, y + dy);
+                            if (t == null || t.floor() == null || t.floor().isLiquid || t.block() != Blocks.air) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    if (ok) {
+                        ox = x;
+                        oy = y;
+                        break outer;
+                    }
+                }
+            }
+            if (ox < 0) {
+                Log.err("[drv] superturret 场景没找到平地");
+                return;
+            }
+            stOx = ox;
+            stOy = oy;
+
+            Block duo = null, scatter = null;
+            for (Block b : Vars.content.blocks()) {
+                if (duo == null && b.name.equals("duo"))
+                    duo = b;
+                if (scatter == null && b.name.equals("scatter"))
+                    scatter = b;
+            }
+            if (duo == null || scatter == null) {
+                Log.err("[drv] superturret 场景缺 duo/scatter");
+                return;
+            }
+            // 4 台 duo + 2 台 scatter + 1 台 4x4（截图里能看出"每格画一台炮台"，
+            // 以及"4x4 的炮台也缩进一格内"）
+            int tx = ox + 1, ty = oy + 7;
+            placeTurretSources(tx, ty);
+            placePartsTurret(tx + 9, ty); // 带 drawer 部件的一台（验"部件要画上"）
+            Block big = findTurret4x4();
+            Log.info("[drv] superturret 4x4 样板: @ (size=@) 抽屉部件数=@",
+                    big == null ? "无" : big.name, big == null ? -1 : big.size,
+                    !(big instanceof mindustry.world.blocks.defense.turrets.Turret t)
+                            || !(t.drawer instanceof mindustry.world.draw.DrawTurret dt) ? -1 : dt.parts.size);
+
+            // 核心：没有核心时玩家单位会被游戏回收（player.unit() 变 null），
+            // 之后框选/虚影/放置全都做不了
+            Building core = placeBL(Blocks.coreShard, ox + 20, oy + 13);
+            // 注：这里**不要**给核心塞一堆物品 —— 原版会给"进核心的每种物品"弹一串
+            // 「4.0k」提示，正好糊在画面中间，虚影截图就废了（infiniteResources 已经开了，
+            // 建造不需要库存）。
+            if (core == null)
+                Log.err("[drv] superturret 场景：核心没放下去");
+
+            // 玩家建造单位（框选/放置都要求 player.isBuilder()）
+            Unit u = ensurePlayerUnit((ox + 5) * 8f, (oy + 4) * 8f);
+
+            // 放置目标：右边一块空的 3x3
+            stTx = ox + 14;
+            stTy = oy + 4;
+            // 对照炮台：世界里放一台"内容表里的 duo"（组合版）和一台"格子用的原版 duo"，
+            // 和超级炮台格子里的 duo 一起截进同一张图 —— 三个画得一样不一样一眼看出来
+            placeTurretControlSamples();
+            Core.camera.position.set((ox + 8) * 8f, (oy + 6) * 8f);
+            Log.info("[drv] superturret 场景: 平地=@,@ 炮台行=(@,@)~(@,@) 放置位=@,@ 玩家单位=@",
+                    ox, oy, tx, ty, tx + 6, ty, stTx, stTy, u == null ? "null" : u.type.name);
+        } catch (Throwable t) {
+            Log.err("[drv] setupSuperTurretScene failed", t);
+        }
+    }
+
+    /**
+     * 回归：框选模式下，用"真实事件链"点一下建造菜单里的方块 —— 必须点得动
+     * （用户报的"现在建筑列表一个建筑都无法点击"）。
+     *
+     * <p>事件按 arc 的分发顺序从**最后一个**处理器往前送，和我们平时点鼠标一模一样：
+     * 如果被谁吃掉了，`control.input.block` 就不会变。
+     */
+    static void superTurretClickList() {
+        try {
+            Class<?> placer = placerCls();
+            boolean wasSelecting = Boolean.TRUE.equals(getStatic(placer, "selecting"));
+            Object modProcessor = getStatic(placer, "processor");
+            // 在右下角建造菜单区域里找第一个 UI 命中点（屏幕/舞台坐标换算不猜），
+            // 看这次点击到底被谁消费了：被模组的处理器吃掉 = 用户报的"建筑列表点不动"。
+            String consumer = "无(WORLD)";
+            boolean modAte = false;
+            int tried = 0;
+            outer:
+            for (int y = 410; y <= 690; y += 6) {
+                for (int x = 590; x <= 890; x += 6) {
+                    if (!Core.scene.hasMouse(x, y))
+                        continue;
+                    tried++;
+                    var list = Core.input.getInputProcessors();
+                    for (int i = list.size - 1; i >= 0; i--) {
+                        var p = list.get(i);
+                        if (p.touchDown(x, y, 0, arc.input.KeyCode.mouseLeft)) {
+                            consumer = p.getClass().getName() + " @" + x + "," + y;
+                            modAte = (p == modProcessor);
+                            break;
+                        }
+                    }
+                    var list2 = Core.input.getInputProcessors();
+                    for (int i = list2.size - 1; i >= 0; i--) {
+                        if (list2.get(i).touchUp(x, y, 0, arc.input.KeyCode.mouseLeft))
+                            break;
+                    }
+                    break outer;
+                }
+            }
+            Log.info("[drv] 框选模式下点建造列表: UI命中点=@ 事件消费者=@ 模组处理器=@ 框选中(点前)=@ 点后选中=@",
+                    tried, consumer, modAte, wasSelecting,
+                    Vars.control.input.block == null ? "null" : Vars.control.input.block.name);
+            if (tried > 0 && !modAte) {
+                Log.info("[drv] PASS 框选模式下界面点击放行给 UI（消费者 @）", consumer);
+            } else {
+                Log.err("[drv] FAIL 框选模式下界面点击被吃掉 / 没找到 UI（命中=@ 消费者=@ modAte=@）",
+                        tried, consumer, modAte);
+            }
+        } catch (Throwable t) {
+            Log.err("[drv] superTurretClickList failed", t);
+        }
+    }
+
+    /** ① 进入框选模式并拖出一个框（= 按 G / 点建造菜单里的按钮 + 拖动左键）。 */
+    /**
+     * 框选期间"玩家被锁住"的检查：用户要求点击合体按钮后玩家不能动（和原版重建/复制框选一样，
+     * 框完才恢复）。做法是世界里的触摸必须被模组的输入处理器吃掉（手机摇杆也就起不来）。
+     */
+    static void superTurretWorldLockCheck() {
+        try {
+            closeMinimap(); // 上一次"点建造菜单"的回归检查可能误点开了小地图，先把世界露出来
+            Object modProcessor = getStatic(placerCls(), "processor");
+            boolean selecting = Boolean.TRUE.equals(getStatic(placerCls(), "selecting"));
+            int px = -1, py = -1;
+            outer:
+            for (int y = 200; y < 460; y += 7)
+                for (int x = 200; x < 700; x += 7)
+                    if (!Core.scene.hasMouse(x, y)) {
+                        px = x;
+                        py = y;
+                        break outer;
+                    }
+            if (px < 0) {
+                Log.err("[drv] 框选锁检查：找不到界面之外的点");
+                return;
+            }
+            // 【别走 Core.input 的事件链】那会把同一串点击派发给后面的处理器（实测点开了小地图，
+           // 后面所有截图都成了小地图画面）。这里直接问我们自己的处理器：世界里的这一下它吃不吃。
+            // 为了让这次"起手"走的是正常分支（第一次按下 = 开始框选），先把驱动自己摆的框存起来、
+            // 临时置空，测完再放回去。
+            Class<?> placer = placerCls();
+            Object wasDragging = getStatic(placer, "dragging");
+            Object[] saved = { getStatic(placer, "sx"), getStatic(placer, "sy"),
+                    getStatic(placer, "ex"), getStatic(placer, "ey"), getStatic(placer, "boxPointer") };
+            setStatic(placer, "dragging", false);
+            setStatic(placer, "boxPointer", -1);
+            var m = modProcessor.getClass().getMethod("touchDown", int.class, int.class, int.class,
+                    arc.input.KeyCode.class);
+            m.setAccessible(true);
+            boolean ate = (Boolean) m.invoke(modProcessor, px, py, 0, arc.input.KeyCode.mouseLeft);
+            setStatic(placer, "dragging", wasDragging);
+            setStatic(placer, "sx", saved[0]);
+            setStatic(placer, "sy", saved[1]);
+            setStatic(placer, "ex", saved[2]);
+            setStatic(placer, "ey", saved[3]);
+            setStatic(placer, "boxPointer", saved[4]);
+            Log.info("[drv] 框选锁检查: 世界点=(@,@) 选中=@ 模组处理器吃掉=@", px, py, selecting, ate);
+            if (ate)
+                Log.info("[drv] PASS 框选期间世界里的触摸被模组吃掉（玩家被锁住，框完才恢复移动）");
+            else
+                Log.err("[drv] FAIL 框选期间世界触摸没被吃掉（玩家能一边框一边动）");
+            // 顺手把小地图收起来（万一前面哪一步把它点开了，之后的截图全是小地图）
+            try {
+                if (Vars.ui != null && Vars.ui.minimapfrag != null && Vars.ui.minimapfrag.shown())
+                    Vars.ui.minimapfrag.toggle();
+            } catch (Throwable ignored) {
+            }
+        } catch (Throwable t) {
+            Log.err("[drv] superTurretWorldLockCheck failed", t);
+        }
+    }
+
+    /** ① 进入框选模式并拖出一个框（= 按 G / 点建造菜单里的按钮 + 拖动左键）。 */
+    static void superTurretGo() {
+        try {
+            // 上一次框选进来的炮台会被超级炮台吃掉（这正是要验的），第二轮之前补一排
+            if (Vars.world.build(stOx + 1, stOy + 7) == null)
+                placeTurretSources(stOx + 1, stOy + 7);
+            // 世界刚加载完可能把之前的单位清掉了，进框选之前再兜一次
+            ensurePlayerUnit((stOx + 5) * 8f, (stOy + 4) * 8f);
+            Core.camera.position.set((stOx + 8) * 8f, (stOy + 6) * 8f);
+            Class<?> placer = placerCls();
+            // 真流程：在建造菜单里点"超级组合炮台"（= 把菜单选中的方块设成它，
+            // 模组自己会切进框选模式）。start() 只是兜底。
+            Block stBlock = (Block) invokeStatic(superTurretCls(), "blockForSide", new Class<?>[] { int.class }, 3);
+            Vars.control.input.block = stBlock;
+            invokeStatic(placer, "update", null);
+            if (!Boolean.TRUE.equals(getStatic(placer, "selecting"))) {
+                Log.info("[drv] 菜单点方块没进框选模式 → 直接调 start()");
+                invokeStatic(placer, "start", null);
+            }
+            setStatic(placer, "dragging", true);
+            setStatic(placer, "sx", stOx);
+            setStatic(placer, "sy", stOy + 7);
+            setStatic(placer, "ex", stOx + 15); // 往右够到带 parts 的那台
+            setStatic(placer, "ey", stOy + 12); // 往下够到 4x4
+            invokeStatic(placer, "update", null); // 让 placer 自己扫一遍框里的炮台
+            Object cache = getStatic(placer, "scanCache");
+            int n = cache instanceof Seq<?> s ? s.size : -1;
+            Log.info("[drv] 框选: (@,@)~(@,@)  选中炮台=@ 台  框选中=@  玩家单位=@ builder=@",
+                    stOx, stOy + 7, stOx + 15, stOy + 12, n, getStatic(placer, "selecting"),
+                    Vars.player.unit() == null ? "null" : Vars.player.unit().type.name,
+                    Vars.player.isBuilder());
+        } catch (Throwable t) {
+            Log.err("[drv] superTurretGo failed", t);
+        }
+    }
+
+    /** ② 框选完成 → 生成虚影，并把虚影挪到放置位（虚影里每格应该画出炮台图标）。 */
+    static void superTurretFinish() {
+        try {
+            Class<?> placer = placerCls();
+            Class<?> st = superTurretCls();
+            ensurePlayerUnit((stOx + 5) * 8f, (stOy + 4) * 8f);
+            // 诊断：框里几台、边长几、布局串是什么（出问题能一眼看出卡在哪一步）
+            Object found = invokeStatic(placer, "scan",
+                    new Class<?>[] { Team.class, int.class, int.class, int.class, int.class },
+                    Vars.player.team(), stOx, stOy + 7, stOx + 15, stOy + 12);
+            int n = found instanceof Seq<?> s ? s.size : -1;
+            Block stBlock = (Block) invokeStatic(st, "blockForSide", new Class<?>[] { int.class }, 3);
+            stLayout = String.valueOf(invokeStatic(placer, "layoutOf",
+                    new Class<?>[] { Seq.class, int.class }, found, 9));
+            Log.info("[drv] 虚影前: 框里=@ 台 / 3x3 方块=@ / 布局=@ / 框选中=@ / 玩家单位=@",
+                    n, stBlock == null ? "null" : stBlock.name, stLayout,
+                    getStatic(placer, "selecting"),
+                    Vars.player.unit() == null ? "null" : Vars.player.unit().type.name);
+            invokeStatic(placer, "finish", null);
+            var plans = Vars.control.input.selectPlans;
+            if (plans.isEmpty() && stBlock != null && !stLayout.isEmpty()) {
+                // 兜底：原版 useSchematic 那一路没生成计划时，直接造一个（验的是绘制/虚影）
+                Log.info("[drv] useSchematic 没生成计划 → 兜底直接造 BuildPlan");
+                plans.add(new mindustry.entities.units.BuildPlan(stTx, stTy, 0, stBlock, stLayout));
+            }
+            for (var p : plans) {
+                p.x = stTx;
+                p.y = stTy;
+            }
+            // 虚影跟着鼠标走：把鼠标摆到屏幕靠中间、再整体平移相机让"鼠标指着的世界点"
+            // 相机/单位先放放置位右边 8 格：虚影会落在画面左中（右下建造菜单挡不到），
+            // 具体把鼠标摆哪儿由下一帧的 superTurretAim 算（本帧量 mouseWorld 还是旧相机）
+            ensurePlayerUnit((stTx + 8) * 8f + 4f, stTy * 8f + 4f);
+            Core.camera.position.set((stTx + 8) * 8f + 4f, stTy * 8f + 4f);
+            Log.info("[drv] 虚影: selectPlans=@ 个 位置=@,@ 布局=@ 可放=@",
+                    plans.size, plans.isEmpty() ? -1 : plans.first().x, plans.isEmpty() ? -1 : plans.first().y,
+                    plans.isEmpty() ? "-" : plans.first().config,
+                    plans.isEmpty() ? "-" : mindustry.world.Build.validPlace(plans.first().block, Vars.player.team(), stTx, stTy, 0));
+        } catch (Throwable t) {
+            Log.err("[drv] superTurretFinish failed", t);
+        }
+    }
+
+    /** ②b 相机已就位，把"鼠标指着的世界点"对准放置位 = 虚影跟着落到放置位。 */
+    static void superTurretAim() {
+        aimGhost(stTx * 8f + 4f, stTy * 8f + 4f);
+        // 蓝图虚影的位置由 DesktopInput.schematicX/Y 决定，那对字段**只在鼠标事件里更新**
+        // （反射改 mouseX/mouseY 不产生事件），所以这里直接按住它，虚影才不会停在上一次的位置。
+        try {
+            if (Vars.control.input instanceof mindustry.input.DesktopInput di) {
+                di.schematicX = stTx;
+                di.schematicY = stTy;
+            }
+            for (var p : Vars.control.input.selectPlans) {
+                p.x = stTx;
+                p.y = stTy;
+            }
+            Log.info("[drv] 虚影定位: schematic=(@,@) 计划数=@", stTx, stTy,
+                    Vars.control.input.selectPlans.size);
+        } catch (Throwable t) {
+            Log.err("[drv] 虚影定位失败", t);
+        }
+    }
+
+    /** ③ 左键确定位置：把虚影变成建造计划。 */
+    static void superTurretPlace() {
+        try {
+            ensurePlayerUnit((stOx + 5) * 8f, (stOy + 4) * 8f);
+            if (Vars.player.unit() != null && !Vars.control.input.selectPlans.isEmpty()) {
+                try {
+                    var m = mindustry.input.InputHandler.class.getDeclaredMethod("flushPlans", Seq.class);
+                    m.setAccessible(true);
+                    m.invoke(Vars.control.input, Vars.control.input.selectPlans);
+                    Log.info("[drv] 已按左键确定位置（计划队列 @ 条）", Vars.player.unit().plans().size);
+                } catch (Throwable t) {
+                    Log.err("[drv] flushPlans 失败（改用直接放置）", t);
+                }
+            } else {
+                Log.info("[drv] 没有玩家单位/虚影，跳过 flushPlans");
+            }
+            Vars.control.input.selectPlans.clear();
+        } catch (Throwable t) {
+            Log.err("[drv] superTurretPlace failed", t);
+        }
+    }
+
+    /** HUD 上的"超级组合炮台"按钮：存在 + 点一下能进框选模式（用户要的 UI 入口）。 */
+    static void checkSuperTurretButton() {
+        try {
+            Class<?> placer = placerCls();
+            // 先把当前开着的对话框收掉：有对话框时它会盖住整个 HUD（任何 HUD 按钮都点不动），
+            // 那不是按钮位置的问题。
+            hideDialogs();
+            var el = Core.scene == null ? null : Core.scene.find("combineSuperTurretButton");
+            if (el == null) {
+                Log.err("[drv] FAIL HUD 上找不到超级组合炮台按钮");
+                return;
+            }
+            arc.scene.Element btn = null;
+            if (el instanceof arc.scene.Group g) {
+                for (arc.scene.Element c : g.getChildren())
+                    if (c instanceof arc.scene.ui.ImageButton ib) {
+                        btn = ib;
+                        break;
+                    }
+            }
+            Log.info("[drv] HUD 按钮: 找到 @ 里面按钮=@ w=@ h=@", el.getClass().getSimpleName(),
+                    btn == null ? "无" : btn.getClass().getSimpleName(), (int) el.getWidth(), (int) el.getHeight());
+            if (btn == null) {
+                Log.err("[drv] FAIL 按钮里没有可点的 ImageButton");
+                return;
+            }
+            var v = btn.localToStageCoordinates(new arc.math.geom.Vec2(btn.getWidth() / 2f, btn.getHeight() / 2f));
+            // 【真的点一下】把按钮中心的 stage 坐标换算成屏幕坐标，再走 scene 自己的
+            // touchDown/touchUp —— 这条链路和玩家手指点屏幕完全一样（会不会被别的 HUD
+            // 盖住也一并验了）。以前这里把坐标喂给"原始输入处理器"，根本不过 scene，
+            // 等于没点到按钮（那个检查一直假失败，和按钮位置无关）。
+            arc.math.geom.Vec2 scr = Core.scene.stageToScreenCoordinates(new arc.math.geom.Vec2(v.x, v.y));
+            int sx = (int) scr.x, sy = (int) scr.y;
+            boolean inScreen = sx >= 0 && sy >= 0
+                && sx <= Core.graphics.getWidth() && sy <= Core.graphics.getHeight();
+            Log.info("[drv] HUD 按钮: 中心 stage=(@,@) 屏幕(@,@) 在屏内=@",
+                (int) v.x, (int) v.y, sx, sy, inScreen);
+            // 谁压在按钮上？（按 stage 坐标算矩形，和上面同一套换算，方向一致）
+            try {
+                arc.scene.Element hit = Core.scene.hit(v.x, v.y, true);
+                boolean hitsButton = false;
+                for (arc.scene.Element e2 = hit; e2 != null; e2 = e2.parent)
+                    if (e2 == btn) {
+                        hitsButton = true;
+                        break;
+                    }
+                // 上面按"元素身份"比：Cell.tooltip() 会把按钮再包一层，身份可能对不上；
+                // 再加一条按矩形包含比的兜底（hit 的矩形落在按钮矩形内 = 就是按钮上那一下）。
+                if (!hitsButton && hit != null) {
+                    var ha = hit.localToStageCoordinates(new arc.math.geom.Vec2(0f, 0f));
+                    float bw = btn.getWidth(), bh = btn.getHeight();
+                    if (ha.x >= v.x - bw / 2f - 1f && ha.x <= v.x + bw / 2f + 1f
+                            && ha.y >= v.y - bh / 2f - 1f && ha.y <= v.y + bh / 2f + 1f)
+                        hitsButton = true;
+                }
+                if (hit != null) {
+                    var a = hit.localToStageCoordinates(new arc.math.geom.Vec2(0f, 0f));
+                    var b = hit.localToStageCoordinates(new arc.math.geom.Vec2(hit.getWidth(), hit.getHeight()));
+                    StringBuilder chain = new StringBuilder();
+                    for (arc.scene.Element e2 = hit; e2 != null; e2 = e2.parent) {
+                        chain.append(e2.getClass().getSimpleName());
+                        if (e2 == btn) chain.append("[=按钮]");
+                        chain.append(" < ");
+                    }
+                    var ba = btn.localToStageCoordinates(new arc.math.geom.Vec2(0f, 0f));
+                    Log.info("[drv] 点上的元素=@ name=@ 矩形=(@,@)-(@,@) touchable=@ 是按钮=@",
+                        hit.getClass().getSimpleName(), hit.name,
+                        (int) a.x, (int) a.y, (int) b.x, (int) b.y, hit.touchable,
+                        hitsButton);
+                    Log.info("[drv] 按钮自身: @ 矩形左下=(@,@) w=@ h=@ | hit 的父链: @",
+                        btn.getClass().getSimpleName(), (int) ba.x, (int) ba.y,
+                        (int) btn.getWidth(), (int) btn.getHeight(), chain);
+                } else {
+                    Log.info("[drv] 点上没有任何元素（hit=null）");
+                }
+                if (hitsButton && inScreen)
+                    Log.info("[drv] PASS HUD 按钮在屏幕上、按钮中心命中的就是它自己（没被别的 UI 盖住）");
+                else
+                    Log.err("[drv] FAIL HUD 按钮被别的 UI 盖住了（命中=@ 在屏内=@）", hitsButton, inScreen);
+            } catch (Throwable t) {
+                Log.err("[drv] 覆盖检查失败", t);
+            }
+            Core.scene.touchDown(sx, sy, 0, arc.input.KeyCode.mouseLeft);
+            Core.scene.touchUp(sx, sy, 0, arc.input.KeyCode.mouseLeft);
+            boolean selecting = Boolean.TRUE.equals(getStatic(placer, "selecting"));
+            Log.info("[drv] （参考）scene touch 序列后框选中=@（arc 的 scene touch 在无头/离屏下不可靠，仅记录）", selecting);
+            if (!selecting)
+                try {
+                    placer.getMethod("toggle").invoke(null);
+                    selecting = Boolean.TRUE.equals(getStatic(placer, "selecting"));
+                    Log.info("[drv] 直接调 toggle 后框选中=@（验证入口回调本身有效）", selecting);
+                } catch (Throwable ignored) {
+                }
+            // 收尾：把框选模式取消掉，别影响后面几步
+            if (selecting)
+                try {
+                    placer.getMethod("cancel").invoke(null);
+                } catch (Throwable ignored) {
+                }
+        } catch (Throwable t) {
+            Log.err("[drv] checkSuperTurretButton failed", t);
+        }
+    }
+
+    // ---------------- 炮台绘制对照（原版 duo / 内容表 duo / 格子里的 duo） ----------------
+
+    static Building realDuo, comboDuo;
+
+    /** 世界里放两台对照炮台：内容表里注册的 duo（组合版）+ 格子用的原版 duo。 */
+    static void placeTurretControlSamples() {
+        try {
+            Block combo = null;
+            for (Block b : Vars.content.blocks())
+                if (combo == null && b.name.equals("duo"))
+                    combo = b;
+            Block orig = combo == null ? null
+                    : (Block) invokeStatic(superTurretCls(), "cellBlock", new Class<?>[] { Block.class }, combo);
+            comboDuo = combo == null ? null : placeBL(combo, stTx + 5, stTy);
+            realDuo = orig == null ? null : placeBL(orig, stTx + 7, stTy);
+            logTurretDraw("内容表 duo(组合版)", combo);
+            logTurretDraw("原版 duo(格子用)", orig);
+        } catch (Throwable t) {
+            Log.err("[drv] 放炮台对照样板失败", t);
+        }
+    }
+
+    static String tr(arc.graphics.g2d.TextureRegion r) {
+        return r == null ? "null" : (r.found() ? "有(" + (int) r.width + "x" + (int) r.height + ")" : "无");
+    }
+
+    /** 把炮台的绘制素材念一遍：虚影/格子画不出东西时，一眼看出缺哪张图。 */
+    static void logTurretDraw(String tag, Block b) {
+        try {
+            if (!(b instanceof mindustry.world.blocks.defense.turrets.Turret t)) {
+                Log.info("[drv] @: @ 不是炮台", tag, b);
+                return;
+            }
+            var dt = t.drawer instanceof mindustry.world.draw.DrawTurret d ? d : null;
+            Log.info("[drv] @: @ size=@ region=@ fullIcon=@ uiIcon=@ drawer=@ base=@ preview=@ top=@ outline=@ parts=@ ammoParts=@",
+                    tag, b.name, b.size, tr(t.region), tr(b.fullIcon), tr(b.uiIcon),
+                    t.drawer == null ? "null" : t.drawer.getClass().getSimpleName(),
+                    dt == null ? "-" : tr(dt.base), dt == null ? "-" : tr(dt.preview),
+                    dt == null ? "-" : tr(dt.top), dt == null ? "-" : tr(dt.outline),
+                    dt == null ? -1 : dt.parts.size, dt == null ? -1 : dt.ammoParts.size);
+        } catch (Throwable t) {
+            Log.err("[drv] 读炮台绘制素材失败（@）", tag, t);
+        }
+    }
+
+    /**
+     * 兜底直摆一台超级炮台（不走输入流程），配置串就是框选出来的布局。
+     *
+     * <p>只在"驱动环境里玩家单位的建造计划没被执行"时用；逻辑（框选/布局/并池/开火）由
+     * headless 的 {@code combine.dbg.SuperTurretTest} 覆盖，这里只保证还能出截图。
+     */
+    static Building directPlace(Block block, int x, int y, String layout) {
+        try {
+            int size = Math.max(block.size, 1);
+            int ax = x + (size - 1) / 2, ay = y + (size - 1) / 2;
+            Tile t = Vars.world.tile(ax, ay);
+            if (t == null)
+                return null;
+            mindustry.world.Build.beginPlace(null, block, Team.sharded, ax, ay, 0, null);
+            mindustry.world.blocks.ConstructBlock.constructed(t, block, null, (byte) 0, Team.sharded, null);
+            Building b = Vars.world.build(ax, ay);
+            if (b != null) {
+                b.configured(null, layout);
+                b.updateProximity();
+                Log.info("[drv] 兜底直摆: @ @,@ 格子=@ 布局=@", b.block.name, ax, ay,
+                        superTurretCells(b), layout);
+            }
+            return b;
+        } catch (Throwable t) {
+            Log.err("[drv] 兜底直摆失败", t);
+            return null;
+        }
+    }
+
+    // ---------------- 超级炮台：悬浮面板 / 手动操控 ----------------
+
+    /** 悬浮面板：用户要求"给合体炮台加上悬浮面板看物品和液体数量"（走 CoopPanel 那套）。 */
+    static void superTurretFloatPanel(Building b) {
+        try {
+            Class<?> cp = Class.forName("combine.coop.CoopPanel", true, ml);
+            cp.getMethod("init").invoke(null);
+            // 只灌少量代表物品/液体：以前灌"每种各 40"，22 种物品 = 8 行，面板高过屏幕、
+            // 被裁到只剩标题（截图里看不到热量行）。留一两行足够看"实时刷新"，也放得下热量。
+            if (b.items != null) {
+                b.items.add(Items.copper, 80);
+                b.items.add(Items.graphite, 80);
+                b.items.add(Items.silicon, 80);
+            }
+            if (b.liquids != null) {
+                b.liquids.add(Liquids.water, 80f);
+                b.liquids.add(Liquids.slag, 80f);
+            }
+            // 在炮台**正北边**贴一台活的矿渣制热机：让"热量"行有真实分子（headless 里量的是
+            // 逻辑数值，这里看图 —— 分母应是里面每台需热炮台之和，分子是采到的整池热量）。
+            // placeBL 的 x,y 是"左上角"，3x3 的中心 = (x+1,y+1)：要中心落在 (tileX, tileY+3)。
+            try {
+                Block heater = null;
+                for (Block c : Vars.content.blocks())
+                    if (heater == null && c.name.equals("slag-heater")) { heater = c; break; }
+                Building hb = heater == null ? null
+                        : placeBL(heater, b.tileX() - 1, b.tileY() + 2);
+                if (hb != null) {
+                    // HeatProducer.rotate=true：必须"对着"耗热方，原版 calculateHeat 才认。
+                    // 朝向 = 从制热机指向炮台的方向（rotation 0=东 1=北 2=西 3=南）。
+                    try {
+                        int dirToTurret = hb.tileX() > b.tileX() ? 2
+                                : hb.tileX() < b.tileX() ? 0
+                                : (hb.tileY() > b.tileY() ? 3 : 1);
+                        var f = Building.class.getField("rotation");
+                        f.setAccessible(true);
+                        f.setInt(hb, dirToTurret);
+                    } catch (Throwable ignored) {
+                    }
+                    if (hb.liquids != null)
+                        hb.liquids.add(Liquids.slag, 50000f);
+                    b.updateProximity();
+                    hb.updateProximity();
+                    Log.info("[drv] 悬浮面板: 旁边放了一台 @ @,@ 朝向=@（给热量行做分子）",
+                            hb.block.name, hb.tileX(), hb.tileY(), hb.rotation);
+                }
+            } catch (Throwable t) {
+                Log.err("[drv] 悬浮面板: 放制热机失败（热量行分母仍可看）", t);
+            }
+            Object showable = cp.getMethod("showable", Building.class).invoke(null, b);
+            cp.getMethod("tapped", mindustry.world.Tile.class).invoke(null, Vars.world.tile(b.tileX(), b.tileY()));
+            String desc = String.valueOf(cp.getMethod("describe", Building.class).invoke(null, b));
+            Log.info("[drv] 悬浮面板: showable=@ 可见=@ 内容=@", showable,
+                    fieldOf(staticField(cp, "table"), "visible"), desc);
+            // 镜头对准这台方块：单机的相机跟着玩家单位走，把单位挪到方块中心，面板才会
+            // 浮在画面中间（以前只 set 一次 camera，下一帧就被"跟随玩家"覆盖，面板被挤到
+            // 屏幕角落、截图里被裁掉）。
+            ensurePlayerUnit(b.x, b.y);
+            Core.camera.position.set(b.x, b.y);
+            installCameraLock();
+            // 硬锁镜头到这台方块：软渲染一帧要 0.3~0.5 秒，相机"跟随玩家单位"的平滑在截图
+            // 那一刻还没走完，CoopPanel 每帧照旧相机定位 → 面板一直被裁。这个 update 在 UI
+            // 阶段跑（晚于游戏更新），每帧把相机钉回方块，面板才能稳定摆到不裁的位置。
+            arc.scene.ui.layout.Table camLock = new arc.scene.ui.layout.Table();
+            camLock.touchable = arc.scene.event.Touchable.disabled;
+            camLock.update(() -> Core.camera.position.set(b.x, b.y));
+            Vars.ui.hudGroup.addChild(camLock);
+            // 定位体检：面板高/宽、建筑锚点屏幕坐标、侧别 —— 面板被裁时一眼看出是"塞不下"
+            // 还是"侧别选错/夹持用错尺寸"。
+            Timer.schedule(() -> setStatic(cp, "side", 0), 1.6f);
+            Timer.schedule(() -> {
+                try {
+                    arc.scene.ui.layout.Table tt =
+                            (arc.scene.ui.layout.Table) staticField(cp, "table");
+                    float[] a = (float[]) cp.getMethod("anchor", Building.class).invoke(null, b);
+                    arc.math.geom.Vec2 v = Core.input.mouseScreen(a[0], a[1]);
+                    arc.math.geom.Vec2 v2 = Core.input.mouseScreen(b.x, b.y - b.block.size * 4f);
+                    Log.info("[drv] 面板定位: 建筑锚点屏Y=@ 下缘屏Y=@ 面板=@x@ pos=@,@ 屏=@x@ side=@",
+                            v.y, v2.y, tt.getWidth(), tt.getHeight(), tt.x, tt.y,
+                            Core.scene.getWidth(), Core.scene.getHeight(), getStatic(cp, "side"));
+                } catch (Throwable t) {
+                    Log.err("[drv] 面板定位体检失败", t);
+                }
+            }, 2.6f);
+        } catch (Throwable t) {
+            Log.err("[drv] 超级炮台悬浮面板打开失败", t);
+        }
+    }
+
+    /** 点旁边一格：悬浮面板应该收起。 */
+    static void superTurretHidePanel() {
+        try {
+            Class<?> cp = Class.forName("combine.coop.CoopPanel", true, ml);
+            cp.getMethod("tapped", mindustry.world.Tile.class)
+                    .invoke(null, Vars.world.tile(stTx - 3, stTy - 3));
+            Log.info("[drv] 点别处后悬浮面板可见=@", fieldOf(staticField(cp, "table"), "visible"));
+        } catch (Throwable t) {
+            Log.err("[drv] 收起悬浮面板失败", t);
+        }
+    }
+
+    /** 手动操控：让玩家接管这台（= 接管第一格），照着准星开火。 */
+    static void superTurretControl(Building b) {
+        try {
+            Vars.state.rules.possessionAllowed = true;
+            // 每一格装的炮台不一定认铜（例如第一格是 4x4 的 foreshadow），各种物品都给一份，
+            // 保证被接管那一格真能装弹、真能打
+            if (b.items != null)
+                for (Item it : Vars.content.items())
+                    b.items.add(it, 60);
+            Object proxy = b.getClass().getMethod("unit").invoke(b);
+            if (proxy == null) {
+                Log.err("[drv] 超级炮台没有可接管的代理单位");
+                return;
+            }
+            Object show = b.getClass().getMethod("canControl").invoke(b);
+            Unit u = (Unit) proxy;
+            boolean ok = false;
+            try {
+                var m = mindustry.input.InputHandler.class.getMethod("unitControl",
+                        mindustry.gen.Player.class, Unit.class);
+                m.invoke(null, Vars.player, u);
+                ok = true;
+            } catch (Throwable t) {
+                Log.err("[drv] InputHandler.unitControl 失败，直接用 player.unit()", t);
+                Vars.player.unit(u);
+            }
+            // 瞄 11 格左右：够远到不像贴脸，又在画面里 —— 截图能直接看到弹道
+            u.aimX(b.x + 90f);
+            u.aimY(b.y + 30f);
+            u.isShooting(true);
+            // 玩家操控的单位每一帧都会被输入层重设 aim/shooting（鼠标没按住就是"不开火"），
+            // 所以这里存下来、由 keepControlling 反复按"玩家在瞄准并按住开火键"的状态写回去。
+            stProxyUnit = u;
+            stControlBuild = b;
+            // 输入层每帧都会写 unit.isShooting（鼠标没按住 = false）。挂到 Trigger.update 上，
+            // 每帧"输入处理完之后、方块 update 之前"再写一次 = 等价于玩家一直按着开火键。
+            if (!controlHookInstalled) {
+                controlHookInstalled = true;
+                arc.Events.run(mindustry.game.EventType.Trigger.update, Driver::keepControlling);
+            }
+            Log.info("[drv] 手动操控: canControl=@ 接管=@ 玩家单位=@", show, u.isPlayer(),
+                    Vars.player.unit() == null ? "null" : Vars.player.unit().type.name);
+            installCameraLock();
+        } catch (Throwable t) {
+            Log.err("[drv] 超级炮台手动操控失败", t);
+        }
+    }
+
+    static Unit stProxyUnit;
+    static Building stControlBuild;
+    static boolean controlHookInstalled;
+
+    /** 每帧把"玩家在瞄准 + 按住开火"写回被接管的单位（模拟真人操作）。 */
+    static void keepControlling() {
+        try {
+            if (stProxyUnit == null || stControlBuild == null) return;
+            stProxyUnit.aimX(stControlBuild.x + 90f);
+            stProxyUnit.aimY(stControlBuild.y + 30f);
+            stProxyUnit.isShooting(true);
+        } catch (Throwable t) {
+            Log.err("[drv] keepControlling 失败", t);
+        }
+    }
+
+    /**
+     * 直接摆一台 7x7 超级炮台（49 格）—— 验证"超过 6x6"也能用：底板改成程序化绘制。
+     *
+     * <p>不走框选流程（那需要 49 台真炮台），配置串直接给 49 个 duo。
+     */
+    static void superTurretBig(int tx, int ty) {
+        try {
+            Block big = (Block) invokeStatic(superTurretCls(), "blockForSide", new Class<?>[] { int.class }, 7);
+            if (big == null) {
+                Log.err("[drv] 7x7 超级炮台没装配出来");
+                return;
+            }
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 49; i++) {
+                if (i > 0)
+                    sb.append(';');
+                sb.append("duo@90");
+            }
+            Building b = directPlace(big, tx, ty, sb.toString());
+            if (b == null) {
+                Log.err("[drv] 7x7 摆放失败");
+                return;
+            }
+            ensurePlayerUnit((tx + 11) * 8f, ty * 8f);
+            Core.camera.position.set((tx + 11) * 8f, ty * 8f);
+            Log.info("[drv] 7x7 超级炮台: @ @,@ 格子=@ 程序化底板=@", b.block.name, tx, ty,
+                    superTurretCells(b), getField(b.block, "proceduralPlate"));
+        } catch (Throwable t) {
+            Log.err("[drv] 7x7 测试失败", t);
+        }
+    }
+
+    /** 这台超级炮台里面所有格子一共打了几发。 */
+    static int superTurretShots(Building b) {
+        int n = 0;
+        try {
+            for (Object c : (Object[]) getField(b, "cells"))
+                if (c instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild t)
+                    n += t.totalShots;
+        } catch (Throwable t) {
+            Log.err("[drv] 读总发射数失败", t);
+        }
+        return n;
+    }
+
+    /** ④ 等建好 → 截图 + 报告每格装了哪台炮台。 */
+    static void superTurretStep() {
+        try {
+            if (stFrames < 0) {
+                stFrames = frames;
+                return;
+            }
+            Class<?> st = superTurretCls();
+            Block stBlock = (Block) invokeStatic(st, "blockForSide", new Class<?>[] { int.class }, 3);
+            // 虚影是跟着鼠标走的：虚影挪到放置位之后，光标还可能让原版输入再微移几格，
+            // 所以这里在放置位附近找这台超级炮台（±4 格）。
+            Building b = null;
+            for (int dy = -4; dy <= 4 && b == null; dy++)
+                for (int dx = -4; dx <= 4; dx++) {
+                    Building o = Vars.world.build(stTx + dx, stTy + dy);
+                    if (o != null && o.block == stBlock && o.tile == Vars.world.tile(o.tileX(), o.tileY())) {
+                        b = o;
+                        break;
+                    }
+                }
+            if (b == null) {
+                stTries++;
+                // 兜底：驱动造出来的玩家单位在有些版本上不会执行计划队列（见 ensurePlayerUnit），
+                // 那也照样要出截图 —— 直接摆一台（框选/虚影/计划那几步上面已经单独验过了）
+                // 软渲染很慢（有时一帧 2~3 秒），等 6 次（≈12 秒以上）没建出来就走兜底，
+                // 否则会撞上 200 秒的模式超时（实测踩到过）
+                if (stTries < 6) {
+                    Log.info("[drv] superturret 检查@: 还没建好（tick @，计划队列 @）", stPhase,
+                            (int) Vars.state.tick,
+                            Vars.player.unit() == null ? -1 : Vars.player.unit().plans().size);
+                    return;
+                }
+                Log.err("[drv] superturret 计划一直没建出来 → 兜底直接摆一台（只影响截图，逻辑用例在 headless）");
+                b = directPlace(stBlock, stTx, stTy, stLayout);
+                if (b == null)
+                    return;
+            }
+            if (stPhase == 0) {
+                // 先把玩家单位（=相机）挪到**右边** 8 格：超级炮台就落在画面左中
+                // （右下角是建造菜单，放中间会被挡），下一轮再截图，免得拍到上一帧的旧画面
+                ensurePlayerUnit((stTx + 8) * 8f, stTy * 8f);
+                Core.camera.position.set((stTx + 8) * 8f, stTy * 8f);
+                stPhase = 1;
+                return;
+            }
+            Object layout = getField(b, "layout");
+            Object[] cells = getField(b, "cells") instanceof Object[] a ? a : new Object[0];
+            StringBuilder sb = new StringBuilder();
+            int drawn = 0;
+            for (Object c : cells) {
+                if (c instanceof Building cb) {
+                    Block cbl = cb.block;
+                    float sc = cbl == null ? -1f
+                            : ((Number) invokeStatic(superTurretCls(), "cellScale",
+                                    new Class<?>[] { Block.class }, cbl)).floatValue();
+                    // 格子中心 vs 所在格子的世界中心：差 0 ~ 4 才对（差 4 = 偏了半格）
+                    float tileCx = (cb.tileX() + 0.5f) * 8f, tileCy = (cb.tileY() + 0.5f) * 8f;
+                    // 绘制素材对照：格子炮台和"世界里那台原版 duo"是不是同一个块、drawer 里有没有 parts
+                    String same = realDuo != null && cbl == realDuo.block ? "=原版样板"
+                            : (comboDuo != null && cbl == comboDuo.block ? "=组合版" : "=别的块");
+                    int parts = -1;
+                    if (cbl instanceof mindustry.world.blocks.defense.turrets.Turret t2
+                            && t2.drawer instanceof mindustry.world.draw.DrawTurret d2)
+                        parts = d2.parts.size;
+                    sb.append(cbl == null ? "?" : cbl.name).append("(scale=").append(sc)
+                            .append(String.format(",off=%.1f/%.1f", cb.x - tileCx, cb.y - tileCy))
+                            .append(",parts=").append(parts)
+                            .append(",warmup=").append(cb.warmup())
+                            .append(",recoil=").append(cb instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild tb2
+                                    ? tb2.curRecoil : -1f)
+                            .append(",drawer=").append(cbl instanceof mindustry.world.blocks.defense.turrets.Turret t3
+                                    && t3.drawer != null ? t3.drawer.getClass().getSimpleName() : "null")
+                            .append(same).append(") ").append(' ');
+                    drawn++;
+                } else {
+                    sb.append("- ");
+                }
+            }
+            Log.info("[drv] superturret 检查@: 方块=@ 位置=@,@ 布局=@ 格子=@/@ 每格=[@] region=@(@x@) tick=@",
+                    stPhase, b.block.name, b.x, b.y, layout, drawn, superTurretCells(b), sb.toString().trim(),
+                    b.block.region != null && b.block.region.found(),
+                    b.block.region == null ? -1 : b.block.region.width,
+                    b.block.region == null ? -1 : b.block.region.height,
+                    (int) Vars.state.tick);
+            if (stPhase == 1) {
+                shot("superturret_placed");
+                stPhase = 2;
+            } else if (stPhase == 2 && drawn >= 8) {
+                stPhase = 3; // 收尾那串步骤只跑一次（否则每 2 秒重来一遍，截图/日志刷屏）
+                Log.info("[drv] superturret 完成: 建出 @ 格炮台（4 duo + 2 scatter + 1 带部件 + 1 4x4 + 1 afflict）", drawn);
+                // 缩放检查（客户端有图集，能量到贴图尺寸）
+                Block big = null;
+                for (Block x : Vars.content.blocks())
+                    if (x != null && (x.name.equals("foreshadow") || x.name.equals("meltdown") || x.name.equals("spectre"))
+                        && x.size >= 3) { big = x; break; }
+                if (big != null)
+                    Log.info("[drv] 缩放检查: @（@x@）cellScale=@（<1 = 缩到一格内）", big.name, big.size, big.size,
+                        invokeStatic(superTurretCls(), "cellScale", new Class<?>[] { Block.class }, big));
+                checkSuperTurretButton();
+                // ① 悬浮面板（看物品/液体）+ ② 手动操控开火 + ③ 原版信息面板（物品/液体条）
+                final Building sup = b;
+                superTurretFloatPanel(sup);
+                Timer.schedule(() -> shot("superturret_floatpanel"), 3f);
+                Timer.schedule(Driver::superTurretHidePanel, 5f);
+                Timer.schedule(() -> superTurretControl(sup), 7f);
+                // 每 0.25 秒把"玩家在瞄准 + 开火"写回（输入层每帧会覆盖，见 keepControlling）
+                // 注意 foreshadow 这类重炮 shootWarmupSpeed 很小（约 20 秒才蓄满），窗口要留够
+                Timer.schedule(Driver::keepControlling, 7f, 0.25f, 110);
+                Timer.schedule(() -> {
+                    shot("superturret_control");
+                    Log.info("[drv] 手动操控: 发射 @ 发（接管后照着准星打）", superTurretShots(sup));
+                    // 打不出来时看被接管那一格的内部状态：warmup 涨没涨、isShooting 有没有保留、
+                    // 朝向有没有转到准星、弹仓有没有弹
+                    try {
+                        Object[] cs = (Object[]) getField(sup, "cells");
+                        for (int i = 0; i < cs.length && i < 2; i++) {
+                            Object c = cs[i];
+                            if (c == null)
+                                continue;
+                            Object cbv = getField(c, "block");
+                            Log.info("[drv] 控制格@: @ warmup=@ isShooting=@ rotation=@ targetPos=@ hasAmmo=@",
+                                    i, cbv instanceof Block bb ? bb.name : "?",
+                                    invokeVirtual(c, "warmup"), getField(c, "isShooting"), getField(c, "rotation"),
+                                    getField(c, "targetPos"), invokeVirtual(c, "hasAmmo"));
+                        }
+                    } catch (Throwable t) {
+                        Log.err("[drv] 读控制格状态失败", t);
+                    }
+                }, 20f);
+                Timer.schedule(() -> {
+                    try {
+                        var cfg = Vars.control.input.config;
+                        if (cfg != null) cfg.showConfig(sup);
+                    } catch (Throwable t) { Log.err("[drv] 打开配置面板失败", t); }
+                }, 22f);
+                Timer.schedule(() -> { shot("superturret_panel"); }, 26f);
+                // 顺便验一下 7x7（没有贴图，底板靠程序化绘制）—— 用户问"为什么限制在 6x6"
+                Timer.schedule(() -> superTurretBig(stTx + 12, stTy), 28f);
+                Timer.schedule(() -> { shot("superturret_big"); Core.app.exit(); }, 33f);
+            }
+        } catch (Throwable t) {
+            Log.err("[drv] superTurretStep failed", t);
+        }
+    }
+
     // ---------------- 组合连接器 ----------------
     static Building connA, connB, connLink, connNode;
+    /** "节点贴着 afflict + 制热机" 那一组（用户报的场景）。 */
+    static Building connNodeHeat, connNodeHeatHeater, connNodeHeatAfflict;
+    /** 第二种接法：节点离着放、靠点连线接起来的那一组。 */
+    static Building connLinkedNode, connLinkedHeater, connLinkedAfflict;
+
+    /** 走和玩家一样的入口给组合节点连线（onConfigureBuildTapped）。 */
+    static void tapNodeLink(Building node, Building target){
+        if(node == null || target == null) return;
+        try{
+            var m = node.getClass().getMethod("onConfigureBuildTapped", Building.class);
+            m.setAccessible(true);
+            m.invoke(node, target);
+        }catch(Throwable t){ Log.err("[drv] 节点连线失败", t); }
+    }
+
+    /** 这台建筑算不算"组合方块"（CoopPanel/ComboNet 的判据）。 */
+    static Object comboBuild(Building b){
+        if(b == null) return null;
+        try{
+            Class<?> cr = Class.forName("combine.util.ComboReflect", true, ml);
+            return cr.getMethod("isComboBuild", Building.class).invoke(null, b);
+        }catch(Throwable t){ return "err"; }
+    }
+
+    /** CoopPanel.showable：点它到底弹不弹悬浮面板。 */
+    static Object showable(Building b){
+        if(b == null) return null;
+        try{
+            Class<?> cp = Class.forName("combine.coop.CoopPanel", true, ml);
+            return cp.getMethod("showable", Building.class).invoke(null, b);
+        }catch(Throwable t){ return "err"; }
+    }
     static int connPhase = 0, connFrames = -1;
 
     static void setupConnScene(){
@@ -2359,6 +3672,51 @@ public class Driver extends Mod{
             // 旁边再放一个组合节点（看它会不会自动连线）
             connNode = placeBL(nodeB, 61, 66);
             connA.items.add(Items.copper, 40);
+
+            // 用户报的场景：组合节点**贴着** afflict 和 slag-heater 放（不点连线）时，
+            // 面板应该把两者算成一组、并显示热量（修之前热量能传、但面板只有 1 台、热量 0）。
+            Block heaterB = null, afflictB = null;
+            for(Block b : Vars.content.blocks()){
+                if(heaterB == null && b.name.equals("slag-heater")) heaterB = b;
+                if(afflictB == null && b.name.equals("afflict")) afflictB = b;
+            }
+            connNodeHeat = placeBL(nodeB, 80, 60);
+            connNodeHeatHeater = heaterB == null ? null : placeBL(heaterB, 81, 59);
+            connNodeHeatAfflict = afflictB == null ? null : placeBL(afflictB, 76, 59);
+            // 再贴一个原版 heat-source（不吃料、立刻产热）：保证截图里热量行有真实数字
+            // （slag-heater 要等它把矿渣烧起来，软渲染下几秒内可能还是 0）。
+            Building src = placeBL(Blocks.heatSource, 80, 59);
+            if(connNodeHeatHeater != null && connNodeHeatHeater.liquids != null)
+                connNodeHeatHeater.liquids.add(Liquids.slag, 5000f);
+            connNodeHeat.updateProximity();
+            if(src != null) src.updateProximity();
+            if(connNodeHeatHeater != null) connNodeHeatHeater.updateProximity();
+            if(connNodeHeatAfflict != null) connNodeHeatAfflict.updateProximity();
+            Log.info("[drv] 方块类: afflict=@ 制热机=@ 节点=@ | isCombo(afflict)=@ isCombo(制热机)=@ showable(afflict)=@",
+                afflictB == null ? null : afflictB.getClass().getName(),
+                heaterB == null ? null : heaterB.getClass().getName(),
+                nodeB.getClass().getName(),
+                comboBuild(connNodeHeatAfflict), comboBuild(connNodeHeatHeater), showable(connNodeHeatAfflict));
+            Log.info("[drv] conn 贴节点场景: 节点=@ 制热机=@ afflict=@ 节点邻格=@",
+                connNodeHeat, connNodeHeatHeater, connNodeHeatAfflict,
+                connNodeHeat.proximity == null ? -1 : connNodeHeat.proximity.size);
+
+            // 第二种接法（用户最可能的用法）：节点离着放，**点连线**接制热机和 afflict（都在 6 格射程内）。
+            connLinkedNode = placeBL(nodeB, 80, 72);
+            connLinkedHeater = heaterB == null ? null : placeBL(heaterB, 84, 70);
+            connLinkedAfflict = afflictB == null ? null : placeBL(afflictB, 72, 69);
+            if(connLinkedHeater != null && connLinkedHeater.liquids != null)
+                connLinkedHeater.liquids.add(Liquids.slag, 5000f);
+            connLinkedNode.updateProximity();
+            if(connLinkedHeater != null) connLinkedHeater.updateProximity();
+            if(connLinkedAfflict != null) connLinkedAfflict.updateProximity();
+            Building src2 = placeBL(Blocks.heatSource, 80, 68);   // 也在 6 格射程内
+            if(src2 != null) src2.updateProximity();
+            tapNodeLink(connLinkedNode, connLinkedHeater);
+            tapNodeLink(connLinkedNode, connLinkedAfflict);
+            tapNodeLink(connLinkedNode, src2);
+            Log.info("[drv] conn 连线场景: 节点=@ 制热机=@ afflict=@ links=@",
+                connLinkedNode, connLinkedHeater, connLinkedAfflict, field(connLinkedNode, "links"));
             Core.camera.position.set((connA.x + connB.x) / 2f, connA.y + 8f);
             Log.info("[drv] conn 场景: A=@ B=@ 同池=@ 连接器=@ 节点links=@",
                 connA, connB, connA.items == connB.items, connLink, field(connNode, "links"));
@@ -2376,8 +3734,23 @@ public class Driver extends Mod{
                 connPhase = 1;
                 connFrames = -1;
                 openConnPanel();
-            }else{
+            }else if(connPhase == 1){
                 shot("conn_panel");
+                connPhase = 2;
+                connFrames = -1;
+                openFactoryPanel();
+            }else if(connPhase == 2){
+                shot("conn_factory");
+                connPhase = 3;
+                connFrames = -1;
+                openHeatPanel();
+            }else if(connPhase == 3){
+                shot("conn_heatpanel");
+                connPhase = 4;
+                connFrames = -1;
+                openLinkedPanel();
+            }else{
+                shot("conn_linkedpanel");
                 Log.info("[drv] conn 模式结束");
                 Core.app.exit();
             }
@@ -2393,6 +3766,85 @@ public class Driver extends Mod{
             d.show();
             Log.info("[drv] conn 面板已弹出: 子元素=@", panel.getChildren().size);
         }catch(Throwable t){ Log.err("[drv] openConnPanel failed", t); }
+    }
+
+    /**
+     * 组合建筑自己的信息面板（display）。
+     *
+     * <p>用户要求："既然有悬浮面板了，就把 display() 里的物品、液体、电力删了，只显示组合体构成，
+     * 而且会换行" —— 这张截图就是拿来看"只剩构成那一行、没有物品/液体/电力条"的。
+     */
+    static void openFactoryPanel(){
+        try{
+            for(arc.scene.Element e : Core.scene.root.getChildren())
+                if(e instanceof arc.scene.ui.Dialog dd && dd.isShown()) dd.hide();
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            connA.getClass().getMethod("display", arc.scene.ui.layout.Table.class).invoke(connA, panel);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("组合工厂信息");
+            d.cont.add(panel).pad(10f);
+            d.show();
+            Log.info("[drv] 组合工厂信息面板已弹出: 子元素=@", panel.getChildren().size);
+        }catch(Throwable t){ Log.err("[drv] openFactoryPanel failed", t); }
+    }
+
+    /**
+     * 用户报的场景截图：组合节点贴着 afflict + slag-heater 放，点 afflict 弹悬浮面板 ——
+     * 面板应该把两者算成一组、并且热量不为 0。
+     */
+    static void openHeatPanel(){
+        try{
+            for(arc.scene.Element e : Core.scene.root.getChildren())
+                if(e instanceof arc.scene.ui.Dialog dd && dd.isShown()) dd.hide();
+            if(connNodeHeatAfflict == null || !connNodeHeatAfflict.isValid()){
+                Log.err("[drv] 贴节点场景没搭起来（afflict 为空）");
+                return;
+            }
+            Class<?> cp = Class.forName("combine.coop.CoopPanel", true, ml);
+            cp.getMethod("init").invoke(null);
+            // 镜头正对这台：方块落在画面中部，面板往上/下展开都不会顶到屏幕边。
+            Core.camera.position.set(connNodeHeatAfflict.x, connNodeHeatAfflict.y);
+            ensurePlayerUnit(connNodeHeatAfflict.x, connNodeHeatAfflict.y);
+            try{
+                Log.info("[drv] 热检查: 制热机 heat=@ producerHeat=@ slag=@ 效率=@ | afflict.heatReq=@ | 节点heat=@",
+                    invokeVirtual(connNodeHeatHeater, "heat"),
+                    getField(connNodeHeatHeater, "producerHeat"),
+                    connNodeHeatHeater.liquids == null ? null : connNodeHeatHeater.liquids.get(Liquids.slag),
+                    getField(connNodeHeatHeater, "efficiency"),
+                    getField(connNodeHeatAfflict, "heatReq"),
+                    getField(connNodeHeat, "heat"));
+            }catch(Throwable t){ Log.err("[drv] 热检查失败", t); }
+            cp.getMethod("tapped", mindustry.world.Tile.class)
+                .invoke(null, Vars.world.tile(connNodeHeatAfflict.tileX(), connNodeHeatAfflict.tileY()));
+            Log.info("[drv] 贴节点悬浮面板: showable=@ describe=@",
+                cp.getMethod("showable", Building.class).invoke(null, connNodeHeatAfflict),
+                cp.getMethod("describe", Building.class).invoke(null, connNodeHeatAfflict));
+            Log.info("[drv] 贴节点·制热机侧: showable=@ describe=@",
+                cp.getMethod("showable", Building.class).invoke(null, connNodeHeatHeater),
+                cp.getMethod("describe", Building.class).invoke(null, connNodeHeatHeater));
+        }catch(Throwable t){ Log.err("[drv] openHeatPanel failed", t); }
+    }
+
+    /** 第二种接法（点连线）的悬浮面板：也要成组、也要有热量。 */
+    static void openLinkedPanel(){
+        try{
+            for(arc.scene.Element e : Core.scene.root.getChildren())
+                if(e instanceof arc.scene.ui.Dialog dd && dd.isShown()) dd.hide();
+            if(connLinkedAfflict == null || !connLinkedAfflict.isValid()){
+                Log.err("[drv] 连线场景没搭起来（afflict 为空）");
+                return;
+            }
+            Class<?> cp = Class.forName("combine.coop.CoopPanel", true, ml);
+            cp.getMethod("init").invoke(null);
+            Core.camera.position.set(connLinkedAfflict.x, connLinkedAfflict.y + 30f);
+            ensurePlayerUnit(connLinkedAfflict.x, connLinkedAfflict.y + 30f);
+            cp.getMethod("tapped", mindustry.world.Tile.class)
+                .invoke(null, Vars.world.tile(connLinkedAfflict.tileX(), connLinkedAfflict.tileY()));
+            Log.info("[drv] 连线悬浮面板: showable=@ describe=@ | 节点links=@ afflict.heatReq=@ 制热机heat=@",
+                cp.getMethod("showable", Building.class).invoke(null, connLinkedAfflict),
+                cp.getMethod("describe", Building.class).invoke(null, connLinkedAfflict),
+                field(connLinkedNode, "links"), getField(connLinkedAfflict, "heatReq"),
+                invokeVirtual(connLinkedHeater, "heat"));
+        }catch(Throwable t){ Log.err("[drv] openLinkedPanel failed", t); }
     }
 
     // ---------------- 核反应堆发电效率 / 燃料条 ----------------
@@ -2611,6 +4063,389 @@ public class Driver extends Mod{
         }catch(Throwable t){ Log.err("[drv] setupWorld failed", t); }
     }
 
+    // ---------------- ve 单位组装厂的"建筑载荷"（mode=veasm） ----------------
+    //
+    // 组装厂的配方要求（PayloadStack）是内容装配阶段抓的方块实例，原版
+    // UnitAssemblerBuild.acceptPayload 用的是 `b.item == payload.content()` 身份比较：
+    // 只要"要求里那件"和"世界里那件"不是同一个实例，建筑载荷就永远收不进去。
+    static boolean veAsmDone;
+
+    static Block byName(String n){
+        for(Block b : Vars.content.blocks()) if(b.name.equals(n)) return b;
+        return null;
+    }
+
+    /** 打包机的 filter 里有没有这一件（身份比较）。 */
+    @SuppressWarnings("unchecked")
+    static boolean filterHas(Object filterObj, Block b){
+        if(!(filterObj instanceof Seq<?> s)) return false;
+        for(Object o : s) if(o == b) return true;
+        return false;
+    }
+
+    static Object fieldOf(Object o, String name){
+        for(Class<?> c = o == null ? null : o.getClass(); c != null && c != Object.class; c = c.getSuperclass()){
+            try{
+                java.lang.reflect.Field f = c.getDeclaredField(name);
+                f.setAccessible(true);
+                return f.get(o);
+            }catch(NoSuchFieldException ignored){
+            }catch(Throwable ignored){
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** 读静态字段（私有也能读：一路往上找 declared 字段）。 */
+    static Object staticField(Class<?> cls, String name){
+        for(Class<?> c = cls; c != null && c != Object.class; c = c.getSuperclass()){
+            try{
+                java.lang.reflect.Field f = c.getDeclaredField(name);
+                f.setAccessible(true);
+                return f.get(null);
+            }catch(NoSuchFieldException ignored){
+            }catch(Throwable t){
+                Log.err("[drv] 读静态字段 @.@ 失败", cls.getSimpleName(), name, t);
+                return null;
+            }
+        }
+        return null;
+    }
+
+    static void setupVeAsmScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<130;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            Building core = placeBL(Blocks.coreShard, 40, 100);
+            if(core != null && core.items != null) for(Item it : Vars.content.items()) core.items.set(it, 5000);
+            Core.camera.position.set(60 * 8f, 62 * 8f);
+        }catch(Throwable t){ Log.err("[drv] setupVeAsmScene failed", t); }
+    }
+
+    static void veAsmCheck(){
+        if(veAsmDone) return;
+        veAsmDone = true;
+        try{
+            Class<?> rep = Class.forName("combine.Replacer", true, ml);
+            @SuppressWarnings("unchecked")
+            arc.struct.ObjectMap<Block, Block> replaced =
+                (arc.struct.ObjectMap<Block, Block>)rep.getField("replaced").get(null);
+
+            Block asm = byName("ve-super-assembler"), pack = byName("ve-super-assemble-pack");
+            Log.info("[drv] veasm 组装厂=@ (@) 套件=@ (@)", asm == null ? "无" : asm.name,
+                asm == null ? "-" : asm.getClass().getName(), pack == null ? "无" : pack.name,
+                pack == null ? "-" : pack.getClass().getName());
+            if(asm == null || pack == null){
+                Log.info("[drv] veasm 这个数据目录里没有 ve 组装厂，跳过");
+                return;
+            }
+            Log.info("[drv] veasm 套件实例: 是旧实例(被换掉)? @ 是组合实例? @ 内容表按名查回同实例? @",
+                replaced.containsKey(pack), replaced.containsValue(pack, true), Vars.content.block(pack.name) == pack);
+
+            // 组装厂配方里的方块要求
+            Block reqBlock = null;
+            String reqName = "-";
+            Object plansObj = fieldOf(asm, "plans");
+            if(plansObj instanceof Seq<?> plans){
+                int reqTotal = 0;
+                for(Object plan : plans){
+                    Object unit = fieldOf(plan, "unit");
+                    Object reqs = fieldOf(plan, "requirements");
+                    if(!(reqs instanceof Seq<?> rq)) continue;
+                    for(Object o : rq){
+                        if(!(o instanceof mindustry.type.PayloadStack st)) continue;
+                        reqTotal++;
+                        String kind = st.item instanceof Block ? "建筑" : (st.item instanceof UnitType ? "单位" : "其它");
+                        String extra = "";
+                        if(st.item instanceof Block bb){
+                            extra = " | 旧实例? " + replaced.containsKey(bb)
+                                + " 组合实例? " + replaced.containsValue(bb, true)
+                                + " 内容表按名查回同实例? " + (Vars.content.block(bb.name) == bb)
+                                + " 类=" + bb.getClass().getSimpleName();
+                            if(reqBlock == null){ reqBlock = bb; reqName = bb.name; }
+                        }
+                        Log.info("[drv] veasm 方案「@」要求 @ x@ (@)@", unit == null ? "?" : unit, st.item.name, st.amount, kind, extra);
+                    }
+                }
+                Log.info("[drv] veasm 组装厂方案数=@ 载荷要求数=@", plans.size, reqTotal);
+            }
+
+            // 世界里的一块套件（实际放的建筑用的是哪个实例）
+            Building wall = placeBL(pack, 72, 62);
+            Block worldInst = wall == null ? null : wall.block;
+            Log.info("[drv] veasm 世界里的套件: @ (@) | 与要求同实例? @ | 与内容表同实例? @",
+                worldInst == null ? "放不下来" : worldInst.name,
+                worldInst == null ? "-" : worldInst.getClass().getName(),
+                worldInst == reqBlock, worldInst == Vars.content.block(pack.name));
+
+            // 打包机（ve-assemble-packer，Constructor 的 JS 子类）：它的 filter 是"能打包哪几种建筑"的
+            // 白名单，JSON 里按名字抓的是**内容装配阶段**的方块实例；这一份要是没跟着换成组合实例，
+            // 玩家从它面板里选中套件 → 打出来的载荷是**老实例** → 与组装厂要求（组合实例）身份不符。
+            Block packer = byName("ve-assemble-packer");
+            Block filterPack = null;
+            if(packer != null){
+                Object filterObj = fieldOf(packer, "filter");
+                Log.info("[drv] veasm 打包机=@ (@) filter=@", packer.name, packer.getClass().getName(), filterObj);
+                if(filterObj instanceof Seq<?> fs){
+                    StringBuilder sb = new StringBuilder();
+                    for(Object o : fs){
+                        if(!(o instanceof Block fb)) continue;
+                        boolean stale = replaced.containsKey(fb), combo = replaced.containsValue(fb, true);
+                        sb.append(fb.name).append("/").append(fb.getClass().getSimpleName())
+                          .append(stale ? "[旧实例]" : combo ? "[组合实例]" : "[普通]").append(" ");
+                        if(fb.name.equals(pack.name) && filterPack == null) filterPack = fb;
+                    }
+                    Log.info("[drv] veasm 打包机 filter 里 " + fs.size + " 项: " + sb);
+                }
+                Log.info("[drv] veasm 打包机筛选条件: isVisible=@ size=@ 范围=@~@ 被禁?@ 本星球可造?@ filter里有?@ 现在星球=@",
+                    pack.isVisible(), pack.size, fieldOf(packer, "minBlockSize"), fieldOf(packer, "maxBlockSize"),
+                    Vars.state.rules.isBanned(pack), pack.environmentBuildable(),
+                    filterHas(filterObj, pack), Vars.state.getPlanet());
+                boolean canProd = false;
+                try{ canProd = (Boolean)packer.getClass().getMethod("canProduce", Block.class).invoke(packer, pack); }catch(Throwable ignored){}
+                Log.info("[drv] veasm 打包机能不能打包「内容表里的那个套件」: @", canProd);
+                // ve 的组装套件只标在赛克兰特/玛瑞斯等星球上（shownPlanets）——env 不对时
+                // Constructor.canProduce 本来就该是 false。换成 ve-cyclant 再判一次，看筛选到底通不通。
+                mindustry.type.Planet cy = Vars.content.planet("ve-cyclant");
+                if(cy != null){
+                    mindustry.type.Planet oldPlanet = Vars.state.rules.planet;
+                    mindustry.type.Sector oldSector = Vars.state.rules.sector;
+                    Vars.state.rules.planet = cy;
+                    Vars.state.rules.sector = null;
+                    try{
+                        boolean can2 = (Boolean)packer.getClass().getMethod("canProduce", Block.class).invoke(packer, pack);
+                        Log.info("[drv] veasm 换成赛克兰特（ve-cyclant）后: 本星球可造?@ 能不能打包套件?@",
+                            pack.environmentBuildable(), can2);
+                    }catch(Throwable ignored){
+                    }finally{
+                        Vars.state.rules.planet = oldPlanet;
+                        Vars.state.rules.sector = oldSector;
+                    }
+                }
+            }
+
+            Building ab = placeBL(asm, 60, 60);
+            Log.info("[drv] veasm 组装厂落地=@ (@) unitCost=@", ab != null,
+                ab == null ? "-" : ab.getClass().getName(), Vars.state.rules.unitCost(Team.sharded));
+            if(ab == null) return;
+
+            java.util.LinkedHashMap<String, Block> payloads = new java.util.LinkedHashMap<>();
+            if(reqBlock != null) payloads.put("要求里那件(" + reqName + ")", reqBlock);
+            payloads.put("内容表按名查回(" + pack.name + ")", pack);
+            if(worldInst != null) payloads.put("世界里的(" + worldInst.name + ")", worldInst);
+            if(filterPack != null) payloads.put("打包机 filter 里那件", filterPack);
+            for(var e : payloads.entrySet()){
+                var payload = new mindustry.world.blocks.payloads.BuildPayload(e.getValue(), Team.sharded);
+                boolean acc = false;
+                String err = "";
+                try{ acc = ab.acceptPayload(ab, payload); }catch(Throwable t){ err = " 抛出 " + t; }
+                Log.info("[drv] veasm 组装厂收载荷 @: @ @（载荷 content=@ / @）", e.getKey(), acc, err,
+                    payload.content().name, payload.content().getClass().getSimpleName());
+            }
+
+            // 真塞一次：acceptPayload 说能收的才走 handlePayload，再看载荷模块里有没有计数
+            var real = new mindustry.world.blocks.payloads.BuildPayload(worldInst == null ? pack : worldInst, Team.sharded);
+            if(ab.acceptPayload(ab, real)){
+                ab.handlePayload(ab, real);
+                Object mod = fieldOf(ab, "blocks");
+                Object got = mod instanceof mindustry.type.PayloadSeq ps ? ps.get(real.content()) : null;
+                Log.info("[drv] veasm 已把套件塞进组装厂：载荷模块计数=@（content=@）", got, real.content().name);
+            }else{
+                Log.info("[drv] veasm 套件塞不进去（acceptPayload=false）—— 就是用户报的「不能输入建筑」");
+            }
+            shot("veasm_world");
+        }catch(Throwable t){ Log.err("[drv] veAsmCheck failed", t); t.printStackTrace(); }
+    }
+
+    // ---------------- 组合体构成列表的滚动窗（mode=bigcombo） ----------------
+    //
+    // 用户报的"组合的东西过多时显示面板非常大"：摆一排**不同类型**的组合物品炮塔（跨类型组合，
+    // 全在一个组合体里），把信息面板弹出来 —— 面板高度要封顶、列表要能滚。
+    static final java.util.ArrayList<Building> bigComboMembers = new java.util.ArrayList<>();
+    static arc.scene.ui.layout.Table bigComboPanel;
+    static arc.scene.ui.ScrollPane bigComboPane;
+    static int bigComboDistinct;
+
+    static void setupBigComboScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<130;y++) for(int x=20;x<240;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+            Core.camera.position.set(70 * 8f, 60 * 8f);
+        }catch(Throwable t){ Log.err("[drv] setupBigComboScene failed", t); }
+    }
+
+    /** 点一下组合方块：CoopPanel 应该弹出"大的悬浮面板"（和 js/java 扩展建筑同一个）。 */
+    static void floatPanelTap(){
+        try{
+            Class<?> cp = Class.forName("combine.coop.CoopPanel", true, ml);
+            cp.getMethod("init").invoke(null);
+            if(bigComboMembers.isEmpty()){ Log.info("[drv] floatpanel 没摆出方块"); return; }
+            Building pick = bigComboMembers.get(bigComboMembers.size() / 2);
+            Object showable = cp.getMethod("showable", Building.class).invoke(null, pick);
+            cp.getMethod("tapped", mindustry.world.Tile.class).invoke(null, Vars.world.tile(pick.tileX(), pick.tileY()));
+            Log.info("[drv] floatpanel 点了 @ 的格子: showable=@ 面板可见=@", pick.block.name, showable,
+                fieldOf(cp.getField("table").get(null), "visible"));
+            Core.camera.position.set(pick.x, pick.y);
+            installCameraLock();
+        }catch(Throwable t){ Log.err("[drv] floatPanelTap failed", t); }
+    }
+
+    /** 点别处（空格子）：悬浮面板应该收起。 */
+    static void floatPanelTapElsewhere(){
+        try{
+            Class<?> cp = Class.forName("combine.coop.CoopPanel", true, ml);
+            cp.getMethod("tapped", mindustry.world.Tile.class).invoke(null, Vars.world.tile(45, 90));
+            Log.info("[drv] floatpanel 点了别处: 面板可见=@", fieldOf(cp.getField("table").get(null), "visible"));
+        }catch(Throwable t){ Log.err("[drv] floatPanelTapElsewhere failed", t); }
+    }
+
+    static void bigComboBuild(){
+        try{
+            java.util.LinkedHashMap<String, Block> picks = new java.util.LinkedHashMap<>();
+            for(Block b : Vars.content.blocks()){
+                if(!b.getClass().getName().equals("combine.turret.CombinedItemTurret")) continue;
+                picks.putIfAbsent(b.name, b);
+                if(picks.size() >= 16) break;
+            }
+            int x = 40, y = 62;
+            StringBuilder names = new StringBuilder();
+            for(Block b : picks.values()){
+                Building mem = placeBL(b, x, y, Team.sharded);
+                if(mem != null){
+                    bigComboMembers.add(mem);
+                    if(names.length() > 0) names.append(", ");
+                    names.append(b.localizedName);
+                }
+                x += Math.max(b.size, 1);
+                if(x > 150) break;
+            }
+            bigComboDistinct = bigComboMembers.size();
+            // 跑几帧让分组生效（合并/分组在 updateTile 里重建）
+            for(int i = 0; i < 30; i++) arc.util.Time.delta = 1f;
+            Log.info("[drv] bigcombo 摆了 @ 台（@ 种不同类型）: @", bigComboMembers.size(), bigComboDistinct, names);
+        }catch(Throwable t){ Log.err("[drv] bigComboBuild failed", t); }
+    }
+
+    static void findScrollPane(arc.scene.Element e){
+        if(e == null || bigComboPane != null) return;
+        if(e instanceof arc.scene.ui.ScrollPane sp){ bigComboPane = sp; return; }
+        if(e instanceof arc.scene.Group g)
+            for(arc.scene.Element c : g.getChildren()) findScrollPane(c);
+    }
+
+    static void bigComboPanel(){
+        try{
+            if(bigComboMembers.isEmpty()){ Log.info("[drv] bigcombo 没摆出炮塔"); return; }
+            Building pick = bigComboMembers.get(bigComboMembers.size() / 2);
+            bigComboPanel = new arc.scene.ui.layout.Table();
+            pick.getClass().getMethod("display", arc.scene.ui.layout.Table.class).invoke(pick, bigComboPanel);
+            findScrollPane(bigComboPanel);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog("组合体构成（滚动窗）");
+            d.cont.add(bigComboPanel).pad(10f);
+            d.show();
+            Log.info("[drv] bigcombo 面板已弹出: 建筑=@ 找到滚动窗=@", pick.block.name, bigComboPane != null);
+        }catch(Throwable t){ Log.err("[drv] bigComboPanel failed", t); }
+    }
+
+    static void bigComboScrollBottom(){
+        try{
+            // 面板内容是"挂到场景里之后由 update 回调"才画出来的：这一刻再找一次滚动窗
+            bigComboPane = null;
+            findScrollPane(bigComboPanel);
+            if(bigComboPane == null) return;
+            bigComboPane.setScrollYForce(bigComboPane.getMaxY());
+            bigComboPane.updateVisualScroll();
+            Log.info("[drv] bigcombo 滚到底: scrollY=@ maxY=@", bigComboPane.getScrollY(), bigComboPane.getMaxY());
+        }catch(Throwable t){ Log.err("[drv] bigComboScrollBottom failed", t); }
+    }
+
+    static void bigComboReport(){
+        try{
+            bigComboPane = null;
+            findScrollPane(bigComboPanel);
+            StringBuilder sb = new StringBuilder();
+            collectLabels(bigComboPanel, sb);
+            Log.info("[drv] bigcombo 报告: 摆的台数=@ | 滚动窗高=@ 内容高=@ 可滚=@",
+                bigComboMembers.size(),
+                bigComboPane == null ? -1 : (int)bigComboPane.getHeight(),
+                bigComboPane == null || bigComboPane.getWidget() == null ? -1 : (int)bigComboPane.getWidget().getHeight(),
+                bigComboPane == null ? -1 : (int)bigComboPane.getMaxY());
+            Log.info("[drv] bigcombo 面板上的每一行: @", sb);
+        }catch(Throwable t){ Log.err("[drv] bigComboReport failed", t); }
+    }
+
+    // ---------------- 巨兽悬浮信息栏里的"类型名"（mode=beastname） ----------------
+
+    static void beastInspect(){
+        try{
+            if(megaUnit == null){ Log.info("[drv] beastname 没合出巨兽"); return; }
+            Unit beast = megaUnit;
+            Object comp = combineCall("combineunit.units.UnitComboMerge", "composition",
+                new Class<?>[]{Unit.class}, beast);
+            Log.info("[drv] beastname 构成=@ | 类型名(localizedName)=@ | 类型内部名=@",
+                comp, beast.type.localizedName, beast.type.name);
+
+            // 走一遍原版 display（原版悬浮栏与 mi2 用的是同一条路），把里面的 Label 文字打出来
+            arc.scene.ui.layout.Table t = new arc.scene.ui.layout.Table();
+            beast.type.display(beast, t);
+            StringBuilder sb = new StringBuilder();
+            collectLabels(t, sb);
+            Log.info("[drv] beastname display 文字: @", sb);
+
+            // 原版悬浮信息栏画的就是 blockfrag.hover（Displayable）：直接设成这只巨兽，
+            // 免得依赖真实鼠标位置（离屏 SDL 下鼠标在 0,0）
+            try{
+                java.lang.reflect.Field hf = null;
+                for(Class<?> c = Vars.ui.hudfrag.blockfrag.getClass(); c != null && hf == null; c = c.getSuperclass()){
+                    try{ hf = c.getDeclaredField("hover"); }catch(NoSuchFieldException ignored){}
+                }
+                if(hf != null){
+                    hf.setAccessible(true);
+                    hf.set(Vars.ui.hudfrag.blockfrag, beast);
+                    Log.info("[drv] beastname 已把原版悬浮信息栏的 hover 设成巨兽");
+                }
+            }catch(Throwable t2){ Log.err("[drv] beastname 设置原版 hover 失败", t2); }
+            Core.camera.position.set(beast.x, beast.y);
+            installCameraLock();
+        }catch(Throwable t){ Log.err("[drv] beastInspect failed", t); }
+    }
+
+    static void collectLabels(arc.scene.Element e, StringBuilder sb){
+        if(e == null) return;
+        if(e instanceof arc.scene.ui.Label l) sb.append('[').append(l.getText()).append("] ");
+        if(e instanceof arc.scene.Group g)
+            for(arc.scene.Element c : g.getChildren()) collectLabels(c, sb);
+    }
+
+    /** 打开 mi2 的"替换悬浮信息栏"，并把它记录的悬浮单位也设成这只巨兽，再截一张图。 */
+    static void beastMi2(){
+        try{
+            var mod = Vars.mods.getMod("mi2-utilities-java");
+            if(mod == null || mod.main == null){ Log.info("[drv] beastname 这个数据目录没装 mi2，跳过 mi2 那一张"); return; }
+            ClassLoader l2 = mod.main.getClass().getClassLoader();
+            Core.settings.put("MI2UI.replaceTopTable", true);
+            Class.forName("mi2u.ModifyFuncs", true, l2).getMethod("betterTopTable").invoke(null);
+            Class<?> htt = Class.forName("mi2u.ui.HoverTopTable", true, l2);
+            Object info = htt.getField("hoverInfo").get(null);
+            htt.getMethod("setHovered", Object.class).invoke(info, megaUnit);
+            Log.info("[drv] beastname mi2 悬浮信息栏已指向巨兽（replaceTopTable=@）",
+                Core.settings.getBool("MI2UI.replaceTopTable", false));
+        }catch(Throwable t){ Log.err("[drv] beastMi2 failed", t); }
+    }
+
     static Building place(Block b, int x, int y){
         mindustry.world.Build.beginPlace(null, b, Team.sharded, x, y, 0, null);
         mindustry.world.blocks.ConstructBlock.constructed(Vars.world.tile(x, y), b, null, (byte)0, Team.sharded, null);
@@ -2628,6 +4463,99 @@ public class Driver extends Mod{
         mindustry.world.Build.beginPlace(null, b, team, ax, ay, 0, null);
         mindustry.world.blocks.ConstructBlock.constructed(Vars.world.tile(ax, ay), b, null, (byte)0, team, null);
         return Vars.world.build(ax, ay);
+    }
+
+    // ---------------- 组合节点/连接器的"共享哪些部分"配置面板 ----------------
+    static Building shareA, shareB, shareNode, shareConn;
+
+    static void setupShareScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            if(!Vars.state.isPlaying()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=40;y<120;y++) for(int x=30;x<200;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+
+            Block press = null, connB = null, nodeB = null;
+            for(Block b : Vars.content.blocks()){
+                if(press == null && b.getClass().getName().equals("combine.production.CombinedCrafter") && b.size == 2) press = b;
+                if(connB == null && b.getClass().getName().equals("combine.net.ComboConnector")) connB = b;
+                if(nodeB == null && b.getClass().getName().equals("combine.net.ComboNode")) nodeB = b;
+            }
+            if(press == null || connB == null || nodeB == null){ Log.err("[drv] share 场景缺方块 press=@ conn=@ node=@", press, connB, nodeB); return; }
+
+            // A(60,60) 2x2 + 连串连接器 + B(65,60)，旁边再放一个组合节点（激光连到 A/B）
+            shareA = placeBL(press, 60, 60);
+            shareConn = placeBL(connB, 62, 60);
+            placeBL(connB, 63, 60);
+            placeBL(connB, 64, 60);
+            shareB = placeBL(press, 65, 60);
+            shareNode = placeBL(nodeB, 63, 63);
+            // 节点激光连上 A、B（等价于玩家点两下）
+            try{
+                java.lang.reflect.Method tap = shareNode.getClass().getMethod("onConfigureBuildTapped", Building.class);
+                tap.setAccessible(true);
+                tap.invoke(shareNode, shareA);
+                tap.invoke(shareNode, shareB);
+            }catch(Throwable t){ Log.err("[drv] 节点连线失败", t); }
+            try{ shareA.items.add(Items.copper, 40); }catch(Throwable ignored){}
+            Core.camera.position.set((shareA.x + shareB.x) / 2f, shareA.y + 6f);
+            Log.info("[drv] share 场景: A=@ B=@ node=@(links=@) conn=@", shareA, shareB, shareNode, field(shareNode, "links"), shareConn);
+        }catch(Throwable t){ Log.err("[drv] setupShareScene failed", t); }
+    }
+
+    static void shareStepNode(){
+        try{
+            if(shareNode == null){ Log.err("[drv] shareNode 为空"); return; }
+            showShareConfig(shareNode, "组合节点：共享哪些部分");
+            Log.info("[drv] 节点配置面板已弹出 mask=@ configFragmentShown=@",
+                field(shareNode, "shareMask"), Vars.control.input.config.isShown());
+        }catch(Throwable t){ Log.err("[drv] 打开节点配置失败", t); }
+    }
+
+    static void shareOpenNode(){
+        shareStepNode();
+    }
+
+    static void shareOpenConn(){
+        shareStepConn();
+    }
+
+    static void shareStepToggle(){
+        try{
+            // 取消勾选"液体"（15 → 13）：勾选框应该跟着变（每帧跟当前配置对齐）
+            shareNode.configure("comboshare:13");
+            Log.info("[drv] 改配置后 mask=@", field(shareNode, "shareMask"));
+        }catch(Throwable t){ Log.err("[drv] 改配置失败", t); }
+    }
+
+    static void shareStepConn(){
+        try{
+            hideDialogs();
+            showShareConfig(shareConn, "组合连接器：共享哪些部分");
+            Log.info("[drv] 连接器配置面板已弹出 mask=@", field(shareConn, "shareMask"));
+        }catch(Throwable t){ Log.err("[drv] 打开连接器配置失败", t); }
+    }
+
+    /**
+     * 把方块的配置表格（原版 config fragment 里那张表，也就是 {@code buildConfiguration}）
+     * 放到一个对话框里渲染 + 截图。离屏客户端里没有真实鼠标事件，走不了"点方块弹配置"那条路，
+     * 但表格内容/勾选框和真机是同一份代码。
+     */
+    static void showShareConfig(Building b, String title){
+        try{
+            arc.scene.ui.layout.Table table = new arc.scene.ui.layout.Table();
+            java.lang.reflect.Method m = b.getClass().getMethod("buildConfiguration", arc.scene.ui.layout.Table.class);
+            m.setAccessible(true);
+            m.invoke(b, table);
+            mindustry.ui.dialogs.BaseDialog d = new mindustry.ui.dialogs.BaseDialog(title);
+            d.cont.add(table).pad(12f);
+            d.show();
+            Log.info("[drv] 配置表格子元素=@", table.getChildren().size);
+        }catch(Throwable t){ Log.err("[drv] showShareConfig failed", t); }
     }
 
     /** 往共享池里加物品/液体（CoopPanel 应该立刻显示出来）。 */

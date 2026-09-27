@@ -154,8 +154,12 @@ public class CombinedCrafter extends GenericCrafter {
             }
             try {
         super.init();
-        baseLiquidCapacity = liquidCapacity;
-        displayLiquid = liquidCapacity;
+        // 只在第一次 init 记录基础容量：内容加载器可能再次 init()，那时 liquidCapacity
+        // 早已是 9999 假容量（甚至被抬成组容量），再记一次会把容量算出 N 倍。
+        if (ComboReflect.captureBaseLiquidCapOnce(this)) {
+            baseLiquidCapacity = liquidCapacity;
+            displayLiquid = liquidCapacity;
+        }
         liquidCapacity = 9999f;
         if (!hasLiquids)
             displayLiquid = 0;
@@ -352,12 +356,21 @@ public class CombinedCrafter extends GenericCrafter {
         public float comboHeat = 0f;
         public float comboHeatCap = 0f;
         // heatcrafter 组共享的"可得热量"池：按需计算，结果缓存在 leader 上（每 tick 一次）
-        // 热量在需热成员之间【均分】：单成员可读热量 = 池值 / 需热成员数
+        // 【全量共享、不均摊】原版语义：热源的热对**每个**相邻耗热方都是全量可见的
+        // （热不是会被"consume"掉的资源）。组里每台都读到整池，才是"组合体共享热量"；
+        // 以前按需热台数均摊，N 台一合体每台只剩 1/N（用户报的"组合体里热量不能共享"）。
         public float comboPooledHeat = 0f;
-        public int comboPooledConsumers = 1;
         public float lastPooledHeatTime = -1f;
         // HeatProducer 平滑输出值（对外暴露，非池子存量）
         public float producerHeat = 0f;
+        // 【对外供热】整组对外报的热量：产量求和（一组 = 一台大机器），
+        // 再按"每个外用热端一台代表"出口（见 exposedHeatTotal()）。每 tick 只在 leader 上算一次。
+        public float comboExposedHeat = 0f;
+        /** 本台是不是组里某个外用热端的指定出口。 */
+        public boolean comboIsHeatExporter = false;
+        /** leader 缓存：组里是否存在任何外用热端。 */
+        public boolean anyComboHeatExporter = false;
+        public long comboHeatExposureTick = Long.MIN_VALUE;
 
         // Attribute 模式数据
         public float attrsum;
@@ -439,14 +452,11 @@ public class CombinedCrafter extends GenericCrafter {
                 if (l.lastPooledHeatTime != Time.time) {
                     l.lastPooledHeatTime = Time.time;
                     float sum = 0f;
-                    int consumers = 0;
                     ObjectSet<Object> counted = new ObjectSet<>();
                     for (CombinedCrafterBuild member : l.group()) {
                         if (!member.isValid())
                             continue;
                         CombinedCrafter mb = (CombinedCrafter) member.block;
-                        if (mb.mode == Mode.heatcrafter)
-                            consumers++;
                         // 本组内的产热成员：产量直接并入（组合 = 产量合并）
                         if (mb.mode == Mode.heatproducer) {
                             sum += member.producerHeat;
@@ -474,18 +484,21 @@ public class CombinedCrafter extends GenericCrafter {
                                         sum += other.getComboHeat();
                                 }
                             } else if (b instanceof mindustry.world.blocks.heat.HeatBlock hb
-                                    && !(b instanceof CombinedCrafterBuild)) {
+                                    && !(b instanceof CombinedCrafterBuild)
+                                    && !(b instanceof CombinedGeneratorBuild)) {
                                 // 原版热源（电热器、热路由器等）；
-                                // 组合工厂由上方分支专门处理，避免同组产热成员经 HeatBlock 接口重复计入
+                                // 组合工厂/发电机由上方分支专门处理（带 leader 去重），
+                                // 这里绝不能再用 HeatBlock 接口计一遍 —— 发电机 heat()
+                                // 报的是整簇池子，重复计入会把池子放大 N 倍。
                                 sum += hb.heat();
                             }
                         }
                     }
                     sum += ComboNet.heatFor(l);
                     l.comboPooledHeat = sum;
-                    l.comboPooledConsumers = Math.max(consumers, 1);
                 }
-                return l.comboPooledHeat / l.comboPooledConsumers;
+                // 全量返回，不均摊（见字段注释；原版热源对每台耗热方都是全量可见）
+                return l.comboPooledHeat;
             }
 
             // 其他模式：保留原有逻辑，但绝不调用其它组合工厂的 heat()（防互相递归）
@@ -495,7 +508,8 @@ public class CombinedCrafter extends GenericCrafter {
             float max = self;
             for (Building b : proximity) {
                 if (b instanceof mindustry.world.blocks.heat.HeatBlock hb && b != this
-                        && !(b instanceof CombinedCrafterBuild)) {
+                        && !(b instanceof CombinedCrafterBuild)
+                        && !(b instanceof CombinedGeneratorBuild)) {
                     max = Math.max(max, hb.heat());
                 }
             }
@@ -507,33 +521,117 @@ public class CombinedCrafter extends GenericCrafter {
          * calculateHeat、原版热熔炉等）能把组合产热器识别为热源。
          * 只有 heatproducer 模式对外供热，其余模式恒返回 0 —— 不进入原版
          * 导体网络、不被误读、也不会与 availableHeat() 的内部池语义混淆。
-         * 无递归：本方法只读 producerHeat 字段，绝不调用其它建筑的 heat()。
-         */
-        /**
-         * 对外暴露的热量 = **这一台自己的** producerHeat（原版 HeatProducer 就是这么报的）。
-         *
-         * 【不能报整组之和】原版耗热方（热熔炉 / 导热管 / 导热路由器 / 各种 heat 扫描）是把
-         * 每个**相邻** HeatBlock 的 heat() 加起来算的。以前这里每台都返回整组总量，
-         * 于是贴着组合体里 N 台产热机就会被算 N 遍 —— 用户报的"10 台矿渣制热机，
-         * 每台只有 8 热，连起来后每台都报 80（整组总和），耗热方看到 800"。
-         *
-         * 组内共享不受影响：heatcrafter 成员的 availableHeat() 是直接按整组 producerHeat 求和
-         * （按组去重），跨组合体的网络热量由 {@link ComboNet} 按组汇总。
+         * 无递归：只读本组各成员的 producerHeat / comboHeat 字段，绝不调用其它建筑的 heat()。
+         * 口径见 {@link #exposedHeatTotal()}（一组 = 一台大机器，整组热量都出得去，但不会 N 倍）。
          */
         @Override
         public float heat() {
             CombinedCrafter cb = (CombinedCrafter) block;
             if (cb.mode != Mode.heatproducer)
                 return 0f;
-            return producerHeat;
+            return exposedHeatTotal();
+        }
+
+        /**
+         * 对外（原版导热管 / 热路由器 / 热熔炉 / 可变反应堆等 HeatConsumer）能读到的热量。
+         *
+         * <p>原版耗热方是把**每个相邻 HeatBlock 的 heat() 加起来**的，所以这里不能简单地
+         * 「每台都报整组之和」（那会 N 倍：10 台 × 整组 80 = 耗热方看到 800），也不能
+         * 「每台只报自己那一份」（那是另一个极端：整组的热只有贴着导热管的那一台出得去
+         * ——用户报的"一个组合体的热量不能通过热量传输器统一输出，只能输出靠近热量传输器的一个的"）。
+         * 「整池 ÷ 贴热端成员总数」也不对：成员各贴各的热端时，每个热端只拿到 池/N
+         * （用户报的"热量传递有时有用有时没用"就是这个 —— 取决于布局碰没碰上摊薄）。
+         *
+         * <p>正解：**每个外用热端指定组内唯一出口成员**（含原版朝向规则），出口报整池、
+         * 其余成员报 0。同一个热端不管贴着几台成员都恰好拿到一份整池；不同热端各拿一份
+         * （热量不消耗，这正是原版语义）。
+         *
+         * <p>同时保证「组内之和不变」：Σ(成员 heat()) 恒等于整组产量，
+         * {@code ComboNet.groupHeatSource} 与组合体内部的 {@code availableHeat()} 口径不受影响。
+         */
+        public float exposedHeatTotal(){
+            CombinedCrafter cb = (CombinedCrafter) block;
+            if (cb.mode != Mode.heatproducer)
+                return 0f;
+            Seq<CombinedCrafterBuild> g = group();
+            if (g == null || g.size <= 1)
+                return producerHeat;
+
+            CombinedCrafterBuild l = leader();
+            if (l.comboHeatExposureTick != state.updateId) {
+                l.comboHeatExposureTick = state.updateId;
+                float total = 0f;
+                for (CombinedCrafterBuild m : g) {
+                    if (!m.isValid())
+                        continue;
+                    CombinedCrafter mb = (CombinedCrafter) m.block;
+                    if (mb.mode == Mode.heatproducer) {
+                        total += m.producerHeat;
+                    } else if (mb.heatOutput > 0f && mb.mode != Mode.heatcrafter && mb.heatRequirement <= 0f) {
+                        // 兼容旧式（非 heatproducer 模式但配了 heatOutput）的产热成员。
+                        // heatRequirement > 0 的是需热方（热熔炉那类），它们的 comboHeat 是"借来的热"，
+                        // 再对外报一次等于把同一份热又送一遍（会自馈翻倍）。
+                        total += m.getComboHeat();
+                    } else {
+                        // 需热成员（heatcrafter）不算产热：它们的 comboHeat 是"能拿到多少热"，
+                        // 再对外报一次等于把借来的热又送一遍（会自馈翻倍）
+                        continue;
+                    }
+                }
+                l.comboExposedHeat = total;
+                // 【按外用热端指定唯一出口】热量不消耗：每个外用热端只需要组里一台代表
+                // 报整池（旧写法"÷贴热端成员总数"在成员各贴各的热端时会把每个热端
+                // 都摊薄成 池/N —— 用户报的"热量传递时好时坏"就是这个）。
+                java.util.IdentityHashMap<Building, CombinedCrafterBuild> exporter =
+                    new java.util.IdentityHashMap<>();
+                for (CombinedCrafterBuild m : g) {
+                    if (!m.isValid())
+                        continue;
+                    for (Building b : m.proximity) {
+                        if (b == null || !b.isValid() || b.team != m.team)
+                            continue;
+                        if (b instanceof CombinedCrafterBuild || b instanceof CombinedGeneratorBuild)
+                            continue;
+                        if (b instanceof mindustry.world.blocks.heat.HeatConsumer && canSendHeatTo(m, b))
+                            exporter.putIfAbsent(b, m);
+                    }
+                }
+                boolean any = !exporter.isEmpty();
+                for (CombinedCrafterBuild m : g)
+                    m.comboIsHeatExporter = any && exporter.containsValue(m);
+                l.anyComboHeatExporter = any;
+            }
+            // 没人贴着外用热端：按原版语义各报各的（此时也没人会读）
+            if (!l.anyComboHeatExporter)
+                return producerHeat;
+            return comboIsHeatExporter ? l.comboExposedHeat : 0f;
+        }
+
+        /** 原版 calculateHeat 的朝向规则：m 的热能不能被 b 读到。 */
+        private boolean canSendHeatTo(CombinedCrafterBuild m, Building b) {
+            boolean split = b.block instanceof mindustry.world.blocks.heat.HeatConductor cond && cond.splitHeat;
+            int rel = b.relativeTo(m);
+            if(split) return !m.block.rotate || rel != m.rotation;
+            return !m.block.rotate || (rel + 2) % 4 == m.rotation;
         }
 
         public float heatFrac() {
             CombinedCrafter cb = (CombinedCrafter) block;
             if (cb.mode == Mode.heatcrafter)
                 return availableHeat() / Math.max(cb.heatRequirement * cb.maxEfficiency, 1f);
-            if (cb.mode == Mode.heatproducer)
-                return heat() / Math.max(cb.heatOutput, 0.001f);
+            if (cb.mode == Mode.heatproducer) {
+                // 分母要跟着"整组"走：heat() 现在对外报的是整组热量（见 exposedHeatTotal），
+                // 拿单台的 heatOutput 当分母会让血条/热量贴图溢出（比如 41.8/8）
+                float max = Math.max(cb.heatOutput, 0.001f);
+                Seq<CombinedCrafterBuild> g = group();
+                if (g != null && g.size > 1) {
+                    int producers = 0;
+                    for (CombinedCrafterBuild m : g)
+                        if (m.isValid() && ((CombinedCrafter) m.block).mode == Mode.heatproducer) producers++;
+                    max *= Math.max(producers, 1);
+                }
+                return Mathf.clamp(heat() / Math.max(max, 0.001f), 0f, 1f);
+            }
             return availableHeat() / Math.max(getComboHeatCap(), 1f);
         }
 
@@ -1320,6 +1418,7 @@ public class CombinedCrafter extends GenericCrafter {
         // -------------------- 核心更新 --------------------
         @Override
         public void updateTile() {
+          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
             // FIX: 先恢复从存档读取时的 leader 共享模块引用
             if (pendingLeaderPos != -1) {
                 Building b = world.build(pendingLeaderPos);
@@ -1632,30 +1731,27 @@ public class CombinedCrafter extends GenericCrafter {
                     }
                 }
             }
-            // 液体同理：整组的产出液体都能从本格的输出口外送（方向优先取本格自己的配置）
-            if (liquids != null) {
+            // 【液体输出只能从生产它的工厂出口】
+            // 原来写的是"整组的产出液体都能从本格的输出口外送"（逐 id 遍历组级聚合产率）——
+            // 两种组合工厂接在一起（各自产不同的液体）时，两种液体都会从**同一个**出口混着出来
+            // （用户报的"输出两种不同液体的两种组合工厂组合后输出液体会混"）。
+            // 现在只外送**本方格自己的配方产出**的那些液体（方向也取本方格自己的配置）。
+            // 液体模块照样共享：组里别的机器产的液体仍然进这口池子，本格的配方可以拿来当原料。
+            if (liquids != null && cb.outputLiquids != null) {
                 lead.ensureComboAggregate();
                 float[] produceLiquid = lead.comboLiquidProduceRate;
                 if (produceLiquid != null) {
-                    for (int id = 0; id < produceLiquid.length; id++) {
-                        if (produceLiquid[id] <= 0.0001f)
-                            continue;
-                        Liquid liquid = content.liquid(id);
+                    for (int k = 0; k < cb.outputLiquids.length; k++) {
+                        LiquidStack out = cb.outputLiquids[k];
+                        Liquid liquid = out == null ? null : out.liquid;
                         if (liquid == null)
                             continue;
-                        int dir = -1;
-                        if (cb.outputLiquids != null) {
-                            for (int k = 0; k < cb.outputLiquids.length; k++) {
-                                if (cb.outputLiquids[k].liquid == liquid) {
-                                    dir = liquidOutputDirections.length > k ? liquidOutputDirections[k] : -1;
-                                    break;
-                                }
-                            }
-                        }
+                        // 组里确实在产这种液体（本方格就是产出方之一）才外送
+                        if (liquid.id >= produceLiquid.length || produceLiquid[liquid.id] <= 0.0001f)
+                            continue;
+                        int dir = liquidOutputDirections.length > k ? liquidOutputDirections[k] : -1;
                         boolean isIntermediate = isLiquidConsumedInCombo(liquid);
-                        // FIX[矿渣外流]: 旧逻辑"产率>耗率就外送"——熔炉名义产率远大于分离机
-                        // 消耗, 矿渣被当过剩产物不断导出: 共享池恒空, 只泼溅邻近方块(越远越少)。
-                        // 改为: 中间产物只在池子>=90%满容时才外送, 平时留在组内共享池
+                        // FIX[矿渣外流]: 中间产物只在池子>=90%满容时才外送, 平时留在组内共享池
                         // 阈值看"这种产出液体自己"占了多少容量（每种液体独立储存）
                         float liqAmt = liquids.get(liquid);
                         boolean shouldDump = !isIntermediate
@@ -1980,126 +2076,14 @@ public class CombinedCrafter extends GenericCrafter {
                 table.row();
             }
 
-            float totalPower = 0f;
-            for (CombinedCrafterBuild member : group()) {
-                if (member.isValid() && member.block.consPower != null)
-                    totalPower += member.block.consPower.usage;
-            }
-            if (totalPower > 0 && power != null) {
-                final float tp = totalPower;
-                table.add(new Bar(
-                        () -> "电力 " + Strings.fixed(tp * power.status * 60f, 1) + " ⚡/s",
-                        () -> Pal.power,
-                        () -> power.status));
-                table.row();
-            }
-
-            Seq<Item> involvedItems = new Seq<>();
-            // 用 displayMembers 而不是本地 group()：连接器/节点把别的组合建筑接进来时，
-            // 池子是共用的，对方用到的物品/液体也得有对应条目，否则面板看着"少了一半"。
-            for (Building member : ComboNet.displayMembers(this, group().size)) {
-                if (member.isValid() && member instanceof CombinedCrafterBuild mb) {
-                    for (Item item : ((CombinedCrafter) mb.block).cachedItems) {
-                        if (!involvedItems.contains(item))
-                            involvedItems.add(item);
-                    }
-                }
-            }
-
-            if (items != null) {
-                for (Item item : combine.util.ComboReflect.displayItems(items, involvedItems)) {
-                    int total = items.get(item);
-                    if (total > 0) {
-                        final int t = total, c = Math.max(comboTotalItemCap, 1);
-                        table.add(new Bar(
-                                () -> item.localizedName + ": " + t + "/" + c,
-                                () -> item.color,
-                                () -> (float) t / c));
-                        table.row();
-                    }
-                }
-            }
-
-            Seq<Liquid> involvedLiquids = new Seq<>();
-            for (Building member : ComboNet.displayMembers(this, group().size)) {
-                if (member.isValid() && member instanceof CombinedCrafterBuild mb) {
-                    for (Liquid liquid : ((CombinedCrafter) mb.block).cachedLiquids) {
-                        if (!involvedLiquids.contains(liquid))
-                            involvedLiquids.add(liquid);
-                    }
-                }
-            }
-
-            LiquidModule sharedLiq = this.liquids;
-            if (sharedLiq == null) {
-                CombinedCrafterBuild l = leader();
-                if (l != null)
-                    sharedLiq = l.liquids;
-            }
-            if (sharedLiq == null) {
-                for (CombinedCrafterBuild member : group()) {
-                    if (member.liquids != null) {
-                        sharedLiq = member.liquids;
-                        break;
-                    }
-                }
-            }
-            // FIX[液条]: 缓存全空(如克隆体未走完整初始化管线)时, 回退到共享池里
-            // 实际存在的液体——只要有液体在池里就有条可显示
-            if (involvedLiquids.isEmpty() && sharedLiq != null) {
-                for (Liquid lq : content.liquids()) {
-                    if (sharedLiq.get(lq) > 0.001f && !involvedLiquids.contains(lq))
-                        involvedLiquids.add(lq);
-                }
-            }
-
-            if (sharedLiq != null) {
-                for (Liquid liquid : involvedLiquids) {
-                    float total = sharedLiq.get(liquid);
-                    // FIX[液条]: 有参与的液体就显示——矿渣即产即耗常年接近0, 旧门槛把它隐藏了
-                    if (total > -1f) {
-                        final float t = total, c = Math.max(comboTotalLiquidCap, 1f);
-                        table.add(new Bar(
-                                () -> liquid.localizedName + ": " + Strings.fixed(t, 1) + "/" + Strings.fixed(c, 1),
-                                () -> liquid.barColor != null ? liquid.barColor : liquid.color,
-                                () -> t / c));
-                        table.row();
-                    }
-                }
-            }
+            // 物品池 / 液体池 / 电力条都不在这里画了：这些悬浮面板里都有（用户要求
+            // "既然有悬浮面板了就把 display() 里的物品、液体、电力删了，只显示组合体构成"）。
+            // 这里只留"过程量"条（血量 / 热量 / 效率）。
         }
 
         public void buildComboIO(Table table) {
             table.left();
-            table.add("[lightgray]组合体构成:").left();
-            table.row();
-
-            ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (Building member : ComboNet.displayMembers(this, group().size)) {
-                if (member.isValid()) {
-                    int old = blockCounts.get(member.block, 0);
-                    blockCounts.put(member.block, old + 1);
-                }
-            }
-
-            Seq<Block> sortedBlocks = new Seq<>();
-            for (Block b : blockCounts.keys())
-                sortedBlocks.add(b);
-            sortedBlocks.sort(b -> b.id);
-
-            boolean hasContent = false;
-            for (Block b : sortedBlocks) {
-                int count = blockCounts.get(b, 0);
-                if (count > 0) {
-                    hasContent = true;
-                    table.add(b.localizedName + "*" + count).color(Color.white).left();
-                    table.row();
-                }
-            }
-            if (!hasContent) {
-                table.add("[darkGray]无").left();
-                table.row();
-            }
+            ComboUi.addComposition(table, this, group().size);
         }
 
         public void buildLocalIO(Table table) {

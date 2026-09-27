@@ -405,6 +405,7 @@ public class LinkWall extends Wall {
 
     @Override
     public void updateTile() {
+      if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
       super.updateTile();
       // 连着的节点改了 links（连上/断开别的组合体）时，本墙要重算分组 ——
       // 节点的连线变化不会触发这面墙的 onProximityUpdate。

@@ -60,7 +60,7 @@ public class CombinedSolidPump extends SolidPump {
     @Override
     public void init() {
         super.init();
-        if (liquidCapacity != 9999f) {
+        if (ComboReflect.captureBaseLiquidCapOnce(this)) {
             baseLiquidCapacity = liquidCapacity;
             displayLiquid = baseLiquidCapacity;
         }
@@ -426,6 +426,7 @@ public class CombinedSolidPump extends SolidPump {
 
         @Override
         public void updateTile() {
+          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
             if (pendingLeaderPos != -1) {
                 Building b = world.build(pendingLeaderPos);
                 if (b instanceof CombinedSolidPumpBuild leaderBuild && leaderBuild.isValid()
@@ -531,65 +532,21 @@ public class CombinedSolidPump extends SolidPump {
                                 () -> Pal.health, () -> Mathf.clamp(h / mh)));
                         barsTable.row();
                     }
-                    // 电力条：按整组耗电显示（组里没人耗电就不画）
-                    float totalPowerUsage = 0f;
-                    for (CombinedSolidPumpBuild member : group())
-                        if (member.isValid() && member.block.consPower != null)
-                            totalPowerUsage += member.block.consPower.usage;
-                    ComboUi.addPowerBar(barsTable, this, totalPowerUsage);
-                    LiquidModule liq = liquids;
-                    if (liq == null) {
-                        CombinedSolidPumpBuild l = leader();
-                        if (l != null)
-                            liq = l.liquids;
-                    }
-                    if (liq != null) {
-                        // 需要输入的液体（有些 SolidPump 子类靠吃液体产液体）也要有 bar
-                        ObjectSet<Liquid> shownLiquids = new ObjectSet<>();
-                        if (block.consumers != null) {
-                            for (Consume cons : block.consumers) {
-                                if (cons instanceof ConsumeLiquid cl) {
-                                    shownLiquids.add(cl.liquid);
-                                } else if (cons instanceof ConsumeLiquids cls) {
-                                    for (LiquidStack st : cls.liquids)
-                                        if (st.liquid != null)
-                                            shownLiquids.add(st.liquid);
-                                }
-                            }
-                        }
-                        final LiquidModule fLiq = liq;
-                        final float lcap2 = Math.max(comboTotalLiquidCap, 1f);
-                        for (Liquid need : shownLiquids) {
-                            if (need == null || need == result)
-                                continue;
-                            barsTable.add(new Bar(
-                                    () -> need.localizedName + ": " + Strings.fixed(fLiq.get(need), 1) + "/" + Strings.fixed(lcap2, 1),
-                                    () -> need.barColor != null ? need.barColor : need.color,
-                                    () -> fLiq.get(need) / lcap2));
-                            barsTable.row();
-                        }
-                        Liquid out = result;
-                        float total = liq.get(out);
-                        final float t2 = total, c = Math.max(comboTotalLiquidCap, 1f);
-                        barsTable.add(new Bar(
-                                () -> out.localizedName + ": " + Strings.fixed(t2, 1) + "/" + Strings.fixed(c, 1),
-                                () -> out.barColor != null ? out.barColor : out.color,
-                                () -> t2 / c));
-                        barsTable.row();
-                        // 泵送速度显示**整组**的合计：面板上其它数字（池子/上限）都是整组口径，
-                        // 只显示本格的话，站在没水/没油地格上的那一台会一直显示 0.0/秒，
-                        // 看起来像"整组不干活"，其实水是同伴在抽。
-                        float groupPump = 0f;
-                        for (CombinedSolidPumpBuild m : group())
-                            if (m.isValid())
-                                groupPump += m.lastPump;
-                        final float lp = groupPump;
-                        barsTable.add(new Bar(
-                                () -> Core.bundle.formatFloat("bar.pumpspeed", lp * 60, 1),
-                                () -> Pal.ammo,
-                                () -> lp > 0.001f ? 1f : 0f));
-                        barsTable.row();
-                    }
+                    // 液体池 / 电力条挪到悬浮面板（用户要求 display() 只留组合体构成）；
+                    // 这里只留过程量条（血量 / 整组泵速）。
+                    // 泵送速度显示**整组**的合计：面板上其它数字（池子/上限）都是整组口径，
+                    // 只显示本格的话，站在没水/没油地格上的那一台会一直显示 0.0/秒，
+                    // 看起来像"整组不干活"，其实水是同伴在抽。
+                    float groupPump = 0f;
+                    for (CombinedSolidPumpBuild m : group())
+                        if (m.isValid())
+                            groupPump += m.lastPump;
+                    final float lp = groupPump;
+                    barsTable.add(new Bar(
+                            () -> Core.bundle.formatFloat("bar.pumpspeed", lp * 60, 1),
+                            () -> Pal.ammo,
+                            () -> lp > 0.001f ? 1f : 0f));
+                    barsTable.row();
                 });
                 cont.add(barsTable).growX().left();
                 cont.row();
@@ -605,26 +562,7 @@ public class CombinedSolidPump extends SolidPump {
 
         public void buildComboIO(Table table) {
             table.left();
-            table.add("[lightgray]组合体构成:").left();
-            table.row();
-            ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (Building member : ComboNet.displayMembers(this, group().size)) {
-                if (member.isValid()) {
-                    int old = blockCounts.get(member.block, 0);
-                    blockCounts.put(member.block, old + 1);
-                }
-            }
-            Seq<Block> sorted = new Seq<>();
-            for (Block b : blockCounts.keys())
-                sorted.add(b);
-            sorted.sort(b -> b.id);
-            for (Block b : sorted) {
-                int count = blockCounts.get(b, 0);
-                if (count > 0) {
-                    table.add(b.localizedName + "*" + count).color(Color.white).left();
-                    table.row();
-                }
-            }
+            ComboUi.addComposition(table, this, group().size);
         }
 
         // -------------------- 序列化 --------------------
