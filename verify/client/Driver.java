@@ -397,6 +397,9 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::poolBreakOne, 22f);
                 Timer.schedule(Driver::poolOpenPanel, 26f);
                 Timer.schedule(() -> shot("pool_panel_after"), 30f);
+                // 用户报的"工厂资源间歇性清零"：存档标志 saving 会多留 3 个时间单位，
+                // 那段时间里发的联机快照原来被当成存档 → 非组长写空模块 → 客户端整组清零。
+                Timer.schedule(Driver::poolSnapshotWhileSavingCheck, 12f);
                 Timer.schedule(() -> { Log.info("[drv] pool 模式结束 frames=@", frames); Core.app.exit(); }, 36f);
             }else if(mode.equals("tech")){
                 // 科技树：真的把 ResearchDialog 打开（用户报"打开科技树崩溃"），
@@ -740,6 +743,54 @@ public class Driver extends Mod{
             if(poolMain.items != null) poolMain.items.set(Items.coal, cap);
             Log.info("[drv] pool 灌满: @", poolInfo("灌满后"));
         }catch(Throwable t){ Log.err("[drv] poolFill failed", t); }
+    }
+
+    /**
+     * 用户报的"工厂资源间歇性清零"（原版 {@code Saves.update()} 里 saving=true 之后要 3 个
+     * 时间单位才复位，而方块快照每 snapshotInterval 发一次，正好会掉进这段窗口）：
+     * 模拟"正在存档"的同时取一份追随者的 writeSync 字节（= 服务端发的快照），
+     * 再 readSync 回组长身上 —— 整组池子必须一份不少（修前会变成空的）。
+     */
+    static void poolSnapshotWhileSavingCheck(){
+        try{
+            // 挑两台**真的共用同一份物品模块**的成员（并排的组合发电机会共池；
+            // 拆过一台之后剩下的可能已经各自重塑过，不能随便取首尾）
+            Building leader = null, follower = null;
+            for(int i = 0; i < poolScene.size && leader == null; i++){
+                Building a = poolScene.get(i);
+                if(a == null || !a.isValid() || a.items == null) continue;
+                for(int j = 0; j < poolScene.size; j++){
+                    Building b = poolScene.get(j);
+                    if(b == null || !b.isValid() || b.items == null || b == a) continue;
+                    if(a.items == b.items){ leader = a; follower = b; break; }
+                }
+            }
+            if(leader == null) { Log.err("[drv] FAIL pool 场景里没有共用同一份池子的两台"); return; }
+            int before = leader.items == null ? -1 : leader.items.total();
+            boolean shared = leader.items == follower.items;
+            // 把 Saves.saving 设成 true（模拟存档残留窗口）
+            Object saves = Vars.control == null ? null : Vars.control.saves;
+            java.lang.reflect.Field sf = null;
+            for(Class<?> k = saves == null ? null : saves.getClass(); k != null && sf == null; k = k.getSuperclass()) {
+                try { sf = k.getDeclaredField("saving"); } catch (NoSuchFieldException e) { }
+            }
+            boolean setOk = false;
+            if(sf != null) { sf.setAccessible(true); sf.setBoolean(saves, true); setOk = true; }
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            arc.util.io.Writes w = new arc.util.io.Writes(new java.io.DataOutputStream(bos));
+            follower.writeSync(w);
+            byte[] snap = bos.toByteArray();
+            // readSync 回来（客户端拿到快照做的事）：整组池子必须没被清零
+            arc.util.io.Reads r = new arc.util.io.Reads(new java.io.DataInputStream(new java.io.ByteArrayInputStream(snap)));
+            follower.readSync(r, follower.version());
+            if(sf != null) sf.setBoolean(saves, false);
+            int after = leader.items == null ? -1 : leader.items.total();
+            Log.info("[drv] 存档窗口内的快照: saving 置真=@ 同池=@ 快照字节=@ 池子 @ → @", setOk, shared, snap.length, before, after);
+            if(shared && before > 0 && after == before)
+                Log.info("[drv] PASS 存档窗口里发的联机快照仍然带真实池子（客户端不会被清零）");
+            else
+                Log.err("[drv] FAIL 存档窗口里的快照把池子清空了（@ → @）", before, after);
+        }catch(Throwable t){ Log.err("[drv] poolSnapshotWhileSavingCheck failed", t); }
     }
 
     static void poolOpenPanel(){

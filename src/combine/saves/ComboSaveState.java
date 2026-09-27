@@ -190,22 +190,30 @@ public class ComboSaveState implements SaveFileReader.CustomChunk{
 
   /** 现在是不是在写存档（而不是在写联机同步快照）。 */
   public static boolean writingSave(){
-    try{
-      if(Vars.control != null && Vars.control.saves != null && Vars.control.saves.isSaving())
-        return true;
-    }catch(Throwable ignored){
-    }
-    // 兜底：按调用栈判断（服务端/地图导出这类不走 Saves 的存档路径）。
-    // 认不出来时按"不是存档"处理 —— 万一真在存档，也只是每个成员各写一份整池，
-    // 读档时由去重窗口兜住（不会丢东西），比清空客户端池子安全得多。
+    // 【先看调用栈，再看不看"正在存档"标志】顺序很关键：
+    // Saves.update() 里 `saving = true` 之后要 3 个时间单位才复位（Time.runTask(3f, ...)），
+    // 而联机的方块快照是每 snapshotInterval 发一次 —— 掉在这一小段里时
+    // `saves.isSaving()` 还是 true。以前先看标志，于是**联机快照被当成存档**：
+    // 非组长写空模块 → 客户端读到空模块把整组池子清零，下一帧快照又恢复
+    // = 用户报的"工厂资源间歇性清零"。
+    // 调用栈里出现 NetServer（联机快照/实体包）一律按"不是存档"处理；
+    // 出现 mindustry.io.Save*/MapIO（真存档/地图导出）一律按"是存档"处理；
+    // 都没有才回落到 isSaving() 标志。
     try{
       for(StackTraceElement e : new Throwable().getStackTrace()){
         String cn = e.getClassName();
-        if(cn.startsWith("mindustry.io.Save") || cn.startsWith("mindustry.io.MapIO"))
-          return true;
         if(cn.startsWith("mindustry.core.NetServer"))
           return false;
+        if(cn.startsWith("mindustry.io.Save") || cn.startsWith("mindustry.io.MapIO"))
+          return true;
       }
+    }catch(Throwable ignored){
+    }
+    // 兜底：认不出来时才信标志。万一真在存档，也只是每个成员各写一份整池，
+    // 读档时由去重窗口兜住（不会丢东西），比清空客户端池子安全得多。
+    try{
+      if(Vars.control != null && Vars.control.saves != null && Vars.control.saves.isSaving())
+        return true;
     }catch(Throwable ignored){
     }
     return false;
