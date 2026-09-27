@@ -374,7 +374,7 @@ public class CombinedReconstructor extends Reconstructor implements IUnitCombo.I
                 barsTable.left();
                 barsTable.update(() -> {
                     barsTable.clearChildren();
-                    barsTable.defaults().growX().height(18f).pad(4);
+                    barsTable.defaults().width(ComboUi.COMPOSITION_WIDTH).height(18f).pad(4);
                     buildComboBars(barsTable);
                 });
                 cont.add(barsTable).growX().left();

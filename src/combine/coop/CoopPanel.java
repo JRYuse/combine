@@ -256,13 +256,19 @@ public class CoopPanel {
       // 组合方块（本模组替换出来的）叫"组合体"，协作组合接管的那些仍叫"协作组合"
       combine.turret.SuperTurret.SuperTurretBuild st = build instanceof combine.turret.SuperTurret.SuperTurretBuild s ? s : null;
       String kind = st != null ? "超级组合炮台" : (isCombined(build.block) ? "组合体" : "协作组合");
-      table.add("[accent]" + kind + "[] x" + Math.max(members.size, 1) + "  " + build.block.localizedName).left().row();
+      // 【换行宽度封顶】以前取"逻辑屏幕宽的一半"当换行宽：设备逻辑宽很大时（平板/桌面放大 UI），
+      // 这个宽度能到上千，面板照样顶穿屏幕（用户报的"容器的组合体成员显示还是没换行"）。
+      // 现在夹在 160..300 之间，任何设备上都只占屏幕的一小条。
+      float compWidth = Math.max(160f, Math.min(300f,
+          arc.Core.graphics.getWidth() / arc.scene.ui.layout.Scl.scl() * 0.5f));
+      // 标题（方块名）也可能很长，一起换行
+      table.add("[accent]" + kind + "[] x" + Math.max(members.size, 1) + "  " + build.block.localizedName)
+          .left().width(compWidth).wrap().row();
       // 超级炮台再单列一行"里面装了哪些炮台"（每格一台，看池子的时候知道里面是什么）
       if (st != null) {
         String inner = st.innerSummary();
         if (inner.isEmpty()) inner = "（空）";
-        table.add("[lightgray]里面: " + inner + "[]").left().width(Math.max(160f,
-            arc.Core.graphics.getWidth() / arc.scene.ui.layout.Scl.scl() * 0.5f)).wrap().row();
+        table.add("[lightgray]里面: " + inner + "[]").left().width(compWidth).wrap().row();
       }
       ObjectIntMap<Block> counts = new ObjectIntMap<>();
       for (Building m : members) counts.increment(m.block, 1);
@@ -273,8 +279,6 @@ public class CoopPanel {
       }
       if (comp.length() == 0) comp.append(build.block.localizedName).append(" x1");
       // 构成可能有十几种方块：不换行的话面板会宽到屏幕外（标题被裁掉、还没法看全）。
-      // 这里按屏幕宽度的一半换行，超长构成的悬浮面板也不会顶穿屏幕。
-      float compWidth = Math.max(160f, arc.Core.graphics.getWidth() / arc.scene.ui.layout.Scl.scl() * 0.5f);
       table.add("[lightgray]构成: " + comp + "[]").left().width(compWidth).wrap().row();
 
       // 共享物品池（每行 3 个）

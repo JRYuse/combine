@@ -1975,6 +1975,33 @@ public class Driver extends Mod{
             // 容器要**紧贴**核心才能并进核心池（中间隔一格就不算相邻）
             c1 = placeBL(contB, 63, 60);
             placeBL(contB, 65, 60);
+            // 再往这一组里接一串**不同种类**的组合工厂（走节点连线）：容器面板上会出现很长的
+            // "网络另有: 电解机*1 窑炉*1 …"——用来验"组合体成员显示要换行、物品条不能横跨全屏"。
+            try{
+                Block nodeB = null;
+                for(Block b : Vars.content.blocks())
+                    if(b.getClass().getName().equals("combine.net.ComboNode")){ nodeB = b; break; }
+                String[] factories = {"graphite-press", "kiln", "pulverizer", "pyratite-mixer",
+                    "separator", "multi-press", "silicon-smelter", "plastanium-compressor",
+                    "phase-weaver", "surge-smelter", "alloy-smelter", "cryofluid-mixer"};
+                Seq<Building> extra = new Seq<>();
+                int ex = 74, ey = 56;
+                for(String name : factories){
+                    Block fb = null;
+                    for(Block b : Vars.content.blocks()) if(b.name.equals(name)){ fb = b; break; }
+                    if(fb == null) continue;
+                    if(ex + Math.max(fb.size, 1) > 150) break;
+                    Building eb = placeBL(fb, ex, ey);
+                    ex += Math.max(fb.size, 1) + 1;
+                    if(eb != null) extra.add(eb);
+                }
+                Building nd = nodeB == null ? null : placeBL(nodeB, 70, 60);
+                if(nd != null){
+                    tapNodeLink(nd, c1);
+                    for(Building eb : extra) tapNodeLink(nd, eb);
+                    Log.info("[drv] status 网络: 节点@,@ 接了 @ 台工厂", nd.tileX(), nd.tileY(), extra.size + 1);
+                }
+            }catch(Throwable t){ Log.err("[drv] status 网络搭建失败", t); }
             int cap = core instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild cb ? cb.storageCapacity : -1;
             // 每种物品各自装满容量：容量是"每种物品各自"的上限，
             // 以前的地板写成 items.total()（所有物品总和）→ 面板会显示成 6 倍的容量。

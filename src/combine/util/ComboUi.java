@@ -41,7 +41,7 @@ public class ComboUi {
     table.add(new mindustry.ui.Bar(
         () -> "电力 " + arc.util.Strings.fixed(usage * pw.status * 60f, 1) + " ⚡/s",
         () -> mindustry.graphics.Pal.power,
-        () -> pw.status)).growX().height(18f).pad(4).left();
+        () -> pw.status)).width(COMPOSITION_WIDTH).height(18f).pad(4).left();
     table.row();
   }
 
