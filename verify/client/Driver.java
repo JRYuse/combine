@@ -4599,8 +4599,8 @@ public class Driver extends Mod{
                     (int)inner.getWidth(), (int)inner.getHeight(), (int)sp.getMaxY(), (int)sp.getScrollY());
                 // 内容比面板高 → 必须能滚（maxY>0）；内容本来就装得下 → 不算失败
                 boolean fits = inner.getHeight() + 12f <= ph + 1f;
-                if(ph <= sceneH * 0.78f && pw <= sceneW * 0.96f && (sp.getMaxY() > 1f || fits))
-                    Log.info("[drv] PASS 悬浮面板尺寸封顶（@x@ ≤ 屏幕 @x@ 的 78%/96%），内容可滚动=@（内容高 @ / 面板高 @）",
+                if(ph <= sceneH * 0.42f && pw <= sceneW * 0.55f && (sp.getMaxY() > 1f || fits))
+                    Log.info("[drv] PASS 悬浮面板尺寸封顶（@x@ ≤ 屏幕 @x@ 的 42%/55%），内容可滚动=@（内容高 @ / 面板高 @）",
                         (int)pw, (int)ph, (int)sceneW, (int)sceneH, sp.getMaxY() > 1f, (int)inner.getHeight(), (int)ph);
                 else
                     Log.err("[drv] FAIL 面板没封顶 / 没滚动（面板 @x@ 屏幕 @x@ 可滚 @）",

@@ -307,8 +307,9 @@ public class CoopPanel {
       // 【换行宽度封顶】以前取"逻辑屏幕宽的一半"当换行宽：设备逻辑宽很大时（平板/桌面放大 UI），
       // 这个宽度能到上千，面板照样顶穿屏幕（用户报的"容器的组合体成员显示还是没换行"）。
       // 现在夹在 160..300 之间，任何设备上都只占屏幕的一小条。
-      float compWidth = Math.max(160f, Math.min(300f,
-          arc.Core.graphics.getWidth() / arc.scene.ui.layout.Scl.scl() * 0.5f));
+      // 【用户要求"长和宽改成原来一半"】换行宽也跟着减半：160..300 → 80..150
+      float compWidth = Math.max(80f, Math.min(150f,
+          arc.Core.graphics.getWidth() / arc.scene.ui.layout.Scl.scl() * 0.25f));
       // 标题（方块名）也可能很长，一起换行
       table.add("[accent]" + kind + "[] x" + Math.max(members.size, 1) + "  " + build.block.localizedName)
           .left().width(compWidth).wrap().row();
@@ -345,9 +346,9 @@ public class CoopPanel {
       if (items.isEmpty()) {
         table.add("[gray]（空）[]").left().row();
       } else {
-        for (int i = 0; i < items.size; i += 3) {
+        for (int i = 0; i < items.size; i += 2) {
           Table rowT = new Table();
-          for (int k = i; k < Math.min(i + 3, items.size); k++) {
+          for (int k = i; k < Math.min(i + 2, items.size); k++) {
             Item item = items.get(k);
             int amount = pool == null ? 0 : pool.get(item);
             Table cell = new Table();
@@ -375,9 +376,9 @@ public class CoopPanel {
       if (liquids.isEmpty()) {
         table.add("[gray]（空）[]").left().row();
       } else {
-        for (int i = 0; i < liquids.size; i += 3) {
+        for (int i = 0; i < liquids.size; i += 2) {
           Table rowT = new Table();
-          for (int k = i; k < Math.min(i + 3, liquids.size); k++) {
+          for (int k = i; k < Math.min(i + 2, liquids.size); k++) {
             Liquid liquid = liquids.get(k);
             float amount = lpool == null ? 0f : lpool.get(liquid);
             Table cell = new Table();
@@ -398,9 +399,9 @@ public class CoopPanel {
           ObjectIntMap<Item> ammo = ammoCounts(build);
           int per = ammoCap(build);
           table.add("[lightgray]弹仓[]").left().row();
-          for (int i = 0; i < ammoItems.size; i += 3) {
+          for (int i = 0; i < ammoItems.size; i += 2) {
             Table rowT = new Table();
-            for (int k = i; k < Math.min(i + 3, ammoItems.size); k++) {
+            for (int k = i; k < Math.min(i + 2, ammoItems.size); k++) {
               Item item = ammoItems.get(k);
               Table cell = new Table();
               cell.add(new Image(item.uiIcon)).size(26f).pad(2f);
@@ -477,8 +478,9 @@ public class CoopPanel {
     }
     float sceneW = Core.scene == null ? 400f : Core.scene.getWidth();
     float sceneH = Core.scene == null ? 400f : Core.scene.getHeight();
-    float capW = Math.max(200f, sceneW * 0.92f);
-    float capH = Math.max(160f, sceneH * 0.70f);
+    // 【用户要求"长和宽改成原来一半"】封顶再减半：宽 92%→46%、高 70%→35%
+    float capW = Math.max(160f, sceneW * 0.46f);
+    float capH = Math.max(120f, sceneH * 0.35f);
     CoopPanel.table.clearChildren();
     CoopPanel.table.background(mindustry.gen.Tex.inventory);
     CoopPanel.table.margin(4f);
