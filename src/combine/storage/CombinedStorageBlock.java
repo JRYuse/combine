@@ -753,7 +753,10 @@ public class CombinedStorageBlock extends StorageBlock {
         ComboUi.safe("combinedstorageblock:pool", () -> buildPool(pool));
       });
       table.row();
-      table.add(pool).growX().left();
+      // 【宽度必须封顶】这段是挂在原版信息面板最外层表格上的：不封顶的话"网络另有: …"
+      // 那行一长，整张面板就被撑到屏幕宽，里面 growX 的物品条跟着横跨全屏
+      // （用户报的"容器的组合体成员显示还是没换行 / 物品液体 bar 也没限制"）。
+      table.add(pool).width(ComboUi.COMPOSITION_WIDTH + 24f).left();
     }
 
     /** 物品条的文字：每次调用取当前值（面板每帧重画 + Bar 自己的 update 都会读它）。 */
@@ -813,21 +816,25 @@ public class CombinedStorageBlock extends StorageBlock {
 
     /** 池子内容：活数据（供面板每帧重画）。 */
     public void buildPool(Table table) {
-      table.add(poolLabel()).left();
+      table.add(poolLabel()).left().width(ComboUi.COMPOSITION_WIDTH).wrap();
       String extra = extraNetworkText();
       if (extra.length() > 0) {
         table.row();
-        table.add("[lightgray]网络另有: " + extra + "[]").left();
+        // 组合体成员（连接器/节点接过来的工厂之类）也要换行，否则这一行就是面板变宽的元凶
+        table.add("[lightgray]网络另有: " + extra + "[]").left()
+            .width(ComboUi.COMPOSITION_WIDTH).wrap();
       }
       if (items != null) {
         for (Item item : content.items()) {
           if (items.get(item) <= 0)
             continue;
           table.row();
+          // 条也要给固定宽度（原来是 growX：面板一被撑宽它就跟着横跨全屏）
           table.add(new mindustry.ui.Bar(
               () -> itemLabel(item),
               () -> item.color,
-              () -> items.get(item) / (float) Math.max(comboCapacity(), 1))).growX().height(18f).pad(4).left();
+              () -> items.get(item) / (float) Math.max(comboCapacity(), 1)))
+              .width(ComboUi.COMPOSITION_WIDTH).height(18f).pad(4).left();
         }
       }
     }

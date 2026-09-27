@@ -522,7 +522,7 @@ public class CombinedSolidPump extends SolidPump {
                 barsTable.left();
                 barsTable.update(() -> {
                     barsTable.clearChildren();
-                    barsTable.defaults().growX().height(18f).pad(4);
+                    barsTable.defaults().width(ComboUi.COMPOSITION_WIDTH).height(18f).pad(4);
                     // 血条：手绘（不要用 displayBars —— 它会把原版那条按假容量 9999 算的液条也带出来，
                     // 和组合自己的液条重复）
                     if (!Mathf.zero(block.health, 0.001f)) {
@@ -578,18 +578,18 @@ public class CombinedSolidPump extends SolidPump {
             super.write(write);
         }
 
-        // 存档先调 writeBase 写模块数据、后调 write —— "只有组长写真实模块"必须挂在 writeBase 上
+        // 存档先调 writeBase 写模块数据、后调 write —— "每口池子只写一份"必须挂在 writeBase 上
         // （写在 write() 里来不及），否则每个成员各写一份整池，读档合并后数量 ×N。
         @Override
         public void writeBase(Writes write) {
             ItemModule savedItems = items;
             LiquidModule savedLiquids = liquids;
-            if (combine.saves.ComboSaveState.isFollower(this, comboGroup)) {
-                if (items != null)
-                    items = new ItemModule();
-                if (liquids != null)
-                    liquids = new LiquidModule();
-            }
+            // 【每口池子只写一份】按模块身份去重（见 ComboSaveState.firstItemPool）：
+            // 以前按"本地组组长"算，一条网络里 M 个本地组会把同一口池子写 M 遍，读档直接 ×M。
+            if (!combine.saves.ComboSaveState.firstItemPool(this) && items != null)
+                items = new ItemModule();
+            if (!combine.saves.ComboSaveState.firstLiquidPool(this) && liquids != null)
+                liquids = new LiquidModule();
             super.writeBase(write);
             items = savedItems;
             liquids = savedLiquids;

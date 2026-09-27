@@ -189,6 +189,21 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::superTurretPlace, 32f);
                 Timer.schedule(Driver::superTurretStep, 36f, 2f);
                 Timer.schedule(() -> { Log.info("[drv] superturret 模式超时结束"); Core.app.exit(); }, 200f);
+            }else if(mode.equals("mergebtn")){
+                // 用户要求：把"框选合体"按钮做进原版放置 UI（手机 = copy 键右边，桌面 = 蓝图键右边），
+                // 且点击后框选优先级要高于玩家单位移动。这里只搭场景 + 跑检查 + 截一张有放置 UI 行的图。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupSuperTurretScene, 6f);
+                Timer.schedule(Driver::checkSuperTurretButton, 14f);
+                Timer.schedule(() -> shot("mergebtn_row"), 17f);
+                // 用户要求："炮台缩放到 1*1 后相应的后坐力也要缩放" —— 摆一台带大炮台格子的
+                // 超级炮台，把每格后坐拉满，截图 + 报"缩放前后"的后坐位移。
+                Timer.schedule(Driver::superTurretRecoilShot, 19f);
+                Timer.schedule(Driver::superTurretRecoilReport, 22f);
+                Timer.schedule(() -> shot("superturret_recoil"), 23f);
+                Timer.schedule(() -> { Log.info("[drv] mergebtn 模式结束"); Core.app.exit(); }, 26f);
+                Timer.schedule(() -> { Log.info("[drv] mergebtn 超时结束"); Core.app.exit(); }, 120f);
             }else if(mode.equals("rep")){
                 // 用户复现存档（stainedMountains）：读档 → 存档 → 再读档，看物品会不会变多。
                 // 这些模组（ve 建 GL shader、饱和火力要 Java 25）在 headless 里跑不起来，所以用真客户端。
@@ -238,8 +253,10 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::hideDialogs, 3f);
                 Timer.schedule(Driver::setupBigComboScene, 5f);
                 Timer.schedule(Driver::bigComboBuild, 8f);
+                Timer.schedule(Driver::floatPanelFillAll, 17f);
                 Timer.schedule(Driver::floatPanelTap, 18f);
                 Timer.schedule(() -> shot("floatpanel_open"), 26f);
+                Timer.schedule(Driver::floatPanelSizeReport, 27f);
                 Timer.schedule(Driver::floatPanelTapElsewhere, 28f);
                 Timer.schedule(() -> shot("floatpanel_after"), 34f);
                 Timer.schedule(() -> { Log.info("[drv] floatpanel 模式结束"); Core.app.exit(); }, 38f);
@@ -387,6 +404,9 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::poolBreakOne, 22f);
                 Timer.schedule(Driver::poolOpenPanel, 26f);
                 Timer.schedule(() -> shot("pool_panel_after"), 30f);
+                // 用户报的"工厂资源间歇性清零"：存档标志 saving 会多留 3 个时间单位，
+                // 那段时间里发的联机快照原来被当成存档 → 非组长写空模块 → 客户端整组清零。
+                Timer.schedule(Driver::poolSnapshotWhileSavingCheck, 12f);
                 Timer.schedule(() -> { Log.info("[drv] pool 模式结束 frames=@", frames); Core.app.exit(); }, 36f);
             }else if(mode.equals("tech")){
                 // 科技树：真的把 ResearchDialog 打开（用户报"打开科技树崩溃"），
@@ -730,6 +750,54 @@ public class Driver extends Mod{
             if(poolMain.items != null) poolMain.items.set(Items.coal, cap);
             Log.info("[drv] pool 灌满: @", poolInfo("灌满后"));
         }catch(Throwable t){ Log.err("[drv] poolFill failed", t); }
+    }
+
+    /**
+     * 用户报的"工厂资源间歇性清零"（原版 {@code Saves.update()} 里 saving=true 之后要 3 个
+     * 时间单位才复位，而方块快照每 snapshotInterval 发一次，正好会掉进这段窗口）：
+     * 模拟"正在存档"的同时取一份追随者的 writeSync 字节（= 服务端发的快照），
+     * 再 readSync 回组长身上 —— 整组池子必须一份不少（修前会变成空的）。
+     */
+    static void poolSnapshotWhileSavingCheck(){
+        try{
+            // 挑两台**真的共用同一份物品模块**的成员（并排的组合发电机会共池；
+            // 拆过一台之后剩下的可能已经各自重塑过，不能随便取首尾）
+            Building leader = null, follower = null;
+            for(int i = 0; i < poolScene.size && leader == null; i++){
+                Building a = poolScene.get(i);
+                if(a == null || !a.isValid() || a.items == null) continue;
+                for(int j = 0; j < poolScene.size; j++){
+                    Building b = poolScene.get(j);
+                    if(b == null || !b.isValid() || b.items == null || b == a) continue;
+                    if(a.items == b.items){ leader = a; follower = b; break; }
+                }
+            }
+            if(leader == null) { Log.err("[drv] FAIL pool 场景里没有共用同一份池子的两台"); return; }
+            int before = leader.items == null ? -1 : leader.items.total();
+            boolean shared = leader.items == follower.items;
+            // 把 Saves.saving 设成 true（模拟存档残留窗口）
+            Object saves = Vars.control == null ? null : Vars.control.saves;
+            java.lang.reflect.Field sf = null;
+            for(Class<?> k = saves == null ? null : saves.getClass(); k != null && sf == null; k = k.getSuperclass()) {
+                try { sf = k.getDeclaredField("saving"); } catch (NoSuchFieldException e) { }
+            }
+            boolean setOk = false;
+            if(sf != null) { sf.setAccessible(true); sf.setBoolean(saves, true); setOk = true; }
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            arc.util.io.Writes w = new arc.util.io.Writes(new java.io.DataOutputStream(bos));
+            follower.writeSync(w);
+            byte[] snap = bos.toByteArray();
+            // readSync 回来（客户端拿到快照做的事）：整组池子必须没被清零
+            arc.util.io.Reads r = new arc.util.io.Reads(new java.io.DataInputStream(new java.io.ByteArrayInputStream(snap)));
+            follower.readSync(r, follower.version());
+            if(sf != null) sf.setBoolean(saves, false);
+            int after = leader.items == null ? -1 : leader.items.total();
+            Log.info("[drv] 存档窗口内的快照: saving 置真=@ 同池=@ 快照字节=@ 池子 @ → @", setOk, shared, snap.length, before, after);
+            if(shared && before > 0 && after == before)
+                Log.info("[drv] PASS 存档窗口里发的联机快照仍然带真实池子（客户端不会被清零）");
+            else
+                Log.err("[drv] FAIL 存档窗口里的快照把池子清空了（@ → @）", before, after);
+        }catch(Throwable t){ Log.err("[drv] poolSnapshotWhileSavingCheck failed", t); }
     }
 
     static void poolOpenPanel(){
@@ -1975,6 +2043,33 @@ public class Driver extends Mod{
             // 容器要**紧贴**核心才能并进核心池（中间隔一格就不算相邻）
             c1 = placeBL(contB, 63, 60);
             placeBL(contB, 65, 60);
+            // 再往这一组里接一串**不同种类**的组合工厂（走节点连线）：容器面板上会出现很长的
+            // "网络另有: 电解机*1 窑炉*1 …"——用来验"组合体成员显示要换行、物品条不能横跨全屏"。
+            try{
+                Block nodeB = null;
+                for(Block b : Vars.content.blocks())
+                    if(b.getClass().getName().equals("combine.net.ComboNode")){ nodeB = b; break; }
+                String[] factories = {"graphite-press", "kiln", "pulverizer", "pyratite-mixer",
+                    "separator", "multi-press", "silicon-smelter", "plastanium-compressor",
+                    "phase-weaver", "surge-smelter", "alloy-smelter", "cryofluid-mixer"};
+                Seq<Building> extra = new Seq<>();
+                int ex = 74, ey = 56;
+                for(String name : factories){
+                    Block fb = null;
+                    for(Block b : Vars.content.blocks()) if(b.name.equals(name)){ fb = b; break; }
+                    if(fb == null) continue;
+                    if(ex + Math.max(fb.size, 1) > 150) break;
+                    Building eb = placeBL(fb, ex, ey);
+                    ex += Math.max(fb.size, 1) + 1;
+                    if(eb != null) extra.add(eb);
+                }
+                Building nd = nodeB == null ? null : placeBL(nodeB, 70, 60);
+                if(nd != null){
+                    tapNodeLink(nd, c1);
+                    for(Building eb : extra) tapNodeLink(nd, eb);
+                    Log.info("[drv] status 网络: 节点@,@ 接了 @ 台工厂", nd.tileX(), nd.tileY(), extra.size + 1);
+                }
+            }catch(Throwable t){ Log.err("[drv] status 网络搭建失败", t); }
             int cap = core instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild cb ? cb.storageCapacity : -1;
             // 每种物品各自装满容量：容量是"每种物品各自"的上限，
             // 以前的地板写成 items.total()（所有物品总和）→ 面板会显示成 6 倍的容量。
@@ -2472,6 +2567,34 @@ public class Driver extends Mod{
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /** 深度优先收集所有名字匹配的元素（排查"同名元素有几个"用）。 */
+    static void collectByName(arc.scene.Element root, String name, Seq<arc.scene.Element> out) {
+        if (root == null) return;
+        if (name.equals(root.name)) out.add(root);
+        if (root instanceof arc.scene.Group g)
+            for (arc.scene.Element c : g.getChildren())
+                collectByName(c, name, out);
+    }
+
+    /** 直接子元素里名字匹配的个数。 */
+    static int countChildren(arc.scene.Element e, String name) {
+        int n = 0;
+        if (e instanceof arc.scene.Group g)
+            for (arc.scene.Element c : g.getChildren())
+                if (name.equals(c.name)) n++;
+        return n;
+    }
+
+    /** 收集所有"图标是 turret"的 ImageButton（用来确认可见的那个就是模组插进去的）。 */
+    static void collectTurretButtons(arc.scene.Element root, Seq<arc.scene.Element> out) {
+        if (root == null) return;
+        if (root instanceof arc.scene.ui.ImageButton ib
+            && ib.getStyle() != null && ib.getStyle().imageUp == mindustry.gen.Icon.turret) out.add(ib);
+        if (root instanceof arc.scene.Group g)
+            for (arc.scene.Element c : g.getChildren())
+                collectTurretButtons(c, out);
     }
 
     static Object getField(Object o, String name) {
@@ -3085,11 +3208,84 @@ public class Driver extends Mod{
             hideDialogs();
             var el = Core.scene == null ? null : Core.scene.find("combineSuperTurretButton");
             if (el == null) {
-                Log.err("[drv] FAIL HUD 上找不到超级组合炮台按钮");
+                // 新入口：按钮做进了原版放置 UI（buildPlacementUI 那一行）
+                el = Core.scene == null ? null : Core.scene.find("combineTurretMergeButton");
+            }
+            if (el == null) {
+                Log.err("[drv] FAIL 原版放置 UI / HUD 上都找不到框选合体按钮");
                 return;
             }
+            // 【位置】按钮必须在放置 UI 那一行里（PlacementFragment 建的 inputTable）
+            boolean inInputTable = false;
+            for (arc.scene.Element e2 = el; e2 != null; e2 = e2.parent)
+                if ("inputTable".equals(e2.name)) { inInputTable = true; break; }
+            String inputCls = Vars.control == null || Vars.control.input == null ? "null"
+                : Vars.control.input.getClass().getName();
+            Log.info("[drv] 框选合体按钮: 名字=@ 在放置 UI 行里=@ 输入处理器=@ 尺寸=@x@",
+                el.name, inInputTable, inputCls, (int) el.getWidth(), (int) el.getHeight());
+            // 【手机版】离屏直接建一张表跑 ComboMobileInput.buildPlacementUI，验"按钮插在 copy 键右边"：
+            // 原版顺序 = 拆除(hammer) / 斜向 / 复制(rotate→copy) / 确认(ok) …，我们的按钮应当落在下标 3。
+            try {
+                arc.scene.ui.layout.Table probe = new arc.scene.ui.layout.Table();
+                Class<?> mobCls = Class.forName("combine.input.ComboMobileInput", true, ml);
+                mindustry.input.InputHandler mobInput =
+                    (mindustry.input.InputHandler) mobCls.getConstructor().newInstance();
+                mobInput.buildPlacementUI(probe);
+                int idx = -1, n = probe.getCells().size;
+                for (int i = 0; i < n; i++) {
+                    var e = probe.getCells().get(i).get();
+                    if (e != null && "combineTurretMergeButton".equals(e.name)) { idx = i; break; }
+                }
+                StringBuilder names = new StringBuilder();
+                for (int i = 0; i < n; i++) {
+                    var e = probe.getCells().get(i).get();
+                    names.append(i).append(':').append(e == null ? "-" : (e.name == null ? e.getClass().getSimpleName() : e.name)).append(' ');
+                }
+                Log.info("[drv] 手机放置 UI 结构: @（合体按钮下标=@，期望 3 = 复制键右边）", names, idx);
+                if (idx == 3) Log.info("[drv] PASS 手机版：框选合体按钮就在 copy（复制/旋转）键的右边");
+                else Log.err("[drv] FAIL 手机版：合体按钮下标=@（期望 3）", idx);
+            } catch (Throwable t) {
+                Log.err("[drv] 手机放置 UI 结构检查失败", t);
+            }
+            if (inInputTable && inputCls.startsWith("combine.input.Combo")) {
+                Log.info("[drv] PASS 框选合体按钮长在原版放置 UI 那一行里（手机/桌面各一个 input 子类）");
+            } else {
+                Log.err("[drv] FAIL 按钮不在放置 UI 行里 / 输入处理器没换成我们的子类（在=@ cls=@）", inInputTable, inputCls);
+            }
+            // 【框选优先级】我们的处理器必须在**第 0 位**：arc 的 InputMultiplexer 从下标 0 开始派发，
+            // 排最后的话手机上拖拽先被 MobileInput 拿去移动单位了。
+            try {
+                var procs = Core.input.getInputProcessors();
+                Object ourProc = getStatic(placer, "processor");
+                boolean first = procs != null && !procs.isEmpty() && procs.first() == ourProc;
+                StringBuilder order = new StringBuilder();
+                for (int i = 0; i < Math.min(procs == null ? 0 : procs.size, 6); i++)
+                    order.append(i).append(':').append(procs.get(i).getClass().getSimpleName()).append(' ');
+                Log.info("[drv] 输入处理器顺序: @（我们的在第 0 位=@）", order, first);
+                if (first && ourProc != null) {
+                    placer.getMethod("start").invoke(null);
+                    java.lang.reflect.Method td = ourProc.getClass().getMethod("touchDown",
+                        int.class, int.class, int.class, arc.input.KeyCode.class);
+                    java.lang.reflect.Method tr = ourProc.getClass().getMethod("touchDragged",
+                        int.class, int.class, int.class);
+                    td.setAccessible(true); tr.setAccessible(true);
+                    int wx = (int) (Core.graphics.getWidth() * 0.35f), wy = (int) (Core.graphics.getHeight() * 0.55f);
+                    td.invoke(ourProc, wx, wy, 0, arc.input.KeyCode.mouseLeft);
+                    boolean eaten = Boolean.TRUE.equals(tr.invoke(ourProc, wx + 40, wy + 40, 0));
+                    Log.info("[drv] 框选期间拖动被模组处理器吃掉=@（true = 不会传给玩家单位移动）", eaten);
+                    if (eaten) Log.info("[drv] PASS 框选优先级高于玩家单位移动（拖动被吃掉）");
+                    else Log.err("[drv] FAIL 框选拖动没被吃掉（玩家单位会跟着动）");
+                    placer.getMethod("cancel").invoke(null);
+                } else {
+                    Log.err("[drv] FAIL 我们的输入处理器不在最前（顺序=@）", order);
+                }
+            } catch (Throwable t) {
+                Log.err("[drv] 框选优先级检查失败", t);
+            }
             arc.scene.Element btn = null;
-            if (el instanceof arc.scene.Group g) {
+            if (el instanceof arc.scene.ui.ImageButton ib) {
+                btn = ib; // 新入口：按钮自己就是那个 ImageButton（名字直接挂在它身上）
+            } else if (el instanceof arc.scene.Group g) {
                 for (arc.scene.Element c : g.getChildren())
                     if (c instanceof arc.scene.ui.ImageButton ib) {
                         btn = ib;
@@ -3449,6 +3645,63 @@ public class Driver extends Mod{
         } catch (Throwable t) {
             Log.err("[drv] 7x7 测试失败", t);
         }
+    }
+
+    /**
+     * 用户要求："炮台缩放到 1*1 后相应的后坐力也要缩放"。
+     * 摆一台带"大炮台"格子的超级炮台（大炮台每格缩放 < 1），把每格后坐拉满，
+     * 报"缩放前/缩放后"的后坐位移，并留一张放大截图看炮管有没有飞出格子。
+     */
+    /** 后坐用例摆放出来的那台（每帧把它的后坐钉在最大值）。 */
+    static Building recoilDemo;
+
+    static void superTurretRecoilShot(){
+        try{
+            Class<?> st = superTurretCls();
+            Block b3 = (Block) invokeStatic(st, "blockForSide", new Class<?>[] { int.class }, 3);
+            if(b3 == null){ Log.err("[drv] 3x3 超级炮台没装配出来"); return; }
+            // 2 台小炮台（k≈0.94）+ 1 台大炮台（k=0.25，foreshadow 的后坐位移 5px 最明显）
+            String lay = "duo@0;duo@0;foreshadow@0";
+            Building b = directPlace(b3, 96, 96, lay);
+            if(b == null){ Log.err("[drv] 后坐用例摆放失败"); return; }
+            recoilDemo = b;
+            // 每帧把每格后坐钉在 1（原版会自己衰减），这样截图那一刻炮管就在最大后坐位置
+            arc.Events.run(mindustry.game.EventType.Trigger.update, () -> {
+                try{
+                    if(recoilDemo == null || !recoilDemo.isValid()) return;
+                    Object[] cs = (Object[]) getField(recoilDemo, "cells");
+                    for(Object o : cs){
+                        if(!(o instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild c)) continue;
+                        c.curRecoil = 1f;
+                        if(c.curRecoils != null)
+                            for(int i = 0; i < c.curRecoils.length; i++) c.curRecoils[i] = 1f;
+                    }
+                }catch(Throwable ignored){}
+            });
+            ensurePlayerUnit((96 + 1) * 8f + 4f, (96 + 3) * 8f);
+            Core.camera.position.set((96 + 1) * 8f + 4f, (96 + 1) * 8f + 4f);
+        }catch(Throwable t){ Log.err("[drv] superTurretRecoilShot failed", t); }
+    }
+
+    /** 后坐用例：把"缩放前/缩放后"的后坐位移抄到日志（格子 update 跑过几帧之后再调用）。 */
+    static void superTurretRecoilReport(){
+        try{
+            if(recoilDemo == null || !recoilDemo.isValid()){ Log.err("[drv] 后坐用例不在场"); return; }
+            Class<?> st = superTurretCls();
+            Object[] cells = (Object[]) getField(recoilDemo, "cells");
+            float maxDelta = 0f;
+            for(Object o : cells){
+                if(!(o instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild c)) continue;
+                Block cb = c.block;
+                float scale = ((Number) invokeStatic(st, "cellScale", new Class<?>[] { Block.class }, cb)).floatValue();
+                float off = c.recoilOffset.len();
+                float scaled = off * scale;
+                maxDelta = Math.max(maxDelta, off - scaled);
+                Log.info("[drv] 后坐缩放: 格=@ 每格缩放=@ 方块recoil=@ 后坐位移@ → 缩放后@",
+                    cb.name, scale, ((mindustry.world.blocks.defense.turrets.Turret) cb).recoil, off, scaled);
+            }
+            Log.info("[drv] 后坐缩放: 最大被缩掉的位移=@px（不缩就是大炮台炮管飞出格子的那一截）", maxDelta);
+        }catch(Throwable t){ Log.err("[drv] superTurretRecoilReport failed", t); }
     }
 
     /** 这台超级炮台里面所有格子一共打了几发。 */
@@ -4301,6 +4554,61 @@ public class Driver extends Mod{
             Core.camera.position.set(pick.x, pick.y);
             installCameraLock();
         }catch(Throwable t){ Log.err("[drv] floatPanelTap failed", t); }
+    }
+
+    /** 把被点方块的池子灌满所有物品种类 —— 让悬浮面板内容足够高，能看出"封顶 + 可滚动"。 */
+    static void floatPanelFillAll(){
+        try{
+            if(bigComboMembers.isEmpty()) return;
+            Building pick = bigComboMembers.get(bigComboMembers.size() / 2);
+            if(pick.items != null){
+                int i = 0;
+                for(mindustry.type.Item it : Vars.content.items()){
+                    pick.items.add(it, 3 + (i % 5));
+                    i++;
+                }
+            }
+            if(pick.liquids != null){
+                int i = 0;
+                for(mindustry.type.Liquid lq : Vars.content.liquids()){
+                    pick.liquids.add(lq, 5f + i);
+                    i++;
+                }
+            }
+            Log.info("[drv] 悬浮面板灌满所有物品/液体（内容会变高，用来看滚动）");
+        }catch(Throwable t){ Log.err("[drv] floatPanelFillAll failed", t); }
+    }
+
+    /** 悬浮面板尺寸检查：面板必须封顶、内容在 ScrollPane 里（用户要求"大小限制一下、改成可滑动面板"）。 */
+    static void floatPanelSizeReport(){
+        try{
+            Class<?> cp = Class.forName("combine.coop.CoopPanel", true, ml);
+            arc.scene.Element el = Core.scene == null ? null : Core.scene.find("coopinventory");
+            if(el == null){ Log.err("[drv] 悬浮面板不在场景里"); return; }
+            arc.scene.ui.ScrollPane sp = null;
+            if(el instanceof arc.scene.Group g)
+                for(arc.scene.Element c : g.getChildren())
+                    if(c instanceof arc.scene.ui.ScrollPane p2){ sp = p2; break; }
+            float pw = el.getWidth(), ph = el.getHeight();
+            float sceneW = Core.scene.getWidth(), sceneH = Core.scene.getHeight();
+            Log.info("[drv] 悬浮面板尺寸: 面板=@x@ 屏幕=@x@ 有滚动条容器=@", (int)pw, (int)ph,
+                (int)sceneW, (int)sceneH, sp != null);
+            if(sp != null){
+                arc.scene.Element inner = sp.getWidget();
+                Log.info("[drv] 悬浮面板: 内容=@x@ 可滚高度=@ 当前滚动=@",
+                    (int)inner.getWidth(), (int)inner.getHeight(), (int)sp.getMaxY(), (int)sp.getScrollY());
+                // 内容比面板高 → 必须能滚（maxY>0）；内容本来就装得下 → 不算失败
+                boolean fits = inner.getHeight() + 12f <= ph + 1f;
+                if(ph <= sceneH * 0.42f && pw <= sceneW * 0.55f && (sp.getMaxY() > 1f || fits))
+                    Log.info("[drv] PASS 悬浮面板尺寸封顶（@x@ ≤ 屏幕 @x@ 的 42%/55%），内容可滚动=@（内容高 @ / 面板高 @）",
+                        (int)pw, (int)ph, (int)sceneW, (int)sceneH, sp.getMaxY() > 1f, (int)inner.getHeight(), (int)ph);
+                else
+                    Log.err("[drv] FAIL 面板没封顶 / 没滚动（面板 @x@ 屏幕 @x@ 可滚 @）",
+                        (int)pw, (int)ph, (int)sceneW, (int)sceneH, (int)sp.getMaxY());
+            }else{
+                Log.err("[drv] FAIL 悬浮面板里没有 ScrollPane");
+            }
+        }catch(Throwable t){ Log.err("[drv] floatPanelSizeReport failed", t); }
     }
 
     /** 点别处（空格子）：悬浮面板应该收起。 */

@@ -1,6 +1,7 @@
 package combine.saves;
 
 import arc.struct.ObjectMap;
+import arc.struct.ObjectSet;
 import arc.struct.Seq;
 import arc.util.Log;
 import arc.util.io.Reads;
@@ -154,24 +155,65 @@ public class ComboSaveState implements SaveFileReader.CustomChunk{
     return trueLeader(self, group) != self;
   }
 
+  // ==================== "每口池子只写一份" ====================
+  //
+  // 【用户报的"物品数量异常增长"的根因】以前按"本地组合体的组长"决定谁写真实模块，
+  // 而组合节点/连接器接起来的**整张网络**只有一口池子：网络里 M 个本地组的组长各自都把
+  // 同一份池子写了一遍 → 存档里有 M 份同样的库存。读档时每次 read 都新建一个模块对象，
+  // 于是这 M 份变成 M 个**不同的**模块，世界物品总量直接 ×M；再存一次又 ×M……
+  // （用户存档实测：一轮存读 14.7M → 32.6M → 69M，池子里出现 100 万 / 500 万这种数字。）
+  //
+  // 现在按"池子的身份"去重：同一份模块对象在一次存档里只有第一台写真实数据，
+  // 其余一律写空模块（读档时它们本来就会被并回那一份）。联机快照不走这条路（见 writingSave）。
+  private static final ObjectSet<mindustry.world.modules.ItemModule> seenItems = new ObjectSet<>();
+  private static final ObjectSet<mindustry.world.modules.LiquidModule> seenLiquids = new ObjectSet<>();
+
+  /** 这台建筑该不该把**物品池**写成真实数据（一次存档里同一份池子只有第一台写）。 */
+  public static boolean firstItemPool(Building self){
+    if(!writingSave()){
+      seenItems.clear();
+      seenLiquids.clear();
+      return true;
+    }
+    return self.items == null || seenItems.add(self.items);
+  }
+
+  /** 液体池版。 */
+  public static boolean firstLiquidPool(Building self){
+    if(!writingSave()){
+      seenItems.clear();
+      seenLiquids.clear();
+      return true;
+    }
+    return self.liquids == null || seenLiquids.add(self.liquids);
+  }
+
   /** 现在是不是在写存档（而不是在写联机同步快照）。 */
   public static boolean writingSave(){
-    try{
-      if(Vars.control != null && Vars.control.saves != null && Vars.control.saves.isSaving())
-        return true;
-    }catch(Throwable ignored){
-    }
-    // 兜底：按调用栈判断（服务端/地图导出这类不走 Saves 的存档路径）。
-    // 认不出来时按"不是存档"处理 —— 万一真在存档，也只是每个成员各写一份整池，
-    // 读档时由去重窗口兜住（不会丢东西），比清空客户端池子安全得多。
+    // 【先看调用栈，再看不看"正在存档"标志】顺序很关键：
+    // Saves.update() 里 `saving = true` 之后要 3 个时间单位才复位（Time.runTask(3f, ...)），
+    // 而联机的方块快照是每 snapshotInterval 发一次 —— 掉在这一小段里时
+    // `saves.isSaving()` 还是 true。以前先看标志，于是**联机快照被当成存档**：
+    // 非组长写空模块 → 客户端读到空模块把整组池子清零，下一帧快照又恢复
+    // = 用户报的"工厂资源间歇性清零"。
+    // 调用栈里出现 NetServer（联机快照/实体包）一律按"不是存档"处理；
+    // 出现 mindustry.io.Save*/MapIO（真存档/地图导出）一律按"是存档"处理；
+    // 都没有才回落到 isSaving() 标志。
     try{
       for(StackTraceElement e : new Throwable().getStackTrace()){
         String cn = e.getClassName();
-        if(cn.startsWith("mindustry.io.Save") || cn.startsWith("mindustry.io.MapIO"))
-          return true;
         if(cn.startsWith("mindustry.core.NetServer"))
           return false;
+        if(cn.startsWith("mindustry.io.Save") || cn.startsWith("mindustry.io.MapIO"))
+          return true;
       }
+    }catch(Throwable ignored){
+    }
+    // 兜底：认不出来时才信标志。万一真在存档，也只是每个成员各写一份整池，
+    // 读档时由去重窗口兜住（不会丢东西），比清空客户端池子安全得多。
+    try{
+      if(Vars.control != null && Vars.control.saves != null && Vars.control.saves.isSaving())
+        return true;
     }catch(Throwable ignored){
     }
     return false;

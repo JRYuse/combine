@@ -278,7 +278,12 @@ public class ComboNet {
                 if(b == null || !b.isValid() || b.items == null || !seen.add(b.items)) continue;
                 Seq<Building> members = componentMembers(b);
                 int cap = Math.max(componentItemCap(members), 1);
-                long limit = Math.max((long)cap * 1000L, 10_000_000L);
+                // 【阈值】原来还有一条"至少 1000 万"的地板，于是小容量的大池子（例如一台
+                // 容量 950 的钻机池里塞着 128 万）就永远够不到阈值、每次读档都留着 ——
+                // 用户存档里正是这种（1488 倍容量）。现在改成纯倍率：超过该分量容量 100 倍
+                // 就是确凿的坏账（正常玩法里"拆掉大部分网络成员"最多也就组员数量级，很少上百），
+                // 夹回容量并逐条打日志。100000 的地板只是让容量很小的池子不被鸡毛蒜皮触发。
+                long limit = Math.max((long)cap * 100L, 100_000L);
                 for(Item item : content.items()){
                     int amt = b.items.get(item);
                     if(amt <= limit) continue;
@@ -815,21 +820,24 @@ public class ComboNet {
         Seq<Building> members = componentMembers(self);
         if(members.size <= localCount) return;
 
-        table.add("[accent]网络组合 x" + members.size + "[] " + self.block.localizedName).left();
+        // 【宽度必须封顶】这些内容挂在原版信息面板里（`display()`），面板宽度是**按内容撑**的：
+        // 只要有一行不换行的长文字（成员构成、方块名），整张表就被撑到屏幕那么宽，
+        // 里面 `growX` 的物品/液体条跟着变成"横跨全屏"的长条（用户报的
+        // "容器的物品 bar 长度没有限制、组合体成员显示没有换行"）。统一按
+        // ComboUi.COMPOSITION_WIDTH 换行 + 给条固定宽度。
+        final float W = combine.util.ComboUi.COMPOSITION_WIDTH;
+        table.add("[accent]网络组合 x" + members.size + "[] " + self.block.localizedName).left().width(W).wrap();
 
         Building itemPool = null, liquidPool = null;
-        int totalItemCap = 0;
-        float totalLiquidCap = 0f;
         for(Building m : members){
             if(!m.isValid()) continue;
-            totalItemCap += ComboReflect.baseItemCap(m);
-            totalLiquidCap += ComboReflect.baseLiquidCap(m);
             if(m.items != null && (itemPool == null || m.pos() < itemPool.pos())) itemPool = m;
             if(m.liquids != null && (liquidPool == null || m.pos() < liquidPool.pos())) liquidPool = m;
         }
         final Building fi = itemPool, fl = liquidPool;
-        final int icap = Math.max(totalItemCap, 1);
-        final float lcap = Math.max(totalLiquidCap, 1f);
+        // 分母和悬浮面板同源（含核心 storageCapacity 那部分扩容），别一边算网络合计、一边只算核心自己
+        final int icap = panelItemCap(self);
+        final float lcap = panelLiquidCap(self);
 
         if(fi != null && fi.items != null){
             for(Item item : content.items()){
@@ -838,7 +846,7 @@ public class ComboNet {
                 table.add(new Bar(
                     () -> poolItemText(fi, icap, item),
                     () -> item.color,
-                    () -> fi.items == null ? 0f : (float)fi.items.get(item) / icap)).growX().height(18f).pad(4).left();
+                    () -> fi.items == null ? 0f : (float)fi.items.get(item) / icap)).width(W).height(18f).pad(4).left();
             }
         }
 
@@ -849,7 +857,7 @@ public class ComboNet {
                 table.add(new Bar(
                     () -> poolLiquidText(fl, lcap, liquid),
                     () -> liquid.barColor != null ? liquid.barColor : liquid.color,
-                    () -> fl.liquids == null ? 0f : fl.liquids.get(liquid) / lcap)).growX().height(18f).pad(4).left();
+                    () -> fl.liquids == null ? 0f : fl.liquids.get(liquid) / lcap)).width(W).height(18f).pad(4).left();
             }
         }
 
@@ -861,7 +869,7 @@ public class ComboNet {
             comp.append(b.localizedName).append("*").append(counts.get(b, 0));
         }
         table.row();
-        table.add("[lightgray]构成: " + comp + "[]").left();
+        table.add("[lightgray]构成: " + comp + "[]").left().width(W).wrap();
     }
 
     /** 临时排查用：打印各阶段耗时（默认关）。 */
@@ -932,6 +940,28 @@ public class ComboNet {
 
             ObjectMap<Building, Seq<Building>> edges = new ObjectMap<>();
             for(Building v : vertices) edges.put(v, new Seq<>());
+
+            // 【相邻的不同"组合类"也算连上】用户报"挖铅钻头就没有和窑炉组合在一起"：
+            // CombinedCrafter/CombinedDrill/CombinedGenerator… 各自的本地分组只认**同一种方块**
+            // （allowCrossTypeCombo 只在同类内部生效），跨类型以前只能靠连接器/节点。
+            // 而"两种工厂相邻放置就当一台整机"正是这个模组最初的玩法，所以这里把
+            // 「相邻 + 两边都声明 allowCrossTypeCombo」的两个本地组合体直接连一条边 ——
+            // 后续并池/容量/面板/电网全走连接器那套现成逻辑（热量本来就靠原版 proximity 直传，不受影响）。
+            for(Building leader : groupLeaders){
+                if(!crossTypeCombinable(leader)) continue;
+                Seq<Building> group = ComboReflect.group(leader);
+                if(group == null || group.isEmpty()) group = Seq.with(leader);
+                for(Building mem : group){
+                    if(mem == null || !mem.isValid() || mem.proximity == null) continue;
+                    for(Building nb : mem.proximity){
+                        if(nb == null || !nb.isValid() || !ComboReflect.isComboBuild(nb)) continue;
+                        Building other = ComboNode.groupRep(nb);
+                        if(other == null || other == leader) continue;
+                        if(!vertexSet.contains(other) || !crossTypeCombinable(other)) continue;
+                        addEdge(edges, leader, other);
+                    }
+                }
+            }
 
             for(Building v : vertices){
                 if(v instanceof ComboConnector.ComboConnectorBuild c){
@@ -1102,6 +1132,31 @@ public class ComboNet {
         }
     }
 
+    /**
+     * 这个建筑愿不愿意跟**别的组合类**相邻合并（方块上声明 {@code allowCrossTypeCombo == true}）。
+     *
+     * <p>只有生产类组合方块（工厂/钻头/发电机/泵/抽油机/挖墙钻）声明了这个字段；
+     * 墙（LinkWall）、炮塔、仓库、核心都没有 —— 它们不会被拉进这种"相邻跨类型"合并里
+     * （墙尤其危险：它的血池按组算，混进一台工厂会把工厂血量也算进去）。
+     */
+    private static final ObjectMap<Block, Boolean> crossTypeCache = new ObjectMap<>();
+
+    static boolean crossTypeCombinable(Building b){
+        if(b == null || b.block == null) return false;
+        Block blk = b.block;
+        Boolean cached = crossTypeCache.get(blk);
+        if(cached != null) return cached;
+        boolean r;
+        try{
+            java.lang.reflect.Field f = blk.getClass().getField("allowCrossTypeCombo");
+            r = f.getBoolean(blk);
+        }catch(Throwable t){
+            r = false;
+        }
+        crossTypeCache.put(blk, r);
+        return r;
+    }
+
     private static void addEdge(ObjectMap<Building, Seq<Building>> edges, Building a, Building b){
         if(a == null || b == null || a == b) return;
         Seq<Building> ea = edges.get(a);
@@ -1220,6 +1275,11 @@ public class ComboNet {
                     if(m.items == old) m.items = shares[k];
                 }
             }
+            // 【必须把原池清空】上面只给"这次算进分量里的成员"换了新池；万一有持有者
+            // 这一轮没被分到任何分量（读档早期分组还没稳定时会发生），它手里还是原池(old)，
+            // 里面照样是整份库存 —— 下一次合并一算，新池们 + 原池 = 翻倍。
+            // 份额之和本来就等于原总量，所以原池清空不会丢东西。
+            old.clear();
             freshSplitItems.remove(old);
         }
     }
@@ -1302,6 +1362,8 @@ public class ComboNet {
                     if(m.liquids == old) m.liquids = shares[k];
                 }
             }
+            // 同物品：原池必须清空，否则"没被分到分量的持有者"手里那份会让总量翻倍。
+            old.clear();
             freshSplitLiquids.remove(old);
         }
     }
@@ -1461,7 +1523,25 @@ public class ComboNet {
             if(m.items != null && !mods.contains(m.items, true)) mods.add(m.items);
         }
         if(mods.size <= 1) return mods.isEmpty() ? null : mods.first();
-        return loadPhase ? mergeDistinctItems(members, mods) : moduleOfFirst(members, mods);
+        // 读档窗口里：同一分量的多份池子一律当"同一口池子的副本/历史代"处理，逐物品取**较大值**。
+        // 以前用"内容完全相同才算副本、不同就相加"—— 用户存档里同一条网络留着好几代被乘过的池子
+        // （1×/3×/9×…），一相加就再翻一倍（实测一轮存读 14.7M → 32.6M → 69M，用户报的"物品异常增长"）。
+        // 取较大值不会把池子乘出来，也不会因为"有空模块"把库存抹成 0。
+        return loadPhase ? mergeCopiesMax(members, mods) : moduleOfFirst(members, mods);
+    }
+
+    /** 读档：把同一分量的多份物品池按"逐物品取较大值"并成一份（不叠加）。 */
+    private static ItemModule mergeCopiesMax(Seq<Building> members, Seq<ItemModule> mods){
+        ItemModule dst = moduleOfFirst(members, mods);
+        if(dst == null) return null;
+        for(ItemModule mod : mods){
+            if(mod == dst) continue;
+            for(Item item : content.items()){
+                if(mod.get(item) > dst.get(item)) dst.set(item, mod.get(item));
+            }
+            freshSplitItems.remove(mod);
+        }
+        return dst;
     }
 
     private static LiquidModule pickLiquidModule(Seq<Building> members, boolean loadPhase){
@@ -1470,7 +1550,21 @@ public class ComboNet {
             if(m.liquids != null && !mods.contains(m.liquids, true)) mods.add(m.liquids);
         }
         if(mods.size <= 1) return mods.isEmpty() ? null : mods.first();
-        return loadPhase ? mergeDistinctLiquids(members, mods) : moduleOfFirstLiquid(members, mods);
+        return loadPhase ? mergeCopiesMaxLiquid(members, mods) : moduleOfFirstLiquid(members, mods);
+    }
+
+    /** 读档：液体池版（逐液体取较大值）。 */
+    private static LiquidModule mergeCopiesMaxLiquid(Seq<Building> members, Seq<LiquidModule> mods){
+        LiquidModule dst = moduleOfFirstLiquid(members, mods);
+        if(dst == null) return null;
+        for(LiquidModule mod : mods){
+            if(mod == dst) continue;
+            for(Liquid liquid : content.liquids()){
+                if(mod.get(liquid) > dst.get(liquid)) dst.set(liquid, mod.get(liquid));
+            }
+            freshSplitLiquids.remove(mod);
+        }
+        return dst;
     }
 
     /** 这台机器是不是"已经并进核心"的组合仓库（它的模块就是核心库存）。 */
@@ -1642,6 +1736,18 @@ public class ComboNet {
     public static int panelItemCap(Building self){
         int cap = componentItemCap(itemScope(self));
         if(cap <= 0) cap = ComboReflect.baseItemCap(self);
+        // 【核心扩容那部分不能漏】核心真正的每种物品上限写在 CoreBuild.storageCapacity 里
+        // （原版按"核心 + 相邻仓库"算，本模组的组合仓库/节点并仓还会继续往上加），
+        // 而 componentItemCap 只会把 core.block.itemCapacity 加一遍 —— 于是核心（以及并进核心的
+        // 那些仓库）的悬浮面板只显示"核心自己那点容量"，容器/别的核心扩出来的部分全丢了
+        // （用户报的："核心的悬浮面板物品最大容量只显示该核心的物品容量"）。
+        try{
+            for(Building m : itemScope(self)){
+                if(m instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild core && core.isValid())
+                    cap = Math.max(cap, core.storageCapacity);
+            }
+        }catch(Throwable ignored){
+        }
         // ↓ 新增：SuperBlock 的真实容量是"里层每格物品上限之和"
         if(self instanceof combine.storage.SuperBlock.SuperBlockBuild sb)
             cap = Math.max(cap, sb.realItemCap);

@@ -1040,6 +1040,119 @@ public class SuperTurretTest implements arc.ApplicationListener {
         }
       }
 
+      // ---------- 14) 联机安全：配置串长度 + 快照血量 ----------
+      {
+        // (a) 配置串不许超过原版 readObjectSafe 的 1200 上限，否则客户端会被
+        //     "String too long: 1200" 踢出去（用户 last_log (8).txt 里 ConstructFinish/TileConfig 两条栈）。
+        Block longest = duo;
+        for (Block b : Vars.content.blocks())
+          if (b instanceof Turret && cellBlock(b) != null && b.name.length() > longest.name.length())
+            longest = b;
+        StringBuilder lay = new StringBuilder();
+        for (int i = 0; i < 100; i++) {
+          if (i > 0)
+            lay.append(';');
+          lay.append(encodeCell(cellBlock(longest), 90f));
+        }
+        StringBuilder src = new StringBuilder();
+        for (int i = 0; i < 100; i++) {
+          if (i > 0)
+            src.append(';');
+          src.append(100 + i).append(',').append(200 + i);
+        }
+        String legacy = lay + "|" + src;
+        String cfg = (String) callStatic(clsST, "encodeConfig",
+            new Class<?>[] { String.class, String.class }, lay.toString(), src.toString());
+        System.out.println("[ST] 配置串: 旧文本 " + legacy.length() + " 字符 → 紧凑 " + (cfg == null ? -1 : cfg.length())
+            + " 字符（最长名字的炮台=" + longest.name + "）");
+        check("10x10 满格配置串 ≤ 1200（" + legacy.length() + " → " + (cfg == null ? -1 : cfg.length()) + "）",
+            cfg != null && cfg.length() <= 1200);
+        String[] back = (String[]) callStatic(clsST, "decodeConfig", new Class<?>[] { String.class }, cfg);
+        int backCells = back == null || back[0] == null || back[0].isEmpty() ? 0 : back[0].split(";", -1).length;
+        int backSrc = back == null || back[1] == null || back[1].isEmpty() ? 0 : back[1].split(";", -1).length;
+        check("紧凑配置串解码还原（格 " + backCells + " / 坐标 " + backSrc + "）", backCells == 100 && backSrc == 100);
+        String[] oldBack = (String[]) callStatic(clsST, "decodeConfig", new Class<?>[] { String.class }, legacy);
+        check("旧文本配置串仍然能读", oldBack != null && lay.toString().equals(oldBack[0]) && src.toString().equals(oldBack[1]));
+
+        // (b) 联机快照：服务端 writeSync 的字节在客户端 readSync 后，血量必须还是"整组累加"。
+        //     原版 readBase 会 health = min(read.f(), block.health)，不处理就会把整组血量夹回单台量级。
+        Block stSide = blockForSide(2);
+        Building server = place(stSide, lx + 30, ly + 24, Team.sharded);
+        server.configured(null, layout(cellBlock(duo), cellBlock(duo)));
+        run(10);
+        float expectedHp = 2 * duo.health;
+        server.health = server.maxHealth();
+        Building client = place(stSide, lx + 36, ly + 24, Team.sharded);
+        java.io.ByteArrayOutputStream snapBuf = new java.io.ByteArrayOutputStream();
+        arc.util.io.Writes snapW = new arc.util.io.Writes(new java.io.DataOutputStream(snapBuf));
+        server.writeSync(snapW);
+        byte[] snap = snapBuf.toByteArray();
+        arc.util.io.Reads snapR = new arc.util.io.Reads(new java.io.DataInputStream(new java.io.ByteArrayInputStream(snap)));
+        client.readSync(snapR, client.version());
+        run(3);
+        System.out.println("[ST] 快照血量: 服务端 " + server.maxHealth() + " / 客户端读到 " + client.health
+            + "（方块静态血量=" + stSide.health + "） 快照字节=" + snap.length);
+        check("客户端 readSync 后血量还是整组累加（" + client.health + " ≈ " + expectedHp + "）",
+            Math.abs(client.health - expectedHp) < 0.5f);
+
+        // (c) 联机安全：同一批炮台只能被"吃"一次 —— 第二个客户端拿着同样的 sources 再合一次，
+        //     只能得到一台空壳（用户报的"多人游戏每个客户端都能各自合成一次"）。
+        int fx = lx + 40, fy = ly + 24;
+        Building t1 = place(duo, fx, fy, Team.sharded);
+        Building t2 = place(duo, fx + 4, fy, Team.sharded);
+        run(10);
+        String cellsLayout = layout(cellBlock(duo), cellBlock(duo));
+        String srcList = t1.tileX() + "," + t1.tileY() + ";" + t2.tileX() + "," + t2.tileY();
+        String srcCfg = (String) callStatic(clsST, "encodeConfig",
+            new Class<?>[] { String.class, String.class }, cellsLayout, srcList);
+        Block stSide2 = blockForSide(2);
+        Building first = place(stSide2, fx + 12, fy + 8, Team.sharded);
+        first.configured(null, srcCfg);
+        run(5);
+        int firstCells = loadedCells(first);
+        boolean consumed = Vars.world.build(t1.tileX(), t1.tileY()) == null
+            && Vars.world.build(t2.tileX(), t2.tileY()) == null;
+        System.out.println("[ST] 合体原料消费: 第一次合体格数=" + firstCells + " 原料被拆=" + consumed);
+        check("第一次合体：两格都在 + 原料炮台被拆掉（" + firstCells + " 格，原料拆=" + consumed + "）",
+            firstCells == 2 && consumed);
+
+        // 第二次（模拟另一个客户端/蓝图复制）：原料早没了 → 必须一格都不给
+        Building second = place(stSide2, fx + 12, fy + 16, Team.sharded);
+        second.configured(null, srcCfg);
+        run(5);
+        int secondCells = loadedCells(second);
+        System.out.println("[ST] 第二次合体（原料已被吃掉）：格数=" + secondCells + "（期望 0）");
+        check("第二次合体拿不到免费炮台（" + secondCells + " 格）", secondCells == 0);
+
+        // (d) 重建 / 复制 / 蓝图：走的是 config()（只带布局），必须能把整台**完整**还原，
+        //     而且不许顺手拆掉世界里的原料炮台（用户报的"合体炮台无法完整重建，重建后是空的"）。
+        int rx = lx + 56, ry = ly + 24;
+        Building srcT1 = place(duo, rx, ry, Team.sharded);
+        Building srcT2 = place(duo, rx + 4, ry, Team.sharded);
+        run(10);
+        String mergeSrc = srcT1.tileX() + "," + srcT1.tileY() + ";" + srcT2.tileX() + "," + srcT2.tileY();
+        Block stSide3 = blockForSide(2);
+        Building made = place(stSide3, rx + 12, ry + 12, Team.sharded);
+        made.configured(null, (String) callStatic(clsST, "encodeConfig",
+            new Class<?>[] { String.class, String.class }, layout(cellBlock(duo), cellBlock(duo)), mergeSrc));
+        run(5);
+        check("（前置）合体出来 2 格", loadedCells(made) == 2);
+        // 现在拿它的 config()（= 重建/复制/蓝图那条路）在别处重建一台
+        String copyCfg = (String) call(made, "config", null);
+        Building rebuilt = place(stSide3, rx + 12, ry + 20, Team.sharded);
+        rebuilt.configured(null, copyCfg);
+        run(5);
+        int rebuiltCells = loadedCells(rebuilt);
+        // config() 必须是"只带布局、不带 sources"——带了就会在重建/粘贴时去拆世界里的炮台
+        String[] copyParts = (String[]) callStatic(clsST, "decodeConfig",
+            new Class<?>[] { String.class }, copyCfg);
+        boolean noSources = copyParts != null && copyParts.length > 1 && (copyParts[1] == null || copyParts[1].isEmpty());
+        System.out.println("[ST] 重建/复制: config 长度=" + (copyCfg == null ? -1 : copyCfg.length())
+            + " 重建后格数=" + rebuiltCells + "（期望 2） config 里的 sources=\"" + (copyParts == null ? "?" : copyParts[1]) + "\"");
+        check("重建/复制出来的合体炮台是完整的（" + rebuiltCells + " 格，用户报的'重建后是空的'）", rebuiltCells == 2);
+        check("重建/复制用的 config() 只带布局、不带 sources（不会顺手拆世界里的炮台）", noSources);
+      }
+
       System.out.println("[ST] 结果: PASS=" + pass + " FAIL=" + fail);
       Core.app.exit();
     } catch (Throwable t) {

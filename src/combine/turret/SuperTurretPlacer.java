@@ -170,7 +170,9 @@ public class SuperTurretPlacer {
     String layout = layoutOf(found, side * side);
     String sources = sourcesOf(found);
     Seq<Schematic.Stile> tiles = new Seq<>();
-    tiles.add(new Schematic.Stile(block, 0, 0, layout + "|" + sources, (byte) 0));
+    // 【联机安全】config 会走原版的 ConstructFinish / TileConfig 包，客户端 readObjectSafe
+    // 上限 1200 字符 —— 逐格文本 "名字@朝向" + sources 全写会超，必须走紧凑编码（见 encodeConfig）。
+    tiles.add(new Schematic.Stile(block, 0, 0, SuperTurret.encodeConfig(layout, sources), (byte) 0));
     Schematic schem = new Schematic(tiles, new StringMap(), side, side);
     try {
       control.input.useSchematic(schem, false);
@@ -274,7 +276,10 @@ public class SuperTurretPlacer {
     if (best == null)
       return;
     try {
-      b.configure(best.layout);
+      // 走紧凑编码：这一句会以 Call.tileConfig 发给服务端、再由服务端转发给所有客户端，
+      // 客户端 readObjectSafe 上限 1200 —— 长布局直接踢客户端（用户 last_log 里的
+      // TileConfigCallPacket "String too long: 1200"）。
+      b.configure(SuperTurret.encodeConfig(best.layout, ""));
       pending.remove(best);
     } catch (Throwable t) {
       Log.err("[combine] 补超级组合炮台布局失败", t);
@@ -350,6 +355,17 @@ public class SuperTurretPlacer {
    * 手机上正好压着"指挥"按钮那一带。
    */
   static void ensureButton() {
+    // 按钮已经做进原版放置 UI（buildPlacementUI）时不再挂 HUD 悬浮按钮
+    if (!useHudButton) {
+      if (button != null && button.parent != null) {
+        try {
+          button.remove();
+        } catch (Throwable ignored) {
+        }
+        button = null;
+      }
+      return;
+    }
     if (button != null && button.parent != null) {
       // 【别被后加的 HUD 层盖住】MindustryX 之类的客户端会在 hudGroup 里再叠一层（实测是个
       // 铺满屏幕的 ScrollPane）—— 它排在按钮后面（z 更高），于是按钮**看得见却点不动**
@@ -401,13 +417,27 @@ public class SuperTurretPlacer {
       var list = Core.input.getInputProcessors();
       if (list == null)
         return;
-      if (list.isEmpty() || list.peek() != processor) {
-        Core.input.removeProcessor(processor);
-        Core.input.addProcessor(processor);
+      // 【必须排到最前（下标 0）】arc 的 InputMultiplexer 是**从下标 0 开始**派发的
+      // （见 arc/input/InputMultiplexer.java：`for(int i = 0; i < n; i++)`）。
+      // 原版的 InputHandler / GestureDetector 是在我们之后才 add 进去的，以前把我们的处理器
+      // add 到最后 = **最后**才收到事件：手机上玩家一拖，MobileInput.touchDragged 先把事件
+      // 拿去移动单位了，我们的框选根本轮不到（用户报的"点击后要跟点了 copy 一样，
+      // 让框选优先级高于玩家单位移动"）。
+      // 放到下标 0 才是最先收到；框选期间我们 return true 把拖动吃掉，单位就不会走。
+      if (!list.isEmpty() && list.first() == processor)
+        return;
+      list.remove(processor, true);
+      list.insert(0, processor);
+      } catch (Throwable ignored) {
       }
-    } catch (Throwable ignored) {
-    }
   }
+
+  /**
+   * 是否还要在 HUD 上挂那个悬浮按钮。把按钮做进原版放置 UI 之后（见
+   * {@link combine.Main#installInputHandler()}）就关掉，免得同一件事有两个入口。
+   * 输入处理器换不掉时（别的模组也换了）保持 true，HUD 按钮就当兜底。
+   */
+  public static boolean useHudButton = true;
 
   static class Processor implements InputProcessor {
     @Override

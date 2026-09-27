@@ -37,11 +37,29 @@ public class LinkWall extends Wall {
   public enum Mode {
     wall,
     door,
+    /** 自动门（原版 AutoDoor/blast-door）：靠"附近有没有地面单位"自己开关，点不动。 */
+    autodoor,
     shield
   }
 
   public Mode mode = Mode.wall;
   public TextureRegion openRegion;
+
+  // ===== 自动门（autodoor 模式）参数：与原版 AutoDoor 字段**同名**，copyFields 会自动拷过来 =====
+  public float checkInterval = 20f;
+  public float triggerMargin = 12f;
+  public mindustry.entities.Effect openfx = mindustry.content.Fx.dooropen;
+  public mindustry.entities.Effect closefx = mindustry.content.Fx.doorclose;
+  public arc.audio.Sound doorSound = mindustry.gen.Sounds.door;
+  /** 自动门检查节拍用的计时器槽（和原版 AutoDoor 一样取一个 timers 槽）。 */
+  public final int timerToggle = timers++;
+
+  /** 自动门每帧的临时容器（和原版 AutoDoor 一样是静态复用，避免每帧 new）。 */
+  static final arc.math.geom.Rect autoRect = new arc.math.geom.Rect();
+  static final Seq<mindustry.gen.Unit> autoUnits = new Seq<>();
+  /** 原版 AutoDoor 的判据：地面单位、且不是会"踩台阶"的腿式单位。 */
+  static final arc.func.Boolf<mindustry.gen.Unit> autoGroundCheck =
+      u -> u.isGrounded() && !u.type.allowLegStep;
 
   public LinkWall(String name) {
     super(name);
@@ -125,10 +143,11 @@ public class LinkWall extends Wall {
   public void init() {
     super.init();
     update = true;
-    if (mode == Mode.door) {
+    if (mode == Mode.door || mode == Mode.autodoor) {
       solid = false;
       solidifes = true;
-      consumesTap = true;
+      // 自动门是无接触开关（玩家点它不做任何事），只有普通门才靠点击开/关。
+      consumesTap = mode == Mode.door;
     } else {
       solid = true;
       solidifes = false;
@@ -143,6 +162,9 @@ public class LinkWall extends Wall {
     configurations.clear();
     config(Boolean.class, (LinkWallBuild b, Boolean open) -> {
       b.setOpen(open);
+      // 自动门每格按自己附近的单位独立开关，不互相带动（和原版 AutoDoor 一致）。
+      if (((LinkWall) b.block).mode == Mode.autodoor)
+        return;
       Seq<LinkWallBuild> members = new Seq<>(b.group());
       for (LinkWallBuild other : members)
         if (other != b && other.isDoor())
@@ -433,6 +455,18 @@ public class LinkWall extends Wall {
           shield = Mathf.clamp(shield + ((LinkWall) block).regenSpeed * edelta(), 0f, ((LinkWall) block).shieldHealth);
         shieldRadius = Mathf.lerpDelta(shieldRadius, shieldBroken() ? 0f : 1f, 0.12f);
       }
+      // FIX[autodoor]: 原版 AutoDoor 的自动开关（服务端权威，客户端等 tileConfig 回来）。
+      if (isAutoDoor() && !Vars.net.client()) {
+        LinkWall w = (LinkWall) block;
+        if (timer(w.timerToggle, w.checkInterval)) {
+          autoUnits.clear();
+          team.data().tree().intersect(
+              autoRect.setSize(block.size * Vars.tilesize + w.triggerMargin * 2f).setCenter(x, y), autoUnits);
+          boolean shouldOpen = autoUnits.contains(autoGroundCheck);
+          if (open != shouldOpen)
+            configureAny(shouldOpen); // 服务端本地生效 + 发 TileConfigCallPacket 给客户端
+        }
+      }
     }
 
     @Override
@@ -456,6 +490,15 @@ public class LinkWall extends Wall {
       return ((LinkWall) block).mode == Mode.door;
     }
 
+    public boolean isAutoDoor() {
+      return ((LinkWall) block).mode == Mode.autodoor;
+    }
+
+    /** 会体现"开着就不挡路"的门（普通门 + 自动门）。 */
+    public boolean isOpenable() {
+      return isDoor() || isAutoDoor();
+    }
+
     public boolean isShield() {
       return ((LinkWall) block).mode == Mode.shield;
     }
@@ -469,6 +512,16 @@ public class LinkWall extends Wall {
       if (this.open == open)
         return;
       this.open = open;
+      // 自动门开关时补上原版那点表现（特效/音效）。客户端由 tileConfig 包驱动这里。
+      try {
+        LinkWall w = (LinkWall) block;
+        if (w.mode == Mode.autodoor && !Vars.headless && w.openfx != null && w.closefx != null && wasVisible) {
+          (!open ? w.closefx : w.openfx).at(this, block.size);
+          if (w.doorSound != null)
+            w.doorSound.at(this);
+        }
+      } catch (Throwable ignored) {
+      }
       recache();
       if (!Vars.world.isGenerating())
         Vars.pathfinder.updateTile(tile);
@@ -498,19 +551,19 @@ public class LinkWall extends Wall {
 
     @Override
     public boolean checkSolid() {
-      return !(isDoor() && open);
+      return !(isOpenable() && open);
     }
 
     @Override
     public boolean collision(Bullet bullet) {
-      if (isDoor() && open)
+      if (isOpenable() && open)
         return false;
       return super.collision(bullet);
     }
 
     @Override
     public void draw() {
-      if (!isDoor()) {
+      if (!isOpenable()) {
         super.draw();
         drawShieldFx();
         return;
@@ -564,7 +617,8 @@ public class LinkWall extends Wall {
     public void write(arc.util.io.Writes write) {
       super.write(write);
       LinkWall wall = (LinkWall) block;
-      if (wall.mode == Mode.door)
+      // 原版 AutoDoor 的地图区字节就是"一个 bool open"，门也是一样 —— autodoor 走同一条。
+      if (wall.mode == Mode.door || wall.mode == Mode.autodoor)
         write.bool(open);
       else if (wall.mode == Mode.shield)
         write.f(shield);
@@ -587,7 +641,7 @@ public class LinkWall extends Wall {
       }
 
       LinkWall wall = (LinkWall) block;
-      if (wall.mode == Mode.door)
+      if (wall.mode == Mode.door || wall.mode == Mode.autodoor)
         open = read.bool();
       else if (wall.mode == Mode.shield)
         shield = read.f();
@@ -748,7 +802,9 @@ public class LinkWall extends Wall {
         table.row();
         table.label(() -> "链接数量" + this.seqSize).pad(4).wrap().width(200f).left();
         table.row();
-        table.label(() -> isDoor() ? (open ? "模式: 门(开)" : "模式: 门(关)") : (isShield() ? "模式: 相位盾" : "模式: 墙")).pad(4)
+        table.label(() -> isDoor() ? (open ? "模式: 门(开)" : "模式: 门(关)")
+            : isAutoDoor() ? (open ? "模式: 自动门(开)" : "模式: 自动门(关)")
+                : (isShield() ? "模式: 相位盾" : "模式: 墙")).pad(4)
             .wrap().width(200f).left();
       }
         }

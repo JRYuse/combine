@@ -46,7 +46,49 @@ public class CoopPanel {
   /** 总开关（想关掉点击面板就置 false）。 */
   public static boolean enabled = true;
 
+  /**
+   * "点击非自己队伍的建筑时也弹悬浮面板"（设置里可关）。
+   *
+   * <p>关掉之后只对自己队伍的方块弹面板 —— 玩家看敌人家门口的建筑时，
+   * 那块面板老是糊在屏幕上、还会挡住点击。
+   */
+  public static final String FOREIGN_KEY = "combine-panel-foreign";
+  public static boolean showForeign = true;
+
+  public static void loadForeignSetting() {
+    try {
+      showForeign = Core.settings.getBool(FOREIGN_KEY, true);
+    } catch (Throwable ignored) {
+    }
+  }
+
+  public static void setShowForeign(boolean value) {
+    showForeign = value;
+    try {
+      Core.settings.put(FOREIGN_KEY, value);
+    } catch (Throwable ignored) {
+    }
+  }
+
+  /** 这台建筑该不该弹面板：自己队伍的照旧；别人的看设置。 */
+  public static boolean teamAllowed(Building b) {
+    if (b == null)
+      return false;
+    if (showForeign)
+      return true;
+    try {
+      return Vars.player != null && b.team == Vars.player.team();
+    } catch (Throwable ignored) {
+      return true;
+    }
+  }
+
   private static final Table table = new Table();
+  /** 面板**内容**那一张表——rebuild 里所有行都加在它上面，再由 ScrollPane 包起来（见 rebuild 收尾）。
+   *  注意别叫 content：本文件静态导入了 {@code Vars.content}（内容表），重名会把它遮住。 */
+  private static final Table contentRows = new Table();
+  /** 内容的滚动容器（内容太长时只滚它，面板本身不再被撑到屏幕外）。 */
+  private static arc.scene.ui.ScrollPane scroll;
   private static Building build;
   private static boolean built = false;
 
@@ -81,7 +123,7 @@ public class CoopPanel {
       // 而 showFor 对"同一台建筑"是切换语义 —— 于是面板会"闪一下就没了"。
       // 这里做一次去抖：短时间内对同一台的重复点击直接忽略。
       if (!acceptTap(b)) return;
-      if (showable(b)) {
+      if (showable(b) && teamAllowed(b)) {
         showFor(b);
       } else {
         hide();
@@ -165,6 +207,15 @@ public class CoopPanel {
   private static int side = 0;
 
   /**
+   * 面板相对屏幕的等比缩放（只在内容超宽/超高时缩小，从不放大）。
+   *
+   * <p>用户要求："点击组合工厂时他们上面会显示那个材料之类的，加个自适应缩放，不然有一些会很长" ——
+   * 超长的方块名 / 一大堆构成 / 多种物品·液体·弹仓会把面板撑得比屏幕还宽（两侧被裁掉、
+   * 面板也跟着上下翻面乱跳）。这里量一次面板尺寸，超出屏幕就整体缩小到塞得下。
+   */
+  private static float fitScale = 1f;
+
+  /**
    * 面板上"刚显示过"的物品/液体 + 最后一次有货的时刻（游戏秒）。
    *
    * <p>用户报："有的物品和液体在 0 和 1 的边缘跳，会导致面板也一直跳"。数量在 0/1 之间抖时，
@@ -235,25 +286,38 @@ public class CoopPanel {
       return;
     }
     Table table = CoopPanel.table;
-    table.clearChildren();
+    // 【内容改成可滚动的那一张表】所有行都加到 content 上，最后由 ScrollPane 包起来
+    // —— 用户要求"悬浮面板的大小限制一下，改成可滑动面板"。
+    // 实时重画时保留当前滚动位置，免得池子数字一变（几乎每帧都在变）就跳回顶部。
+    float keepScroll = scroll == null ? 0f : scroll.getScrollY();
+    Table rows = CoopPanel.contentRows;
+    rows.clearChildren();
     // 只有"显示动画"那次才清动作：实时重画内容时清掉会把正在跑的缩放动画打断（面板卡在半截大小）
     if (actions) table.clearActions();
     table.background(mindustry.gen.Tex.inventory);
     try {
-      table.margin(4f);
+      rows.margin(4f);
+      table = rows; // 下面所有 table.add(...) 都落到内容表上
 
       Seq<Building> members = members(build);
       // 标题 + 构成
       // 组合方块（本模组替换出来的）叫"组合体"，协作组合接管的那些仍叫"协作组合"
       combine.turret.SuperTurret.SuperTurretBuild st = build instanceof combine.turret.SuperTurret.SuperTurretBuild s ? s : null;
       String kind = st != null ? "超级组合炮台" : (isCombined(build.block) ? "组合体" : "协作组合");
-      table.add("[accent]" + kind + "[] x" + Math.max(members.size, 1) + "  " + build.block.localizedName).left().row();
+      // 【换行宽度封顶】以前取"逻辑屏幕宽的一半"当换行宽：设备逻辑宽很大时（平板/桌面放大 UI），
+      // 这个宽度能到上千，面板照样顶穿屏幕（用户报的"容器的组合体成员显示还是没换行"）。
+      // 现在夹在 160..300 之间，任何设备上都只占屏幕的一小条。
+      // 【用户要求"长和宽改成原来一半"】换行宽也跟着减半：160..300 → 80..150
+      float compWidth = Math.max(80f, Math.min(150f,
+          arc.Core.graphics.getWidth() / arc.scene.ui.layout.Scl.scl() * 0.25f));
+      // 标题（方块名）也可能很长，一起换行
+      table.add("[accent]" + kind + "[] x" + Math.max(members.size, 1) + "  " + build.block.localizedName)
+          .left().width(compWidth).wrap().row();
       // 超级炮台再单列一行"里面装了哪些炮台"（每格一台，看池子的时候知道里面是什么）
       if (st != null) {
         String inner = st.innerSummary();
         if (inner.isEmpty()) inner = "（空）";
-        table.add("[lightgray]里面: " + inner + "[]").left().width(Math.max(160f,
-            arc.Core.graphics.getWidth() / arc.scene.ui.layout.Scl.scl() * 0.5f)).wrap().row();
+        table.add("[lightgray]里面: " + inner + "[]").left().width(compWidth).wrap().row();
       }
       ObjectIntMap<Block> counts = new ObjectIntMap<>();
       for (Building m : members) counts.increment(m.block, 1);
@@ -264,8 +328,6 @@ public class CoopPanel {
       }
       if (comp.length() == 0) comp.append(build.block.localizedName).append(" x1");
       // 构成可能有十几种方块：不换行的话面板会宽到屏幕外（标题被裁掉、还没法看全）。
-      // 这里按屏幕宽度的一半换行，超长构成的悬浮面板也不会顶穿屏幕。
-      float compWidth = Math.max(160f, arc.Core.graphics.getWidth() / arc.scene.ui.layout.Scl.scl() * 0.5f);
       table.add("[lightgray]构成: " + comp + "[]").left().width(compWidth).wrap().row();
 
       // 共享物品池（每行 3 个）
@@ -284,9 +346,9 @@ public class CoopPanel {
       if (items.isEmpty()) {
         table.add("[gray]（空）[]").left().row();
       } else {
-        for (int i = 0; i < items.size; i += 3) {
+        for (int i = 0; i < items.size; i += 2) {
           Table rowT = new Table();
-          for (int k = i; k < Math.min(i + 3, items.size); k++) {
+          for (int k = i; k < Math.min(i + 2, items.size); k++) {
             Item item = items.get(k);
             int amount = pool == null ? 0 : pool.get(item);
             Table cell = new Table();
@@ -314,9 +376,9 @@ public class CoopPanel {
       if (liquids.isEmpty()) {
         table.add("[gray]（空）[]").left().row();
       } else {
-        for (int i = 0; i < liquids.size; i += 3) {
+        for (int i = 0; i < liquids.size; i += 2) {
           Table rowT = new Table();
-          for (int k = i; k < Math.min(i + 3, liquids.size); k++) {
+          for (int k = i; k < Math.min(i + 2, liquids.size); k++) {
             Liquid liquid = liquids.get(k);
             float amount = lpool == null ? 0f : lpool.get(liquid);
             Table cell = new Table();
@@ -337,9 +399,9 @@ public class CoopPanel {
           ObjectIntMap<Item> ammo = ammoCounts(build);
           int per = ammoCap(build);
           table.add("[lightgray]弹仓[]").left().row();
-          for (int i = 0; i < ammoItems.size; i += 3) {
+          for (int i = 0; i < ammoItems.size; i += 2) {
             Table rowT = new Table();
-            for (int k = i; k < Math.min(i + 3, ammoItems.size); k++) {
+            for (int k = i; k < Math.min(i + 2, ammoItems.size); k++) {
               Item item = ammoItems.get(k);
               Table cell = new Table();
               cell.add(new Image(item.uiIcon)).size(26f).pad(2f);
@@ -405,19 +467,54 @@ public class CoopPanel {
       return;
     }
 
-    table.pack();
+    // 【面板尺寸封顶 + 内容可滚动】内容再长也不把面板撑出屏幕（以前靠整块等比缩小，
+    // 内容一多就缩到看不清；现在宽度/高度封顶，超出部分在面板里滚）。
+    rows.pack();
+    if (scroll == null) {
+      scroll = new arc.scene.ui.ScrollPane(rows, mindustry.ui.Styles.smallPane);
+      scroll.setScrollingDisabled(true, false);   // 只纵向滚，横向不滚
+      scroll.setFadeScrollBars(false);
+      scroll.setOverscroll(false, false);
+    }
+    float sceneW = Core.scene == null ? 400f : Core.scene.getWidth();
+    float sceneH = Core.scene == null ? 400f : Core.scene.getHeight();
+    // 【用户要求"长和宽改成原来一半"】封顶再减半：宽 92%→46%、高 70%→35%
+    float capW = Math.max(160f, sceneW * 0.46f);
+    float capH = Math.max(120f, sceneH * 0.35f);
+    CoopPanel.table.clearChildren();
+    CoopPanel.table.background(mindustry.gen.Tex.inventory);
+    CoopPanel.table.margin(4f);
+    CoopPanel.table.add(scroll)
+        .width(Math.min(rows.getWidth() + 14f, capW))
+        .height(Math.min(rows.getHeight() + 10f, capH));
+    if (keepScroll > 0f) {
+      try {
+        scroll.setScrollY(Math.min(keepScroll, Math.max(0f, scroll.getMaxY())));
+        scroll.updateVisualScroll();
+      } catch (Throwable ignored) {
+      }
+    }
+    CoopPanel.table.pack();
+    // 【自适应缩放】兜底：万一还是超过屏幕（超小窗口）就整体缩一点
+    // 注意这里必须用**外层面板** CoopPanel.table —— 上面 table 这个局部变量已经被
+    // 换成了内容表（rows），拿它设 visible/缩放就会出现"面板尺寸算对了、但一直是隐藏的"。
+    fitScale = fitScaleFor(CoopPanel.table);
+    CoopPanel.table.setOrigin(Align.center);
     updatePosition();
-    table.visible = true;
-    table.touchable = Touchable.enabled;
+    CoopPanel.table.visible = true;
+    CoopPanel.table.touchable = Touchable.enabled;
     if (actions) {
-      table.setScale(0f, 1f);
-      table.actions(Actions.scaleTo(1f, 1f, 0.06f));
+      CoopPanel.table.setScale(0f, fitScale);
+      CoopPanel.table.actions(Actions.scaleTo(fitScale, fitScale, 0.06f));
+    } else {
+      CoopPanel.table.setScale(fitScale, fitScale);
     }
 
     // 【不自动收起】面板打开后就一直留着，只在"点了其他位置 / 读档 / 目标失效"时关闭。
     // （以前有个"池子空置 30 秒自动收起"，但计时器不清零，重开后会瞬间到期，
     //   表现成"闪一下就没了"；按需求直接去掉这类定时收起。）
-    table.update(() -> {
+    // 同理：实时刷新挂在**外层面板**上（局部 table 现在是内容表）
+    CoopPanel.table.update(() -> {
       if (state.isMenu() || build == null || !build.isValid()) {
         lastSignature = null;
         hide();
@@ -494,7 +591,8 @@ public class CoopPanel {
       arc.math.geom.Vec2 v2 = Core.input.mouseScreen(build.x, build.y - half);
       float belowY = v2.y - Core.scene.marginBottom + 4f;
       float sceneH = Core.scene.getHeight();
-      float h = table.getHeight();
+      // 用**缩放后**的尺寸判上下（否则缩小了还按原尺寸翻面）
+      float h = table.getHeight() * table.scaleY;
 
       if (side == 0) {
         // 第一次：上方塞得下就放上面（用户要的"浮在方块正上方"），塞不下才翻到下面
@@ -516,15 +614,30 @@ public class CoopPanel {
     }
   }
 
-  /** 按对齐方式摆好并夹在屏幕内。 */
+  /** 按对齐方式摆好并夹在屏幕内（尺寸一律按缩放后的算）。 */
   private static void placeClamped(float sx, float sy, int align) {
     float sceneW = Core.scene.getWidth(), sceneH = Core.scene.getHeight();
-    float halfW = table.getWidth() / 2f, h = table.getHeight();
+    float halfW = table.getWidth() * table.scaleX / 2f, h = table.getHeight() * table.scaleY;
     float cx = Mathf.clamp(sx, halfW + 4f, Math.max(halfW + 4f, sceneW - halfW - 4f));
-    float cy = (align & Align.top) != 0
-        ? Mathf.clamp(sy, 4f, Math.max(4f, sceneH - h - 4f))       // 面板在下方
-        : Mathf.clamp(sy, Math.min(h + 4f, sceneH), sceneH - 4f); // 面板在上方
-    table.setPosition(cx, cy, align);
+    // align=Align.top：面板在锚点下方；align=Align.bottom：面板在锚点上方。
+    float cy = (align & Align.top) != 0 ? sy - h / 2f : sy + h / 2f;
+    float minY = h / 2f + 4f, maxY = Math.max(minY, sceneH - h / 2f - 4f);
+    cy = Mathf.clamp(cy, minY, maxY);
+    table.setPosition(cx, cy, Align.center);
+  }
+
+  /** 面板相对屏幕的等比缩放：只在超出可用范围时缩小，从不放大。 */
+  static float fitScaleFor(Table t) {
+    try {
+      if (t == null || Core.scene == null)
+        return 1f;
+      float availW = Math.max(64f, Core.scene.getWidth() * 0.92f);
+      float availH = Math.max(64f, Core.scene.getHeight() * 0.92f);
+      float w = Math.max(t.getWidth(), 1f), h = Math.max(t.getHeight(), 1f);
+      return Math.min(1f, Math.min(availW / w, availH / h));
+    } catch (Throwable ignored) {
+      return 1f;
+    }
   }
 
   /**

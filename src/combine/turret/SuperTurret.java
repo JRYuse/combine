@@ -187,6 +187,134 @@ public class SuperTurret extends Block {
     }
   }
 
+  // ==================== 配置串（联机安全） ====================
+  //
+  // 【用户报】"文本数据包太长了超出上限会踢出客户端"：原版把方块的 config 用
+  // TypeIO.writeObject 塞进 ConstructFinish / TileConfig 包，客户端读的是
+  // TypeIO.readObjectSafe —— 里面有硬上限 1200 字符，超了直接抛
+  // "String too long: 1200" 把客户端踢掉（见 ~/sd/q/last_log (8).txt）。
+  // 老的 config() 返回 "方块名@朝向;…" + "x,y;…"，10x10 超级炮台（100 格）配上
+  // 长名字的模组炮台轻松过千、加上 sources 必超。这里改成紧凑二进制 + base64：
+  // 每格 4 字节（id + 朝向）、每个坐标 4 字节，100 格满载 ≈ 1070 字符，稳在 1200 以内。
+  // 老的 "layout|sources" 文本串仍然能读（旧存档/旧蓝图/旧客户端），只是不再往外写。
+
+  /** 紧凑配置串前缀：'~' + base64(二进制)。 */
+  public static final String CONFIG_TAG = "~";
+  /** 原版 readObjectSafe 的上限是 1200，留点余量。 */
+  public static final int CONFIG_MAX = 1150;
+
+  /** 把 layout + sources 编成"短到能过联机"的配置串。 */
+  public static String encodeConfig(String layout, String sources) {
+    try {
+      String enc = CONFIG_TAG + pack64(layout, sources);
+      if (enc.length() <= CONFIG_MAX)
+        return enc;
+      // 极端情况（格子/名字多到超限）：先丢掉 sources（只影响"落地后拆掉被框选的炮台"这一步），
+      // 还不够就只保留前 N 个格子 —— 绝不返回一个超限的串把客户端踢出去。
+      enc = CONFIG_TAG + pack64(layout, "");
+      if (enc.length() <= CONFIG_MAX)
+        return enc;
+      String[] toks = cellTokens(layout);
+      int keep = toks.length;
+      while (keep > 0 && (CONFIG_TAG + pack64(joinCells(toks, keep), "")).length() > CONFIG_MAX)
+        keep--;
+      return CONFIG_TAG + pack64(joinCells(toks, keep), "");
+    } catch (Throwable t) {
+      Log.err("[combine] 超级组合炮台：配置串编码失败（改用逐格文本）", t);
+      return layout == null ? "" : layout;
+    }
+  }
+
+  static String joinCells(String[] toks, int keep) {
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < keep && i < toks.length; i++) {
+      if (i > 0)
+        sb.append(';');
+      sb.append(toks[i]);
+    }
+    return sb.toString();
+  }
+
+  /** 逐格文本 layout/sources → base64(紧凑二进制)。 */
+  static String pack64(String layout, String sources) {
+    java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+    java.io.DataOutputStream d = new java.io.DataOutputStream(buf);
+    try {
+      String[] toks = cellTokens(layout);
+      d.writeByte(1);
+      d.writeShort(toks.length);
+      for (String tok : toks) {
+        Block cb = blockOfToken(tok);
+        d.writeShort(cb == null ? 0xFFFF : (cb.id & 0xFFFF));
+        d.writeShort(Math.round(rotOfToken(tok)) & 0xFFFF);
+      }
+      String[] src = (sources == null || sources.isEmpty()) ? new String[0] : sources.split(";");
+      d.writeShort(src.length);
+      for (String s : src) {
+        int comma = s == null ? -1 : s.indexOf(',');
+        if (comma < 0) {
+          d.writeShort(0);
+          d.writeShort(0);
+          continue;
+        }
+        try {
+          d.writeShort(Integer.parseInt(s.substring(0, comma).trim()) & 0xFFFF);
+          d.writeShort(Integer.parseInt(s.substring(comma + 1).trim()) & 0xFFFF);
+        } catch (Throwable t) {
+          d.writeShort(0);
+          d.writeShort(0);
+        }
+      }
+      d.flush();
+    } catch (Throwable ignored) {
+    }
+    return new String(arc.util.serialization.Base64Coder.encode(buf.toByteArray()))
+        .replace("\n", "").replace("\r", "");
+  }
+
+  /** 解出 {layout(逐格文本), sources(逐格文本)}；老的 "layout|sources" 文本串也认。 */
+  public static String[] decodeConfig(String cfg) {
+    if (cfg == null || cfg.isEmpty())
+      return new String[] { "", "" };
+    if (!cfg.startsWith(CONFIG_TAG)) {
+      int bar = cfg.indexOf('|');
+      return bar < 0 ? new String[] { cfg, "" } : new String[] { cfg.substring(0, bar), cfg.substring(bar + 1) };
+    }
+    try {
+      byte[] raw = arc.util.serialization.Base64Coder.decode(cfg.substring(CONFIG_TAG.length()).trim());
+      java.io.DataInputStream d = new java.io.DataInputStream(new java.io.ByteArrayInputStream(raw));
+      d.readByte(); // 格式号
+      int n = d.readUnsignedShort();
+      StringBuilder lay = new StringBuilder();
+      for (int i = 0; i < n; i++) {
+        int id = d.readUnsignedShort();
+        int rot = d.readShort();
+        if (i > 0)
+          lay.append(';');
+        if (id == 0xFFFF)
+          continue;
+        Block b = content.block(id);
+        Block cb = cellBlock(b);
+        String nm = cb != null ? cb.name : (b == null ? "" : b.name);
+        if (nm == null || nm.isEmpty())
+          continue;
+        lay.append(nm).append('@').append(rot);
+      }
+      StringBuilder src = new StringBuilder();
+      int sc = d.readUnsignedShort();
+      for (int i = 0; i < sc; i++) {
+        int x = d.readShort(), y = d.readShort();
+        if (i > 0)
+          src.append(';');
+        src.append(x).append(',').append(y);
+      }
+      return new String[] { lay.toString(), src.toString() };
+    } catch (Throwable t) {
+      Log.err("[combine] 超级组合炮台：配置串解码失败（按空布局处理）", t);
+      return new String[] { "", "" };
+    }
+  }
+
   /** 多格方块的格子在"原点 tile"基础上的偏移（和原版 setBlock 的多格展开一致）。 */
   public static int cellTile(int origin, int size, int index) {
     return origin - (size - 1) / 2 + index;
@@ -289,7 +417,8 @@ public class SuperTurret extends Block {
       drawDefaultPlanRegion(plan, list); // 底板 + 队伍色 + config 预览
     if (plan.block != this)
       return;
-    String[] tokens = cellTokens(plan.config instanceof String s ? s : null);
+    // 计划里的 config 可能是紧凑串（~base64，见 encodeConfig），先解成逐格文本再画虚影。
+    String[] tokens = cellTokens(decodeConfig(plan.config instanceof String s ? s : null)[0]);
     for (int i = 0; i < tokens.length && i < side * side; i++) {
       Block b = blockOfToken(tokens[i]);
       if (b == null)
@@ -570,7 +699,13 @@ public class SuperTurret extends Block {
     Turret t = (Turret) cb;
     if (!(t.drawer instanceof DrawTurret dt))
       return;
-    float x = c.x + c.recoilOffset.x, y = c.y + c.recoilOffset.y;
+    // 【后坐力也要跟着缩】每格按 k 缩到 1x1 之后，后坐的两部分原来还按原尺寸算：
+    //   ① 整台位移 c.recoilOffset（= pow(curRecoil, recoilPow) * block.recoil 像素）；
+    //   ② 各部件按 PartProgress.recoil 的像素位移（写在 part.moves 里，mulPartOffsets 没动它）。
+    // 于是缩小的炮台一开火，炮管会"飞出格子"（用户报的"炮台缩放到 1*1 后相应的后坐力也要缩放"）。
+    // 这里把整台位移乘 k、把传给部件的后坐进度也乘 k —— 两处一起缩，视觉比例才和贴图一致。
+    float rec = cellScale(cb);
+    float x = c.x + c.recoilOffset.x * rec, y = c.y + c.recoilOffset.y * rec;
     float rot = c.drawrot();
     // 【z 层照原版 DrawTurret】原版在 turretLayer(50) 画本体/部件、49.99 画描边、
     // heatLayer(50.1) 画热量 —— 之前在调用方的 z(30,方块层)画，炮管被底板/别的方块
@@ -599,7 +734,7 @@ public class SuperTurret extends Block {
 
     // 3) 描边 + parts（原版同一段；逐件隔离，一件坏了不拖垮整格）
     // 部件偏移随 k 缩放（见 mulPartOffsets；缩 0.5 的大炮台必须缩偏移否则零件飞出格外）
-    float pk = cellScale(cb);
+    float pk = rec; // 同一个缩放系数（cellScale）：上面算过一次，这里复用，别算两遍
     if (pk != 1f)
       for (mindustry.entities.part.DrawPart part : dt.parts)
         mulPartOffsets(part, pk);
@@ -612,10 +747,10 @@ public class SuperTurret extends Block {
       }
       float progress = c.progress();
       mindustry.entities.part.DrawPart.PartParams params = mindustry.entities.part.DrawPart.params
-          .set(c.warmup(), 1f - progress, 1f - progress, c.heat, c.curRecoil, c.charge, x, y, c.rotation);
+          .set(c.warmup(), 1f - progress, 1f - progress, c.heat, c.curRecoil * rec, c.charge, x, y, c.rotation);
       for (mindustry.entities.part.DrawPart part : dt.parts) {
         try {
-          params.setRecoil(part.recoilIndex >= 0 && c.curRecoils != null ? c.curRecoils[part.recoilIndex] : c.curRecoil);
+          params.setRecoil((part.recoilIndex >= 0 && c.curRecoils != null ? c.curRecoils[part.recoilIndex] : c.curRecoil) * rec);
           part.draw(params);
         } catch (Throwable e) {
           // 这一个部件画不出来就算了，别像原版那样把整段（描边+所有部件）全带丢
@@ -634,10 +769,10 @@ public class SuperTurret extends Block {
         float progress = c.progress();
         // 注意：ammoParts 的"除回去"统一放 finally 里，别在这里再除一遍
         mindustry.entities.part.DrawPart.PartParams params = mindustry.entities.part.DrawPart.params
-            .set(c.warmup(), 1f - progress, 1f - progress, c.heat, c.curRecoil, c.charge, x, y, c.rotation);
+            .set(c.warmup(), 1f - progress, 1f - progress, c.heat, c.curRecoil * rec, c.charge, x, y, c.rotation);
         for (mindustry.entities.part.DrawPart part : parts) {
           try {
-            params.setRecoil(part.recoilIndex >= 0 && c.curRecoils != null ? c.curRecoils[part.recoilIndex] : c.curRecoil);
+            params.setRecoil((part.recoilIndex >= 0 && c.curRecoils != null ? c.curRecoils[part.recoilIndex] : c.curRecoil) * rec);
             part.draw(params);
           } catch (Throwable ignored) {
           }
@@ -1875,18 +2010,29 @@ public class SuperTurret extends Block {
 
     @Override
     public Object config() {
-      return layout + "|" + (sources == null ? "" : sources);
+      // 走紧凑编码：原版会把 config 塞进 ConstructFinish/TileConfig 包，
+      // 客户端按 readObjectSafe（上限 1200 字符）读，超了会直接踢客户端（见 encodeConfig）。
+      //
+      // 【只带布局，不带 sources】用户报"合体炮台无法完整重建，重建后是空的"：
+      // 框选复制（F）、蓝图、以及核心机的重建都走 config() —— 以前这里把 sources 一起带出去，
+      // 于是重建/粘贴时又被当成"合体动作"去核对原料炮台；那些炮台早就没了 → 逐格判定把
+      // 每一格都清空 → 重建出来一台**空壳**。
+      // 现在 config() 只带布局：布局本身就定义了每格是哪台炮台（那些格子是方块内部的虚拟炮台，
+      // 不依赖世界里的原料），所以重建/粘贴能完整还原；同时也不会再去拆世界里的炮台
+      //（以前把蓝图贴到有炮台的地方会顺手把人家拆了）。
+      // 只会"吃原料"的合体动作仍然由 SuperTurretPlacer 显式带上 sources（见那边 encodeConfig(layout, sources)）。
+      return encodeConfig(layout, "");
     }
 
     @Override
     public void configured(@Nullable mindustry.gen.Unit builder, @Nullable Object value) {
       if (value instanceof String s) {
-        int bar = s.indexOf('|');
-        applyLayout(bar < 0 ? s : s.substring(0, bar));
-        if (bar >= 0) {
-          sources = s.substring(bar + 1);
+        // 紧凑串（本模组新格式）和老文本串 "layout|sources" 都认。
+        String[] parts = decodeConfig(s);
+        applyLayout(parts[0]);
+        sources = parts[1] == null ? "" : parts[1];
+        if (!sources.isEmpty())
           consumeSources();
-        }
       } else if (value instanceof Integer packed) {
         // 选弹药：(格号 | ((物品id+1) << 16))，0 = 自动
         int idx = packed & 0xFFFF;
@@ -1909,33 +2055,87 @@ public class SuperTurret extends Block {
       sourcesConsumed = true;
       if (net.client())
         return;
-      for (String tok : sources.split(";")) {
-        if (tok == null || tok.isEmpty())
-          continue;
-        int comma = tok.indexOf(',');
-        if (comma < 0)
-          continue;
-        int x, y;
-        try {
-          x = Integer.parseInt(tok.substring(0, comma).trim());
-          y = Integer.parseInt(tok.substring(comma + 1).trim());
-        } catch (Throwable t) {
-          continue;
+      // 【每次合体只能吃一份炮台】用户报"多人游戏每个客户端都能各自合成一次"：
+      // 原料炮台只在**服务端**被消费，第二个客户端（本地世界还没收到拆除包，或者干脆是
+      // 复制粘贴出来的配置）再合成一次时，它这份 config 里的 sources 指向的炮台早就没了；
+      // 旧实现"没东西可拆"就照样放行，等于白送一台满格超级炮台。
+      //
+      // 现在逐格核对：第 i 格的原料炮台必须**真的还在**（同队 + 是同一种炮台），
+      // 拆掉它、保留这一格；否则（原料没了 / 类型不符 / 不是自己队的）这一格清空 ——
+      // 于是第二次合体只能得到一台"空壳"，同时顺带堵住"蓝图复制一台超级炮台白嫖"。
+      String[] cells = cellTokens(layout);
+      String[] srcs = sources.split(";");
+      boolean changed = false;
+      for (int i = 0; i < cells.length; i++) {
+        Block want = blockOfToken(cells[i]);
+        if (want == null)
+          continue; // 空格子
+        Tile t = i < srcs.length ? sourceTile(srcs[i]) : null;
+        if (t != null && t.build != null && t.build.team == team && !t.build.dead()
+            && t.block() instanceof Turret && cellBlock(t.block()) == want) {
+          try {
+            t.removeNet(); // 原版的"跨网络同步删格"
+            continue;
+          } catch (Throwable e) {
+            Log.err("[combine] 拆掉被框选的炮台失败（@,@）", t.x, t.y, e);
+          }
         }
-        Tile t = world.tile(x, y);
-        if (t == null || t.build == null || !(t.block() instanceof Turret))
-          continue;
-        try {
-          t.removeNet(); // 原版的"跨网络同步删格"
-        } catch (Throwable e) {
-          Log.err("[combine] 拆掉被框选的炮台失败（@,@）", x, y, e);
+        cells[i] = "";
+        changed = true;
+      }
+      if (changed) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < cells.length; i++) {
+          if (i > 0)
+            sb.append(';');
+          sb.append(cells[i]);
         }
+        Log.warn("[combine] 超级组合炮台：有一格的原料炮台已经不在（多半是重复合体/蓝图复制），该格已清空");
+        applyLayout(sb.toString());
+      }
+    }
+
+    /** "x,y" → 那一格；解析不出来返回 null。 */
+    static Tile sourceTile(String tok) {
+      if (tok == null || tok.isEmpty())
+        return null;
+      int comma = tok.indexOf(',');
+      if (comma < 0)
+        return null;
+      try {
+        return world.tile(Integer.parseInt(tok.substring(0, comma).trim()),
+            Integer.parseInt(tok.substring(comma + 1).trim()));
+      } catch (Throwable t) {
+        return null;
       }
     }
 
     @Override
     public byte version() {
       return 1;
+    }
+
+    /**
+     * 【联机血量】原版 {@code Building.readBase} 会 {@code health = Math.min(read.f(), block.health)} ——
+     * 这个 {@code block.health} 是"方块静态血量"（超级炮台按边长²估出来的一个小值，和多格炮台
+     * 累加出来的真实整组血量差一个量级）。联机快照（NetClient.blockSnapshot → readSync）和存档
+     * 读回的"整组血量"一过这里就被夹回单台量级 —— 用户报的"多人游戏时一段时间后合体炮台的
+     * 血量会回到一个炮台的血量"就是这个。
+     *
+     * <p>读的这一刻临时把静态上限放开，读完再按本台真实的 {@code maxHealth}（read() 里
+     * applyLayout → buildCells 按成员重算过）夹一次。
+     */
+    @Override
+    public void readAll(Reads read, byte revision) {
+      int old = block.health;
+      try {
+        block.health = Integer.MAX_VALUE;
+        super.readAll(read, revision);
+      } finally {
+        block.health = old;
+      }
+      if (maxHealth > 0.5f)
+        health = Mathf.clamp(health, 0f, maxHealth);
     }
 
     @Override

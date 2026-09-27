@@ -618,7 +618,7 @@ public class CombinedCrafter extends GenericCrafter {
         public float heatFrac() {
             CombinedCrafter cb = (CombinedCrafter) block;
             if (cb.mode == Mode.heatcrafter)
-                return availableHeat() / Math.max(cb.heatRequirement * cb.maxEfficiency, 1f);
+                return availableHeat() / Math.max(comboHeatRequirement() * cb.maxEfficiency, 1f);
             if (cb.mode == Mode.heatproducer) {
                 // 分母要跟着"整组"走：heat() 现在对外报的是整组热量（见 exposedHeatTotal），
                 // 拿单台的 heatOutput 当分母会让血条/热量贴图溢出（比如 41.8/8）
@@ -635,15 +635,40 @@ public class CombinedCrafter extends GenericCrafter {
             return availableHeat() / Math.max(getComboHeatCap(), 1f);
         }
 
-        /** HeatCrafter 热量效率 */
+        /**
+         * 整组需热合计：组内所有需热成员（heatcrafter 模式）的 heatRequirement 之和。
+         *
+         * <p>【用户报】"需要热量的组合工厂组合后，只需要供给一个工厂的热量就能满效率，
+         * 但悬浮面板里的效率是正确的" —— 效率原来按**单台**的 heatRequirement 算，
+         * 而 {@link #availableHeat()} 是**整组**共享的热量池：2 台各需 24 的组合体
+         * 只要 24 热量就双双满效率（悬浮面板按整组 48 算，显示 63%，与实际情况对不上）。
+         * 现在效率/热量条一律用整组需求当分母。
+         */
+        public float comboHeatRequirement() {
+            float sum = 0f;
+            try {
+                for (CombinedCrafterBuild m : group()) {
+                    if (m == null || !m.isValid())
+                        continue;
+                    if (m.block instanceof CombinedCrafter mb && mb.mode == Mode.heatcrafter)
+                        sum += Math.max(mb.heatRequirement, 0f);
+                }
+            } catch (Throwable ignored) {
+            }
+            // 兜底：分组还没建好时至少用自己这一台的
+            return Math.max(sum, ((CombinedCrafter) block).heatRequirement);
+        }
+
+        /** HeatCrafter 热量效率（分母 = 整组需热合计，见 comboHeatRequirement） */
         public float heatEfficiency() {
             CombinedCrafter cb = (CombinedCrafter) block;
             if (cb.mode != Mode.heatcrafter)
                 return 1f;
             // FIX: heatRequirement <= 0 时 0/0=NaN，导致 "active 但不生产"
-            if (cb.heatRequirement <= 0.0001f)
+            float req = comboHeatRequirement();
+            if (req <= 0.0001f)
                 return cb.maxEfficiency;
-            return Math.min(availableHeat() / cb.heatRequirement, cb.maxEfficiency);
+            return Math.min(availableHeat() / req, cb.maxEfficiency);
         }
 
         public boolean isLeader() {
@@ -1483,7 +1508,7 @@ public class CombinedCrafter extends GenericCrafter {
             // FIX: 非 heatcrafter 模式不应用热量门 (原版 GenericCrafter 从不因 heatRequirement 停产;
             // BlockCloner 深拷贝失败的方块可能带着非零 heatRequirement)
             if (cb.mode == Mode.heatcrafter && cb.heatRequirement > 0) {
-                heatEff = Math.min(availableHeat() / cb.heatRequirement, 1f);
+                heatEff = Math.min(availableHeat() / Math.max(comboHeatRequirement(), 0.0001f), 1f);
             }
             // HeatCrafter 模式：效率由热量决定
             if (cb.mode == Mode.heatcrafter) {
@@ -2001,7 +2026,7 @@ public class CombinedCrafter extends GenericCrafter {
                 barsTable.left();
                 barsTable.update(() -> {
                     barsTable.clearChildren();
-                    barsTable.defaults().growX().height(18f).pad(4);
+                    barsTable.defaults().width(ComboUi.COMPOSITION_WIDTH).height(18f).pad(4);
                     buildComboBars(barsTable);
                 });
                 cont.add(barsTable).growX().left();
@@ -2277,18 +2302,18 @@ public class CombinedCrafter extends GenericCrafter {
             }
         }
 
-        // 存档先调 writeBase 写模块数据、后调 write —— "只有组长写真实模块"必须挂在 writeBase 上
+        // 存档先调 writeBase 写模块数据、后调 write —— "每口池子只写一份"必须挂在 writeBase 上
         // （写在 write() 里来不及），否则每个成员各写一份整池，读档合并后数量 ×N。
         @Override
         public void writeBase(Writes write) {
             ItemModule savedItems = items;
             LiquidModule savedLiquids = liquids;
-            if (combine.saves.ComboSaveState.isFollower(this, comboGroup)) {
-                if (items != null)
-                    items = new ItemModule();
-                if (liquids != null)
-                    liquids = new LiquidModule();
-            }
+            // 【每口池子只写一份】按模块身份去重（见 ComboSaveState.firstItemPool）：
+            // 以前按"本地组组长"算，一条网络里 M 个本地组会把同一口池子写 M 遍，读档直接 ×M。
+            if (!combine.saves.ComboSaveState.firstItemPool(this) && items != null)
+                items = new ItemModule();
+            if (!combine.saves.ComboSaveState.firstLiquidPool(this) && liquids != null)
+                liquids = new LiquidModule();
             super.writeBase(write);
             items = savedItems;
             liquids = savedLiquids;

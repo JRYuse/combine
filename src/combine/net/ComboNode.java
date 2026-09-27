@@ -437,6 +437,20 @@ public class ComboNode extends Block {
                 configure(other.pos());
                 return false;
             }
+            // 【连不上要给反馈】用户报"两个组合体之间的组合节点太多的话无法组合" ——
+            // 点一下没反应、也没提示，玩家根本不知道是"超距离"还是"连接数满了"。
+            // 这里把三种情况分开说清楚（点自己 = 全断 的那条上面已经处理了）。
+            try{
+                if(links.size >= maxNodes){
+                    ui.showInfoFade("[scarlet]组合节点连接数已满（" + links.size + "/" + maxNodes + "）：先点它自己全断再重连");
+                }else if(!overlaps(this, other, laserRange * tilesize)){
+                    ui.showInfoFade("[scarlet]太远了：组合节点最远能连 " + (int)laserRange + " 格（两个组合体之间节点太多时，"
+                        + "每一跳都得在范围内才行）");
+                }else{
+                    ui.showInfoFade("[scarlet]这个目标不能连：它既不是组合体，也不是能接力的组合节点");
+                }
+            }catch(Throwable ignored){
+            }
             return true;
         }
 
@@ -679,20 +693,22 @@ public class ComboNode extends Block {
 
         void displayInner(Table table) {
             super.display(table);
+            // 同 ComboConnector：长文字按固定宽度换行，免得把信息面板撑到屏幕宽。
+            final float W = ComboUi.COMPOSITION_WIDTH;
             int members = ComboNet.componentMembers(this).size;
             table.row();
-            table.add("[accent]组合节点[]").left();
+            table.add("[accent]组合节点[]").left().width(W).wrap();
             table.row();
-            table.add("连接数: " + links.size + "/" + maxNodes).color(Pal.accent).left();
+            table.add("连接数: " + links.size + "/" + maxNodes).color(Pal.accent).left().width(W).wrap();
             if(members > 0){
                 table.row();
-                table.add("覆盖组合建筑: " + members).color(Pal.accent).left();
+                table.add("覆盖组合建筑: " + members).color(Pal.accent).left().width(W).wrap();
             }
             table.row();
-            table.add("共享: " + ComboShare.describe(shareMask)).color(Pal.accent).left();
+            table.add("共享: " + ComboShare.describe(shareMask)).color(Pal.accent).left().width(W).wrap();
             table.row();
             table.add("网络热量: " + Strings.fixed(heat, 1) + "/" + Strings.fixed(heatCap, 1))
-                .color(Pal.lightOrange).left();
+                .color(Pal.lightOrange).left().width(W).wrap();
                 }
 
         /** 点开节点弹出来的配置面板：勾选共享哪些部分（点任意一个连接件都一样）。 */

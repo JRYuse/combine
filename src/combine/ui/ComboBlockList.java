@@ -248,6 +248,11 @@ public class ComboBlockList {
           }
         }).left().padBottom(8f).row();
 
+    // 【点击非己方建筑也弹悬浮面板】关掉之后只对自己队伍的方块弹面板
+    table.check("[accent]点击非己方建筑也显示悬浮面板[]（关掉 = 只对自己队伍的方块弹面板）",
+        combine.coop.CoopPanel.showForeign, v -> combine.coop.CoopPanel.setShowForeign(v))
+        .left().padBottom(8f).row();
+
     final String[] query = {searchText};
     final int[] filter = {filterMode};
     final Table list = new Table();

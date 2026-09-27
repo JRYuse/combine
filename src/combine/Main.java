@@ -153,6 +153,15 @@ public class Main extends Mod {
 
     // 读档窗口：WorldLoadBegin → 读档语义合并（去重）；结束前不做运行期相加
     Events.on(mindustry.game.EventType.WorldLoadBeginEvent.class, e -> ComboNet.beginWorldLoad());
+    // 【读**存档**只会发 SaveLoadEvent，不会发 WorldLoadBegin/WorldLoad】那两条是"读地图"才发的。
+    // 读存档（战役区块 / 存档槽）走 SaveIO.load → SaveLoadEvent，于是"读档去重窗口"以前从来没开过：
+    // 每台建筑手里那份"同一口池子的副本"被按运行期语义相加，一轮存读物品就翻好几倍
+    // （用户报的"物品数量异常增长"，实测 14.7M → 32.6M → 69M）。
+    // 这里在读档末尾把窗口打开 + 立刻按去重语义合并一次（之后头几帧也按去重算）。
+    Events.on(SaveLoadEvent.class, e -> {
+      ComboNet.beginWorldLoad();
+      ComboNet.rebuildLoading();
+    });
     Events.on(WorldLoadEvent.class, e -> {
       // 联机入服时 rules 是刚按名字反查出来的（researched/bannedBlocks 可能装着被替换掉的原版实例），
       // 必须在任何 UI/建造校验读到它之前纠正，否则客户端建造菜单里组合建筑会全部消失。
@@ -190,6 +199,9 @@ public class Main extends Mod {
     // "不组合"名单（设置界面里切换的）从 Core.settings 读回来
     CoopCombo.loadBlacklist();
 
+    // 悬浮面板：点击非己方建筑时要不要弹（设置界面里的复选框，见 CoopPanel/ComboBlockList）
+    combine.coop.CoopPanel.loadForeignSetting();
+
     // "只和玩家队友组合"总开关（设置界面里的复选框）
     combine.util.ComboTeams.load();
 
@@ -217,6 +229,8 @@ public class Main extends Mod {
 
     // 超级组合炮台：快捷键/按钮 → 框选炮台 → 按数量生成对应边长的组合体（纯客户端交互）
     combine.turret.SuperTurretPlacer.register();
+    // 手机/桌面都把"框选合体"按钮做进**原版放置 UI**（buildPlacementUI 那一行）
+    installInputHandler();
     combine.storage.SuperBlockPlacer.register();
 
 //    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
@@ -435,6 +449,46 @@ public class Main extends Mod {
   /** 客户端才有的贴图/图标环境（专用服务器 Core.atlas 为 null）。 */
   static boolean visuals() {
     return !Vars.headless && arc.Core.atlas != null;
+  }
+
+  /**
+   * 把 InputHandler 换成"只重写 buildPlacementUI"的子类（手机 {@link combine.input.ComboMobileInput}、
+   * 桌面 {@link combine.input.ComboDesktopInput}），这样"框选合体"按钮就长在原版放置 UI 的那一行里
+   * （手机 = 复制键右边；桌面 = 蓝图/粘贴键右边）。
+   *
+   * <p>走原版 {@code Control.setInput()}：它会保留当前选中的方块、把老处理器的输入处理器与 UI 摘掉，
+   * 再调 {@code add()}（内部会重新调 {@code buildPlacementUI}），所以按钮立刻就位。
+   *
+   * <p>只替换**恰好是原版那两个类**的处理器：别的模组换了自己的子类就不动（宁可少个按钮，
+   * 也不能把别人的输入行为顶掉），这种情况保留 HUD 上的兜底按钮。
+   */
+  static void installInputHandler() {
+    if (Vars.headless)
+      return;
+    Events.on(ClientLoadEvent.class, e -> {
+      try {
+        if (Vars.control == null || Vars.control.input == null)
+          return;
+        mindustry.input.InputHandler cur = Vars.control.input;
+        String cn = cur.getClass().getName();
+        if (cn.equals("combine.input.ComboMobileInput") || cn.equals("combine.input.ComboDesktopInput"))
+          return;
+        if (cn.equals("mindustry.input.MobileInput")) {
+          Vars.control.setInput(new combine.input.ComboMobileInput());
+        } else if (cn.equals("mindustry.input.DesktopInput")) {
+          Vars.control.setInput(new combine.input.ComboDesktopInput());
+        } else {
+          // 别的模组/别的客户端换了自己的输入处理器：不替换，HUD 按钮继续当兜底
+          Log.info("[combine] 输入处理器是 @（不是原版那两个），框选合体按钮仍挂在 HUD 上", cn);
+          return;
+        }
+        combine.turret.SuperTurretPlacer.useHudButton = false;
+        Log.info("[combine] 框选合体按钮已挂进原版放置 UI（@）",
+            cn.equals("mindustry.input.MobileInput") ? "手机" : "桌面");
+      } catch (Throwable t) {
+        Log.err("[combine] 换输入处理器失败（框选合体按钮仍在 HUD 上）", t);
+      }
+    });
   }
 
   void getWhiteList() {
@@ -948,6 +1002,21 @@ public class Main extends Mod {
     return cls == target || (cls.isAnonymousClass() && cls.getSuperclass() == target);
   }
 
+  /**
+   * 方块（或其父类）的类名是不是 name。
+   * 用于"某些版本 / 某些客户端 jar 里压根没有这个类"的判定（如 AutoDoor）——
+   * 直接写 {@code instanceof AutoDoor} 会在类加载阶段就 NoClassDefFoundError，
+   * 用类名字符串比较则完全不受影响。
+   */
+  static boolean isClassNamed(Object o, String name) {
+    if (o == null || name == null)
+      return false;
+    for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass())
+      if (name.equals(c.getName()))
+        return true;
+    return false;
+  }
+
   /** 反射读字段, 兼容 159.7/160.1 字段差异 (X36 缺 heatConsumeRate 等), 缺字段回落默认值 */
   static float fieldFloat(Block b, String name, float def) {
     try {
@@ -1201,13 +1270,19 @@ public class Main extends Mod {
       boolean isWall = b instanceof Wall;
       boolean isDoor = isExact(b, mindustry.world.blocks.defense.Door.class);
       boolean isShield = isExact(b, mindustry.world.blocks.defense.ShieldWall.class); // 新增
-      if (!isWall && !isDoor && !isShield) // 条件加一个
+      // 自动门（原版 AutoDoor / blast-door）也 extends Wall，原来会被当成普通墙替换 ——
+      // 自动开关的行为就没了。这里单独认出来，作为 LinkWall 的 autodoor 模式融入。
+      // 按**类名**判断：低版本/别的客户端 jar 没有 AutoDoor 这个类，直接引用会在加载时
+      // NoClassDefFoundError（所以不能用 instanceof）。
+      boolean isAutoDoor = isClassNamed(b, "mindustry.world.blocks.defense.AutoDoor");
+      if (!isWall && !isDoor && !isShield && !isAutoDoor) // 条件加一个
         continue;
       try {
         LinkWall lw = createCombo(b, LinkWall.class);
         copyFields(b, lw);
         lw.mode = isShield ? LinkWall.Mode.shield
-            : (isDoor ? LinkWall.Mode.door : LinkWall.Mode.wall); // 三模式
+            : (isAutoDoor ? LinkWall.Mode.autodoor
+                : (isDoor ? LinkWall.Mode.door : LinkWall.Mode.wall)); // 四模式
         lw.update = true;
         lw.init();
         lw.postInit();
