@@ -2040,27 +2040,58 @@ public class SuperTurret extends Block {
       sourcesConsumed = true;
       if (net.client())
         return;
-      for (String tok : sources.split(";")) {
-        if (tok == null || tok.isEmpty())
-          continue;
-        int comma = tok.indexOf(',');
-        if (comma < 0)
-          continue;
-        int x, y;
-        try {
-          x = Integer.parseInt(tok.substring(0, comma).trim());
-          y = Integer.parseInt(tok.substring(comma + 1).trim());
-        } catch (Throwable t) {
-          continue;
+      // 【每次合体只能吃一份炮台】用户报"多人游戏每个客户端都能各自合成一次"：
+      // 原料炮台只在**服务端**被消费，第二个客户端（本地世界还没收到拆除包，或者干脆是
+      // 复制粘贴出来的配置）再合成一次时，它这份 config 里的 sources 指向的炮台早就没了；
+      // 旧实现"没东西可拆"就照样放行，等于白送一台满格超级炮台。
+      //
+      // 现在逐格核对：第 i 格的原料炮台必须**真的还在**（同队 + 是同一种炮台），
+      // 拆掉它、保留这一格；否则（原料没了 / 类型不符 / 不是自己队的）这一格清空 ——
+      // 于是第二次合体只能得到一台"空壳"，同时顺带堵住"蓝图复制一台超级炮台白嫖"。
+      String[] cells = cellTokens(layout);
+      String[] srcs = sources.split(";");
+      boolean changed = false;
+      for (int i = 0; i < cells.length; i++) {
+        Block want = blockOfToken(cells[i]);
+        if (want == null)
+          continue; // 空格子
+        Tile t = i < srcs.length ? sourceTile(srcs[i]) : null;
+        if (t != null && t.build != null && t.build.team == team && !t.build.dead()
+            && t.block() instanceof Turret && cellBlock(t.block()) == want) {
+          try {
+            t.removeNet(); // 原版的"跨网络同步删格"
+            continue;
+          } catch (Throwable e) {
+            Log.err("[combine] 拆掉被框选的炮台失败（@,@）", t.x, t.y, e);
+          }
         }
-        Tile t = world.tile(x, y);
-        if (t == null || t.build == null || !(t.block() instanceof Turret))
-          continue;
-        try {
-          t.removeNet(); // 原版的"跨网络同步删格"
-        } catch (Throwable e) {
-          Log.err("[combine] 拆掉被框选的炮台失败（@,@）", x, y, e);
+        cells[i] = "";
+        changed = true;
+      }
+      if (changed) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < cells.length; i++) {
+          if (i > 0)
+            sb.append(';');
+          sb.append(cells[i]);
         }
+        Log.warn("[combine] 超级组合炮台：有一格的原料炮台已经不在（多半是重复合体/蓝图复制），该格已清空");
+        applyLayout(sb.toString());
+      }
+    }
+
+    /** "x,y" → 那一格；解析不出来返回 null。 */
+    static Tile sourceTile(String tok) {
+      if (tok == null || tok.isEmpty())
+        return null;
+      int comma = tok.indexOf(',');
+      if (comma < 0)
+        return null;
+      try {
+        return world.tile(Integer.parseInt(tok.substring(0, comma).trim()),
+            Integer.parseInt(tok.substring(comma + 1).trim()));
+      } catch (Throwable t) {
+        return null;
       }
     }
 

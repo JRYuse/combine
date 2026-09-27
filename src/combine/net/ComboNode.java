@@ -679,20 +679,22 @@ public class ComboNode extends Block {
 
         void displayInner(Table table) {
             super.display(table);
+            // 同 ComboConnector：长文字按固定宽度换行，免得把信息面板撑到屏幕宽。
+            final float W = ComboUi.COMPOSITION_WIDTH;
             int members = ComboNet.componentMembers(this).size;
             table.row();
-            table.add("[accent]组合节点[]").left();
+            table.add("[accent]组合节点[]").left().width(W).wrap();
             table.row();
-            table.add("连接数: " + links.size + "/" + maxNodes).color(Pal.accent).left();
+            table.add("连接数: " + links.size + "/" + maxNodes).color(Pal.accent).left().width(W).wrap();
             if(members > 0){
                 table.row();
-                table.add("覆盖组合建筑: " + members).color(Pal.accent).left();
+                table.add("覆盖组合建筑: " + members).color(Pal.accent).left().width(W).wrap();
             }
             table.row();
-            table.add("共享: " + ComboShare.describe(shareMask)).color(Pal.accent).left();
+            table.add("共享: " + ComboShare.describe(shareMask)).color(Pal.accent).left().width(W).wrap();
             table.row();
             table.add("网络热量: " + Strings.fixed(heat, 1) + "/" + Strings.fixed(heatCap, 1))
-                .color(Pal.lightOrange).left();
+                .color(Pal.lightOrange).left().width(W).wrap();
                 }
 
         /** 点开节点弹出来的配置面板：勾选共享哪些部分（点任意一个连接件都一样）。 */

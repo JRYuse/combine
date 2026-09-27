@@ -225,15 +225,19 @@ public class ComboConnector extends PowerBlock {
 
         void displayInner(Table table) {
             super.display(table);
+            // 长文字一律按固定宽度换行：不换行的话整张信息面板会被撑到屏幕宽，
+            // 里面的条 / 列表跟着一起横跨全屏（用户要求"ComboConnector 的 display 也自动换行"）。
+            final float W = ComboUi.COMPOSITION_WIDTH;
             table.row();
-            table.add("[accent]组合连接器[]").left();
+            table.add("[accent]组合连接器[]").left().width(W).wrap();
             table.row();
-            table.add("相邻组合体通过连续连接器共享: " + ComboShare.describe(shareMask)).color(Pal.accent).left();
+            table.add("相邻组合体通过连续连接器共享: " + ComboShare.describe(shareMask))
+                .color(Pal.accent).left().width(W).wrap();
 
             Seq<Building> members = ComboNet.componentMembers(this);
             if(!members.isEmpty()){
                 table.row();
-                table.add("[accent]连接组合 x" + members.size + "[]").left();
+                table.add("[accent]连接组合 x" + members.size + "[]").left().width(W).wrap();
 
                 Building itemPool = null, liquidPool = null;
                 for(Building m : members){
@@ -247,7 +251,7 @@ public class ComboConnector extends PowerBlock {
                         if(amount > 0){
                             final int a = amount;
                             table.row();
-                            table.add(item.localizedName + ": " + a).color(item.color).left();
+                            table.add(item.localizedName + ": " + a).color(item.color).left().width(W).wrap();
                         }
                     }
                 }
@@ -257,13 +261,13 @@ public class ComboConnector extends PowerBlock {
                         if(amount > 0.001f){
                             table.row();
                             table.add(liquid.localizedName + ": " + Strings.fixed(amount, 1))
-                                .color(liquid.color).left();
+                                .color(liquid.color).left().width(W).wrap();
                         }
                     }
                 }
             }else{
                 table.row();
-                table.add("未连接任何组合体").color(Pal.accent).left();
+                table.add("未连接任何组合体").color(Pal.accent).left().width(W).wrap();
             }
                 }
 

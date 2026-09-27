@@ -1,6 +1,7 @@
 package combine.saves;
 
 import arc.struct.ObjectMap;
+import arc.struct.ObjectSet;
 import arc.struct.Seq;
 import arc.util.Log;
 import arc.util.io.Reads;
@@ -152,6 +153,39 @@ public class ComboSaveState implements SaveFileReader.CustomChunk{
     if(!writingSave())
       return false;
     return trueLeader(self, group) != self;
+  }
+
+  // ==================== "每口池子只写一份" ====================
+  //
+  // 【用户报的"物品数量异常增长"的根因】以前按"本地组合体的组长"决定谁写真实模块，
+  // 而组合节点/连接器接起来的**整张网络**只有一口池子：网络里 M 个本地组的组长各自都把
+  // 同一份池子写了一遍 → 存档里有 M 份同样的库存。读档时每次 read 都新建一个模块对象，
+  // 于是这 M 份变成 M 个**不同的**模块，世界物品总量直接 ×M；再存一次又 ×M……
+  // （用户存档实测：一轮存读 14.7M → 32.6M → 69M，池子里出现 100 万 / 500 万这种数字。）
+  //
+  // 现在按"池子的身份"去重：同一份模块对象在一次存档里只有第一台写真实数据，
+  // 其余一律写空模块（读档时它们本来就会被并回那一份）。联机快照不走这条路（见 writingSave）。
+  private static final ObjectSet<mindustry.world.modules.ItemModule> seenItems = new ObjectSet<>();
+  private static final ObjectSet<mindustry.world.modules.LiquidModule> seenLiquids = new ObjectSet<>();
+
+  /** 这台建筑该不该把**物品池**写成真实数据（一次存档里同一份池子只有第一台写）。 */
+  public static boolean firstItemPool(Building self){
+    if(!writingSave()){
+      seenItems.clear();
+      seenLiquids.clear();
+      return true;
+    }
+    return self.items == null || seenItems.add(self.items);
+  }
+
+  /** 液体池版。 */
+  public static boolean firstLiquidPool(Building self){
+    if(!writingSave()){
+      seenItems.clear();
+      seenLiquids.clear();
+      return true;
+    }
+    return self.liquids == null || seenLiquids.add(self.liquids);
   }
 
   /** 现在是不是在写存档（而不是在写联机同步快照）。 */

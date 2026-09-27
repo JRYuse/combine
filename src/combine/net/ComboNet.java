@@ -278,7 +278,12 @@ public class ComboNet {
                 if(b == null || !b.isValid() || b.items == null || !seen.add(b.items)) continue;
                 Seq<Building> members = componentMembers(b);
                 int cap = Math.max(componentItemCap(members), 1);
-                long limit = Math.max((long)cap * 1000L, 10_000_000L);
+                // 【阈值】原来还有一条"至少 1000 万"的地板，于是小容量的大池子（例如一台
+                // 容量 950 的钻机池里塞着 128 万）就永远够不到阈值、每次读档都留着 ——
+                // 用户存档里正是这种（1488 倍容量）。现在改成纯倍率：超过该分量容量 100 倍
+                // 就是确凿的坏账（正常玩法里"拆掉大部分网络成员"最多也就组员数量级，很少上百），
+                // 夹回容量并逐条打日志。100000 的地板只是让容量很小的池子不被鸡毛蒜皮触发。
+                long limit = Math.max((long)cap * 100L, 100_000L);
                 for(Item item : content.items()){
                     int amt = b.items.get(item);
                     if(amt <= limit) continue;
@@ -815,21 +820,24 @@ public class ComboNet {
         Seq<Building> members = componentMembers(self);
         if(members.size <= localCount) return;
 
-        table.add("[accent]网络组合 x" + members.size + "[] " + self.block.localizedName).left();
+        // 【宽度必须封顶】这些内容挂在原版信息面板里（`display()`），面板宽度是**按内容撑**的：
+        // 只要有一行不换行的长文字（成员构成、方块名），整张表就被撑到屏幕那么宽，
+        // 里面 `growX` 的物品/液体条跟着变成"横跨全屏"的长条（用户报的
+        // "容器的物品 bar 长度没有限制、组合体成员显示没有换行"）。统一按
+        // ComboUi.COMPOSITION_WIDTH 换行 + 给条固定宽度。
+        final float W = combine.util.ComboUi.COMPOSITION_WIDTH;
+        table.add("[accent]网络组合 x" + members.size + "[] " + self.block.localizedName).left().width(W).wrap();
 
         Building itemPool = null, liquidPool = null;
-        int totalItemCap = 0;
-        float totalLiquidCap = 0f;
         for(Building m : members){
             if(!m.isValid()) continue;
-            totalItemCap += ComboReflect.baseItemCap(m);
-            totalLiquidCap += ComboReflect.baseLiquidCap(m);
             if(m.items != null && (itemPool == null || m.pos() < itemPool.pos())) itemPool = m;
             if(m.liquids != null && (liquidPool == null || m.pos() < liquidPool.pos())) liquidPool = m;
         }
         final Building fi = itemPool, fl = liquidPool;
-        final int icap = Math.max(totalItemCap, 1);
-        final float lcap = Math.max(totalLiquidCap, 1f);
+        // 分母和悬浮面板同源（含核心 storageCapacity 那部分扩容），别一边算网络合计、一边只算核心自己
+        final int icap = panelItemCap(self);
+        final float lcap = panelLiquidCap(self);
 
         if(fi != null && fi.items != null){
             for(Item item : content.items()){
@@ -838,7 +846,7 @@ public class ComboNet {
                 table.add(new Bar(
                     () -> poolItemText(fi, icap, item),
                     () -> item.color,
-                    () -> fi.items == null ? 0f : (float)fi.items.get(item) / icap)).growX().height(18f).pad(4).left();
+                    () -> fi.items == null ? 0f : (float)fi.items.get(item) / icap)).width(W).height(18f).pad(4).left();
             }
         }
 
@@ -849,7 +857,7 @@ public class ComboNet {
                 table.add(new Bar(
                     () -> poolLiquidText(fl, lcap, liquid),
                     () -> liquid.barColor != null ? liquid.barColor : liquid.color,
-                    () -> fl.liquids == null ? 0f : fl.liquids.get(liquid) / lcap)).growX().height(18f).pad(4).left();
+                    () -> fl.liquids == null ? 0f : fl.liquids.get(liquid) / lcap)).width(W).height(18f).pad(4).left();
             }
         }
 
@@ -861,7 +869,7 @@ public class ComboNet {
             comp.append(b.localizedName).append("*").append(counts.get(b, 0));
         }
         table.row();
-        table.add("[lightgray]构成: " + comp + "[]").left();
+        table.add("[lightgray]构成: " + comp + "[]").left().width(W).wrap();
     }
 
     /** 临时排查用：打印各阶段耗时（默认关）。 */
@@ -1220,6 +1228,11 @@ public class ComboNet {
                     if(m.items == old) m.items = shares[k];
                 }
             }
+            // 【必须把原池清空】上面只给"这次算进分量里的成员"换了新池；万一有持有者
+            // 这一轮没被分到任何分量（读档早期分组还没稳定时会发生），它手里还是原池(old)，
+            // 里面照样是整份库存 —— 下一次合并一算，新池们 + 原池 = 翻倍。
+            // 份额之和本来就等于原总量，所以原池清空不会丢东西。
+            old.clear();
             freshSplitItems.remove(old);
         }
     }
@@ -1302,6 +1315,8 @@ public class ComboNet {
                     if(m.liquids == old) m.liquids = shares[k];
                 }
             }
+            // 同物品：原池必须清空，否则"没被分到分量的持有者"手里那份会让总量翻倍。
+            old.clear();
             freshSplitLiquids.remove(old);
         }
     }
@@ -1461,7 +1476,25 @@ public class ComboNet {
             if(m.items != null && !mods.contains(m.items, true)) mods.add(m.items);
         }
         if(mods.size <= 1) return mods.isEmpty() ? null : mods.first();
-        return loadPhase ? mergeDistinctItems(members, mods) : moduleOfFirst(members, mods);
+        // 读档窗口里：同一分量的多份池子一律当"同一口池子的副本/历史代"处理，逐物品取**较大值**。
+        // 以前用"内容完全相同才算副本、不同就相加"—— 用户存档里同一条网络留着好几代被乘过的池子
+        // （1×/3×/9×…），一相加就再翻一倍（实测一轮存读 14.7M → 32.6M → 69M，用户报的"物品异常增长"）。
+        // 取较大值不会把池子乘出来，也不会因为"有空模块"把库存抹成 0。
+        return loadPhase ? mergeCopiesMax(members, mods) : moduleOfFirst(members, mods);
+    }
+
+    /** 读档：把同一分量的多份物品池按"逐物品取较大值"并成一份（不叠加）。 */
+    private static ItemModule mergeCopiesMax(Seq<Building> members, Seq<ItemModule> mods){
+        ItemModule dst = moduleOfFirst(members, mods);
+        if(dst == null) return null;
+        for(ItemModule mod : mods){
+            if(mod == dst) continue;
+            for(Item item : content.items()){
+                if(mod.get(item) > dst.get(item)) dst.set(item, mod.get(item));
+            }
+            freshSplitItems.remove(mod);
+        }
+        return dst;
     }
 
     private static LiquidModule pickLiquidModule(Seq<Building> members, boolean loadPhase){
@@ -1470,7 +1503,21 @@ public class ComboNet {
             if(m.liquids != null && !mods.contains(m.liquids, true)) mods.add(m.liquids);
         }
         if(mods.size <= 1) return mods.isEmpty() ? null : mods.first();
-        return loadPhase ? mergeDistinctLiquids(members, mods) : moduleOfFirstLiquid(members, mods);
+        return loadPhase ? mergeCopiesMaxLiquid(members, mods) : moduleOfFirstLiquid(members, mods);
+    }
+
+    /** 读档：液体池版（逐液体取较大值）。 */
+    private static LiquidModule mergeCopiesMaxLiquid(Seq<Building> members, Seq<LiquidModule> mods){
+        LiquidModule dst = moduleOfFirstLiquid(members, mods);
+        if(dst == null) return null;
+        for(LiquidModule mod : mods){
+            if(mod == dst) continue;
+            for(Liquid liquid : content.liquids()){
+                if(mod.get(liquid) > dst.get(liquid)) dst.set(liquid, mod.get(liquid));
+            }
+            freshSplitLiquids.remove(mod);
+        }
+        return dst;
     }
 
     /** 这台机器是不是"已经并进核心"的组合仓库（它的模块就是核心库存）。 */
@@ -1645,6 +1692,18 @@ public class ComboNet {
         // 不在任何组合网络里（分量只有自己）时用这台方块自己的基础容量：
         // 否则核心这类方块会算出 1，面板/审计就会把"核心里 12000 物品"误判成坏账
         if(cap <= 0) cap = ComboReflect.baseItemCap(self);
+        // 【核心扩容那部分不能漏】核心真正的每种物品上限写在 CoreBuild.storageCapacity 里
+        // （原版按"核心 + 相邻仓库"算，本模组的组合仓库/节点并仓还会继续往上加），
+        // 而 componentItemCap 只会把 core.block.itemCapacity 加一遍 —— 于是核心（以及并进核心的
+        // 那些仓库）的悬浮面板只显示"核心自己那点容量"，容器/别的核心扩出来的部分全丢了
+        // （用户报的："核心的悬浮面板物品最大容量只显示该核心的物品容量"）。
+        try{
+            for(Building m : itemScope(self)){
+                if(m instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild core && core.isValid())
+                    cap = Math.max(cap, core.storageCapacity);
+            }
+        }catch(Throwable ignored){
+        }
         return Math.max(cap, 1);
     }
 

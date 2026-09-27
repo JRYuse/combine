@@ -1094,6 +1094,35 @@ public class SuperTurretTest implements arc.ApplicationListener {
             + "（方块静态血量=" + stSide.health + "） 快照字节=" + snap.length);
         check("客户端 readSync 后血量还是整组累加（" + client.health + " ≈ " + expectedHp + "）",
             Math.abs(client.health - expectedHp) < 0.5f);
+
+        // (c) 联机安全：同一批炮台只能被"吃"一次 —— 第二个客户端拿着同样的 sources 再合一次，
+        //     只能得到一台空壳（用户报的"多人游戏每个客户端都能各自合成一次"）。
+        int fx = lx + 40, fy = ly + 24;
+        Building t1 = place(duo, fx, fy, Team.sharded);
+        Building t2 = place(duo, fx + 4, fy, Team.sharded);
+        run(10);
+        String cellsLayout = layout(cellBlock(duo), cellBlock(duo));
+        String srcList = t1.tileX() + "," + t1.tileY() + ";" + t2.tileX() + "," + t2.tileY();
+        String srcCfg = (String) callStatic(clsST, "encodeConfig",
+            new Class<?>[] { String.class, String.class }, cellsLayout, srcList);
+        Block stSide2 = blockForSide(2);
+        Building first = place(stSide2, fx + 12, fy + 8, Team.sharded);
+        first.configured(null, srcCfg);
+        run(5);
+        int firstCells = loadedCells(first);
+        boolean consumed = Vars.world.build(t1.tileX(), t1.tileY()) == null
+            && Vars.world.build(t2.tileX(), t2.tileY()) == null;
+        System.out.println("[ST] 合体原料消费: 第一次合体格数=" + firstCells + " 原料被拆=" + consumed);
+        check("第一次合体：两格都在 + 原料炮台被拆掉（" + firstCells + " 格，原料拆=" + consumed + "）",
+            firstCells == 2 && consumed);
+
+        // 第二次（模拟另一个客户端/蓝图复制）：原料早没了 → 必须一格都不给
+        Building second = place(stSide2, fx + 12, fy + 16, Team.sharded);
+        second.configured(null, srcCfg);
+        run(5);
+        int secondCells = loadedCells(second);
+        System.out.println("[ST] 第二次合体（原料已被吃掉）：格数=" + secondCells + "（期望 0）");
+        check("第二次合体拿不到免费炮台（" + secondCells + " 格）", secondCells == 0);
       }
 
       System.out.println("[ST] 结果: PASS=" + pass + " FAIL=" + fail);

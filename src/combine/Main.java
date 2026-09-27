@@ -148,6 +148,15 @@ public class Main extends Mod {
 
     // 读档窗口：WorldLoadBegin → 读档语义合并（去重）；结束前不做运行期相加
     Events.on(mindustry.game.EventType.WorldLoadBeginEvent.class, e -> ComboNet.beginWorldLoad());
+    // 【读**存档**只会发 SaveLoadEvent，不会发 WorldLoadBegin/WorldLoad】那两条是"读地图"才发的。
+    // 读存档（战役区块 / 存档槽）走 SaveIO.load → SaveLoadEvent，于是"读档去重窗口"以前从来没开过：
+    // 每台建筑手里那份"同一口池子的副本"被按运行期语义相加，一轮存读物品就翻好几倍
+    // （用户报的"物品数量异常增长"，实测 14.7M → 32.6M → 69M）。
+    // 这里在读档末尾把窗口打开 + 立刻按去重语义合并一次（之后头几帧也按去重算）。
+    Events.on(SaveLoadEvent.class, e -> {
+      ComboNet.beginWorldLoad();
+      ComboNet.rebuildLoading();
+    });
     Events.on(WorldLoadEvent.class, e -> {
       // 联机入服时 rules 是刚按名字反查出来的（researched/bannedBlocks 可能装着被替换掉的原版实例），
       // 必须在任何 UI/建造校验读到它之前纠正，否则客户端建造菜单里组合建筑会全部消失。
