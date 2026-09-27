@@ -367,48 +367,32 @@ public class ComboNet {
         ObjectSet<Building> visited = new ObjectSet<>();     // 已入队的连接器/节点
         ObjectSet<Building> visitedGroups = new ObjectSet<>();// 已收集的组合体(以 leader 计)
         Queue<Building> queue = new Queue<>();
+        Queue<Building> groupQueue = new Queue<>();
 
         if(isLinker(key)){
             enqueueVertex(key, visited, queue);
         }else if(ComboReflect.isComboBuild(key)){
-            collectGroup(key, out, visitedGroups, visited, queue);
+            collectGroup(key, out, visitedGroups, visited, queue, groupQueue);
         }
 
-        while(!queue.isEmpty()){
+        while(!queue.isEmpty() || !groupQueue.isEmpty()){
+            while(!groupQueue.isEmpty()){
+                collectGroup(groupQueue.removeFirst(), out, visitedGroups, visited, queue, groupQueue);
+            }
+            if(queue.isEmpty()) continue;
             Building v = queue.removeFirst();
             if(v instanceof ComboConnector.ComboConnectorBuild c){
-                for(Building nb : c.proximity){
-                    if(nb == null || !nb.isValid()) continue;
-                    if(isLinker(nb)){
-                        enqueueVertex(nb, visited, queue);
-                    }else if(ComboReflect.isComboBuild(nb)){
-                        collectGroup(nb, out, visitedGroups, visited, queue);
-                    }
-                }
+                for(Building nb : c.proximity) collectNeighbor(nb, out, visitedGroups, visited, queue, groupQueue);
             }else if(v instanceof ComboNode.ComboNodeBuild n){
-                for(int i = 0; i < n.links.size; i++){
-                    Building link = world.build(n.links.get(i));
-                    if(link == null || !link.isValid()) continue;
-                    if(isLinker(link)){
-                        enqueueVertex(link, visited, queue);
-                    }else if(ComboReflect.isComboBuild(link)){
-                        collectGroup(link, out, visitedGroups, visited, queue);
-                    }
-                }
+                for(int i = 0; i < n.links.size; i++)
+                    collectNeighbor(world.build(n.links.get(i)), out, visitedGroups, visited, queue, groupQueue);
                 // 【贴着也算连上】用户报："用组合节点连接 afflict 和 slag-heater，虽然可以传热，
                 // 但是这两个显示没有组合在一起、afflict 面板热量是 0" —— 根因就是这里：
                 // 热量那条路（collectLinkedHeatBuildings）本来就认"贴着节点的建筑"，于是热传过去了；
                 // 可组合网络这条只认 links，贴着的组合体不算成员 → 面板不成组、也读不到产热方。
                 // 现在和连接器/节点贴节点统一：节点**贴着**的组合体（含它所在的本地组合体）也算连上。
                 if(n.proximity != null)
-                    for(Building nb : n.proximity){
-                        if(nb == null || !nb.isValid()) continue;
-                        if(nb instanceof ComboNode.ComboNodeBuild){
-                            enqueueVertex(nb, visited, queue);
-                        }else if(ComboReflect.isComboBuild(nb)){
-                            collectGroup(nb, out, visitedGroups, visited, queue);
-                        }
-                    }
+                    for(Building nb : n.proximity) collectNeighbor(nb, out, visitedGroups, visited, queue, groupQueue);
             }
         }
 
@@ -628,21 +612,40 @@ public class ComboNet {
     }
 
     /**
-     * 把一个组合体整组收进来，并把这个组相邻的连接器/节点也排进 BFS
-     * （原图里组合体 leader 也是顶点，和相邻连接器有双向边，这里等价展开）。
+     * 局部 BFS 里"碰到一个邻居"的统一处理：是连接件就继续走，
+     * 是组合体就把它的整组收进来（并顺着"相邻跨类型"那条边继续扩，见 {@link #collectGroup}）。
      */
+    private static void collectNeighbor(Building nb, Seq<Building> out, ObjectSet<Building> visitedGroups,
+                                        ObjectSet<Building> visited, Queue<Building> queue, Queue<Building> groupQueue){
+        if(nb == null || !nb.isValid()) return;
+        if(isLinker(nb)){
+            enqueueVertex(nb, visited, queue);
+        }else if(ComboReflect.isComboBuild(nb)){
+            collectGroup(nb, out, visitedGroups, visited, queue, groupQueue);
+        }
+    }
+
     private static void collectGroup(Building member, Seq<Building> out, ObjectSet<Building> visitedGroups,
-                                     ObjectSet<Building> visited, Queue<Building> queue){
+                                     ObjectSet<Building> visited, Queue<Building> queue, Queue<Building> groupQueue){
         Building leader = ComboReflect.leader(member);
         if(leader == null) leader = member;
         if(!visitedGroups.add(leader)) return;
+        boolean cross = crossTypeCombinable(leader);
         for(Building m : ComboReflect.group(leader)){
             if(m == null || !m.isValid()) continue;
             if(!ComboUtilTeamOk(m)) continue; // 只和玩家队友组合
             out.addUnique(m);
             for(Building nb : m.proximity){
                 if(nb == null || !nb.isValid()) continue;
-                if(isLinker(nb)) enqueueVertex(nb, visited, queue);
+                if(isLinker(nb)){
+                    enqueueVertex(nb, visited, queue);
+                }else if(cross && ComboReflect.isComboBuild(nb) && crossTypeCombinable(nb)){
+                    // 相邻的两台不同类机器（两边都允许跨类型组合）= 一台整机：权威图
+                    // （rebuildInner 里 crossTypeCombinable 那条边）也是这么连的，
+                    // 这里不跟上的话，"节点/连接器面板少算几台、池子其实已经并了"就又会不一致。
+                    Building other = ComboNode.groupRep(nb);
+                    if(other == null || other == leader || !visitedGroups.contains(other)) groupQueue.addLast(nb);
+                }
             }
         }
     }
@@ -966,35 +969,17 @@ public class ComboNet {
             for(Building v : vertices){
                 if(v instanceof ComboConnector.ComboConnectorBuild c){
                     for(Building nb : c.proximity){
-                        if(nb == null || !nb.isValid()) continue;
-                        if(nb instanceof ComboConnector.ComboConnectorBuild
-                            && vertexSet.contains(nb)){
-                            addEdge(edges, c, nb);
-                        }else if(ComboReflect.isComboBuild(nb)){
-                            Building l = ComboNode.groupRep(nb);
-                            if(l != null && vertexSet.contains(l)) addEdge(edges, c, l);
-                        }
+                        connectVertex(edges, vertexSet, c, nb);
                     }
                 }else if(v instanceof ComboNode.ComboNodeBuild n){
                     for(int i = 0; i < n.links.size; i++){
-                        Building link = world.build(n.links.get(i));
-                        if(link == null || !link.isValid() || !ComboReflect.isComboBuild(link)) continue;
-                        Building l = ComboNode.groupRep(link);
-                        if(l != null && vertexSet.contains(l)) addEdge(edges, n, l);
+                        connectVertex(edges, vertexSet, n, world.build(n.links.get(i)));
                     }
                     // 【贴着也算连上】节点紧挨着另一个节点 / 贴着一片组合体时，和 componentMembers
                     // 保持一致：并池/热量/面板都按同一张网络算（用户把节点摆在两台之间不点连线时
                     // 就是这么用的）。
                     if(n.proximity != null)
-                        for(Building nb : n.proximity){
-                            if(nb == null || !nb.isValid()) continue;
-                            if(nb instanceof ComboNode.ComboNodeBuild && vertexSet.contains(nb)){
-                                addEdge(edges, n, nb);
-                            }else if(ComboReflect.isComboBuild(nb)){
-                                Building l = ComboNode.groupRep(nb);
-                                if(l != null && vertexSet.contains(l)) addEdge(edges, n, l);
-                            }
-                        }
+                        for(Building nb : n.proximity) connectVertex(edges, vertexSet, n, nb);
                 }
             }
 
@@ -1163,6 +1148,30 @@ public class ComboNet {
         if(ea != null) ea.addUnique(b);
         Seq<Building> eb = edges.get(b);
         if(eb != null) eb.addUnique(a);
+    }
+
+    /**
+     * 把一个连接件（节点/连接器）和它够到的东西连一条边。
+     *
+     * <p>【根因·用户报"和窑炉直接用了 9 个组合节点连接的挖铅钻头没有和窑炉组合"】
+     * 这里以前只认 {@code ComboReflect.isComboBuild(nb)}，而组合节点/连接器本身**不是**组合建筑
+     * （{@code isComboBuild} 走 comboGroup/comboLeader 字段与 CoopCombo 白名单，节点都没有），
+     * 于是"节点连节点"的那一跳在**并池用的权威图**里被整条跳过：链子上的节点各自成孤点，
+     * 只有链子两端够到的组合体各自成组 —— 表现就是"中间摆一串节点、两台不同类的机器还是没组合"
+     *（同类机器因为本地分组也会穿节点链，反而看着是好的，所以只在跨类型时暴露）。
+     * 显示面板走的是 componentMembers 的局部 BFS，那条路本来就认 links 里的节点，
+     * 于是出现"面板说连上了、池子没共享"的诡异情况。现在两边一致。
+     */
+    private static void connectVertex(ObjectMap<Building, Seq<Building>> edges, ObjectSet<Building> vertexSet,
+                                      Building from, Building nb){
+        if(from == null || nb == null || !nb.isValid()) return;
+        if(isLinker(nb)){
+            if(vertexSet.contains(nb)) addEdge(edges, from, nb);
+            return;
+        }
+        if(!ComboReflect.isComboBuild(nb)) return;
+        Building l = ComboNode.groupRep(nb);
+        if(l != null && vertexSet.contains(l)) addEdge(edges, from, l);
     }
 
     /**
