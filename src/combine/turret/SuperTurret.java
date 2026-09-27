@@ -114,7 +114,11 @@ public class SuperTurret extends Block {
     configurable = true; // 点方块可以给每一格选弹药（选完的弹药整组共享池里只喂这一种）
     hasItems = true;
     hasLiquids = true;
-    canOverdrive = false;
+    // 【能被 OverdriveProjector 加速】原版 OverdriveProjector 用 indexer.eachBlock 只挑
+    // canOverdrive=true 的建筑，这里以前写死 false → 合体炮台完全不吃超频（用户报的）。
+    // 打开后自身的 timeScale 会被超频器抬高；里面那些假格子（不在 indexer 里）由
+    // updateTile 逐帧把 timeScale 同步过去，见下面的 c.timeScale = timeScale。
+    canOverdrive = true;
     rotate = false;
     drawArrow = false;
     itemCapacity = side * side * 30;
@@ -1654,6 +1658,34 @@ public class SuperTurret extends Block {
           c.liquids = liquids;
         if (c.power != null && power != null)
           c.power.status = power.status;
+        // 【超频传递给每一格】格子是挂在假 Tile 上的假建筑，不在 Groups.build / indexer 里，
+        // OverdriveProjector 只会 boost 本体这一台。本体被加速后，把 timeScale 同步给每一格
+        // （格子 c.update() 读的是自己的 delta()=Time.delta*timeScale），超频才真正作用到开火上。
+        float myTs = timeScale();
+        float myDur = timeScaleDuration;
+        // 两个都同步：Building.update() 会按 timeScaleDuration 衰减，只设 timeScale 的话
+        // 下一帧就被格子的 update() 复位回 1（实测格子一直是 1.0）。
+        combine.util.ComboReflect.setFloat(c, "timeScale", myTs);
+        combine.util.ComboReflect.setFloat(c, "timeScaleDuration", myDur);
+        // 【缩放后 shootX/shootY 也要缩放】格子的开火位置 = 本格中心 + trns(rotation-90, shootX, shootY)，
+        // 而 shootX/shootY 是**方块**字段（格子用的是原版方块实例）。被缩小的大炮台
+        // （cellScale < 1，例如 3x3 炮台塞进 1 格）以前炮口偏移没缩，子弹从缩放后贴图外面飞出来
+        // （用户报的"合体炮台缩小后 shootX/shootY 没有缩放"）。
+        // 单线程逐格更新：临时把这一格方块的口径偏移按比例缩小，c.update() 里生成子弹用到的就是缩放值，
+        // 更新完立刻还原 —— 不残留、也不影响世界里同型号的普通炮台。
+        Block cb2 = c.block;
+        Turret cellTurret = cb2 instanceof Turret t2 ? t2 : null;
+        float ck = cellScale(cb2);
+        boolean scaleShoot = cellTurret != null && ck != 1f
+            && Float.isFinite(cellTurret.shootX) && Float.isFinite(cellTurret.shootY)
+            && (cellTurret.shootX != 0f || cellTurret.shootY != 0f);
+        float oldShootX = 0f, oldShootY = 0f;
+        if (scaleShoot) {
+          oldShootX = cellTurret.shootX;
+          oldShootY = cellTurret.shootY;
+          cellTurret.shootX = oldShootX * ck;
+          cellTurret.shootY = oldShootY * ck;
+        }
         try {
           c.update();
           // 【热量直灌】需热格子（劫难等 heatRequirement>0）打完原版更新后，把分到这一格的
@@ -1668,6 +1700,11 @@ public class SuperTurret extends Block {
             Log.err("[combine] 超级组合炮台第 @ 格（@）更新出错，已停用这一格", i,
                 cellBlocks[i] == null ? "?" : cellBlocks[i].name, t);
           cells[i] = null;
+        } finally {
+          if (scaleShoot) {
+            cellTurret.shootX = oldShootX;
+            cellTurret.shootY = oldShootY;
+          }
         }
       }
     }

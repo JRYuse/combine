@@ -29,7 +29,7 @@ public final class ComboInputButton {
   /**
    * 往放置 UI 里插按钮。
    *
-   * @param index 插到第几个格子（0 = 最左）。手机版用 3（"复制/旋转"切换键的右边），
+   * @param index 插到**这一行按钮里**的第几个（0 = 最左）。手机版用 3（"复制/旋转"切换键的右边），
    *              桌面版用 1（蓝图/粘贴键的右边）。
    */
   static void add(Table table, int index) {
@@ -48,14 +48,16 @@ public final class ComboInputButton {
       cell.update(i -> i.setChecked(SuperTurretPlacer.selecting()));
       cell.size(48f).tooltip("超级组合炮台：点一下框选炮台合体（再点一下取消；默认快捷键 G）");
 
-      // 默认加在最后（= 最右）；挪到指定位置。注意别插到下标 0：Table 的 rows 缓存以第一个格子为准。
-      Seq<Cell> cells = table.getCells();
-      cells.remove(cell, true);
-      int at = Math.max(1, Math.min(index, cells.size));
-      cells.insert(at, cell);
+      // 直接 append（正常 Table API）：布局一定对、按钮一定点得到。
+      // 之前试过把格子挪到"复制键右边"（改 cells 顺序 + 反射改 Cell.row/column），
+      // 但原版 inputTable 的行结构/计数器不稳定，挪完按钮被 Table.layout() 排成 3x3 像素
+      // （用户报的"合体炮台按钮没显示"）。位置让位给"能显示能点"——按钮就放在这一行最右。
       table.invalidate();
     } catch (Throwable t) {
       Log.err("[combine] 放置 UI 里挂「框选合体」按钮失败（还能用快捷键/HUD 按钮）", t);
     }
   }
+
+  // Cell 的 row/column/cellAboveIndex 是包级私有；直接改 cells 顺序会让 Table.layout()
+  // 算歪（实测按钮被排成 3x3 像素 = 用户报的"按钮没显示"）。所以这里只走正常 append。
 }

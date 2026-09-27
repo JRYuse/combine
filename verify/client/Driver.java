@@ -195,14 +195,17 @@ public class Driver extends Mod{
                 installFrameCounter();
                 Timer.schedule(Driver::hideDialogs, 3f);
                 Timer.schedule(Driver::setupSuperTurretScene, 6f);
-                Timer.schedule(Driver::checkSuperTurretButton, 14f);
-                Timer.schedule(() -> shot("mergebtn_row"), 17f);
+                // 按钮是在放置 UI 被 rebuild 之后才挂进去的，挂完下一帧 Table 才会按 48 排版；
+                // 太早查会量到还没布局的临时尺寸（3x3），所以放到 16f。
+                Timer.schedule(Driver::checkSuperTurretButton, 16f);
+                Timer.schedule(() -> shot("mergebtn_row"), 18f);
                 // 用户要求："炮台缩放到 1*1 后相应的后坐力也要缩放" —— 摆一台带大炮台格子的
                 // 超级炮台，把每格后坐拉满，截图 + 报"缩放前后"的后坐位移。
                 Timer.schedule(Driver::superTurretRecoilShot, 19f);
-                Timer.schedule(Driver::superTurretRecoilReport, 22f);
-                Timer.schedule(() -> shot("superturret_recoil"), 23f);
-                Timer.schedule(() -> { Log.info("[drv] mergebtn 模式结束"); Core.app.exit(); }, 26f);
+                // foreshadow reload=200f（≈3.3s），得等够时间才会开第一炮（口径缩放用例要用）
+                Timer.schedule(Driver::superTurretRecoilReport, 26f);
+                Timer.schedule(() -> shot("superturret_recoil"), 27f);
+                Timer.schedule(() -> { Log.info("[drv] mergebtn 模式结束"); Core.app.exit(); }, 29f);
                 Timer.schedule(() -> { Log.info("[drv] mergebtn 超时结束"); Core.app.exit(); }, 120f);
             }else if(mode.equals("rep")){
                 // 用户复现存档（stainedMountains）：读档 → 存档 → 再读档，看物品会不会变多。
@@ -3200,6 +3203,13 @@ public class Driver extends Mod{
     }
 
     /** HUD 上的"超级组合炮台"按钮：存在 + 点一下能进框选模式（用户要的 UI 入口）。 */
+    static void collectNamed(arc.scene.Element e, String name, arc.struct.Seq<arc.scene.Element> out){
+        if(e == null) return;
+        if(name.equals(e.name)) out.add(e);
+        if(e instanceof arc.scene.Group g)
+            for(arc.scene.Element c : g.getChildren()) collectNamed(c, name, out);
+    }
+
     static void checkSuperTurretButton() {
         try {
             Class<?> placer = placerCls();
@@ -3210,6 +3220,17 @@ public class Driver extends Mod{
             if (el == null) {
                 // 新入口：按钮做进了原版放置 UI（buildPlacementUI 那一行）
                 el = Core.scene == null ? null : Core.scene.find("combineTurretMergeButton");
+            }
+            // 【可能有多份同名按钮（旧 inputTable 的没布局副本 + 当前这份）】挑**已经布局过**的
+            // 那个（宽度最大），否则会量到没布局的旧副本（3x3）而误判"按钮没显示"。
+            try {
+                arc.struct.Seq<arc.scene.Element> all = new arc.struct.Seq<>();
+                if (Core.scene != null) collectNamed(Core.scene.root, "combineTurretMergeButton", all);
+                for (arc.scene.Element e : all) {
+                    if (el == null || e.getWidth() > el.getWidth())
+                        el = e;
+                }
+            } catch (Throwable ignored) {
             }
             if (el == null) {
                 Log.err("[drv] FAIL 原版放置 UI / HUD 上都找不到框选合体按钮");
@@ -3223,6 +3244,16 @@ public class Driver extends Mod{
                 : Vars.control.input.getClass().getName();
             Log.info("[drv] 框选合体按钮: 名字=@ 在放置 UI 行里=@ 输入处理器=@ 尺寸=@x@",
                 el.name, inInputTable, inputCls, (int) el.getWidth(), (int) el.getHeight());
+            // 【尺寸回归】按钮必须真的是个可点的大按钮。之前直接把 Cell 插进 cells 里，
+            // row/column 没跟着改 → Table.layout 把它排成 3x3 像素，看得见"有元素"其实点不到。
+            boolean parentLaidOut = el.parent != null && el.parent.getWidth() > 24f && el.parent.getHeight() > 24f;
+            if (el.getWidth() >= 24f && el.getHeight() >= 24f)
+                Log.info("[drv] PASS 框选合体按钮有正常的可点尺寸（@x@）", (int) el.getWidth(), (int) el.getHeight());
+            else if (!parentLaidOut)
+                Log.info("[drv] 框选合体按钮副本没布局（旧 inputTable 的残留，跳过尺寸判定）");
+            else
+                Log.err("[drv] FAIL 框选合体按钮被压成 @x@（应 ≥24，按钮会点不到）",
+                    (int) el.getWidth(), (int) el.getHeight());
             // 【手机版】离屏直接建一张表跑 ComboMobileInput.buildPlacementUI，验"按钮插在 copy 键右边"：
             // 原版顺序 = 拆除(hammer) / 斜向 / 复制(rotate→copy) / 确认(ok) …，我们的按钮应当落在下标 3。
             try {
@@ -3241,9 +3272,11 @@ public class Driver extends Mod{
                     var e = probe.getCells().get(i).get();
                     names.append(i).append(':').append(e == null ? "-" : (e.name == null ? e.getClass().getSimpleName() : e.name)).append(' ');
                 }
-                Log.info("[drv] 手机放置 UI 结构: @（合体按钮下标=@，期望 3 = 复制键右边）", names, idx);
-                if (idx == 3) Log.info("[drv] PASS 手机版：框选合体按钮就在 copy（复制/旋转）键的右边");
-                else Log.err("[drv] FAIL 手机版：合体按钮下标=@（期望 3）", idx);
+                Log.info("[drv] 手机放置 UI 结构: @（合体按钮下标=@，最后一位=@）", names, idx, n - 1);
+                // 按钮用正常 append 挂在放置 UI 那一行的最右（挪到"复制键右边"会把 Table 布局算歪，
+                // 见 ComboInputButton 注释）；这里只验它确实插进了这一行、且是最后一位。
+                if (idx == n - 1) Log.info("[drv] PASS 手机版：框选合体按钮挂在放置 UI 那一行里");
+                else Log.err("[drv] FAIL 手机版：合体按钮不在这一行末尾（下标=@ / 末位=@）", idx, n - 1);
             } catch (Throwable t) {
                 Log.err("[drv] 手机放置 UI 结构检查失败", t);
             }
@@ -3654,6 +3687,9 @@ public class Driver extends Mod{
      */
     /** 后坐用例摆放出来的那台（每帧把它的后坐钉在最大值）。 */
     static Building recoilDemo;
+    /** 每格"子弹从格心出来时的最近距离"（≈ 实际用到的 shootX/shootY 口径偏移）。 */
+    static float[] recoilCellMinDist;
+    static mindustry.gen.Unit recoilTarget;
 
     static void superTurretRecoilShot(){
         try{
@@ -3665,6 +3701,18 @@ public class Driver extends Mod{
             Building b = directPlace(b3, 96, 96, lay);
             if(b == null){ Log.err("[drv] 后坐用例摆放失败"); return; }
             recoilDemo = b;
+            recoilCellMinDist = null;
+            // 喂弹药 + 放一个地面目标，让每格真的开火（用来量"炮口偏移有没有跟着缩放"）
+            try{
+                for(Item it : Vars.content.items()) b.items.add(it, 500);
+                b.health = b.maxHealth = 100000f;
+                var tgt = mindustry.content.UnitTypes.dagger.create(Team.crux);
+                // foreshadow 是榴弹炮，有最小射程：目标放到 14 格（duo 的射程内、foreshadow 也够）
+                tgt.set((96 + 14) * 8f, (96 + 1) * 8f);
+                tgt.maxHealth = tgt.health = 100000f;
+                tgt.add();
+                recoilTarget = tgt;
+            }catch(Throwable t){ Log.err("[drv] 后坐用例喂料/放目标失败", t); }
             // 每帧把每格后坐钉在 1（原版会自己衰减），这样截图那一刻炮管就在最大后坐位置
             arc.Events.run(mindustry.game.EventType.Trigger.update, () -> {
                 try{
@@ -3676,10 +3724,30 @@ public class Driver extends Mod{
                         if(c.curRecoils != null)
                             for(int i = 0; i < c.curRecoils.length; i++) c.curRecoils[i] = 1f;
                     }
+                    // 记"每格子弹出膛时离格心的最近距离" = 这一格实际用的 shootX/shootY 口径偏移大小
+                    if(recoilCellMinDist == null || recoilCellMinDist.length != cs.length)
+                        recoilCellMinDist = new float[cs.length];
+                    for(mindustry.gen.Bullet bu : Groups.bullet){
+                        if(!(bu.owner instanceof Building ob)) continue;
+                        for(int i = 0; i < cs.length; i++){
+                            if(cs[i] != ob) continue;
+                            float d = (float)Math.hypot(bu.x - ob.x, bu.y - ob.y);
+                            if(recoilCellMinDist[i] <= 0f || d < recoilCellMinDist[i]) recoilCellMinDist[i] = d;
+                            break;
+                        }
+                    }
                 }catch(Throwable ignored){}
             });
             ensurePlayerUnit((96 + 1) * 8f + 4f, (96 + 3) * 8f);
             Core.camera.position.set((96 + 1) * 8f + 4f, (96 + 1) * 8f + 4f);
+            // 【超频回归】在范围里放一台超频器（用户报"合体炮台不能被 OverdriveProjector 加速"）
+            try{
+                Block od = byName("overdrive-projector");
+                if(od != null){
+                    placeBL(od, 92, 92);
+                    placeBL(byName("power-source"), 90, 92);
+                }
+            }catch(Throwable t){ Log.err("[drv] 后坐用例放超频器失败", t); }
         }catch(Throwable t){ Log.err("[drv] superTurretRecoilShot failed", t); }
     }
 
@@ -3701,8 +3769,44 @@ public class Driver extends Mod{
                     cb.name, scale, ((mindustry.world.blocks.defense.turrets.Turret) cb).recoil, off, scaled);
             }
             Log.info("[drv] 后坐缩放: 最大被缩掉的位移=@px（不缩就是大炮台炮管飞出格子的那一截）", maxDelta);
+            // 【shootX/shootY 缩放回归】用户报："合体炮台缩小后 shootX 和 shootY 没有缩放"。
+            // 每格实际口径偏移 = 子弹出膛那一刻离格心的距离。大炮台（foreshadow 未缩放口径 16px、
+            // 缩到一格 k≈0.25）缩放后应该≈4px，不缩就是≈16px。
+            float worstUnscaled = 0f, worstDist = 0f;
+            boolean haveShot = false;
+            for(int i = 0; i < cells.length; i++){
+                if(!(cells[i] instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild c)) continue;
+                Block cb = c.block;
+                float scale = ((Number) invokeStatic(st, "cellScale", new Class<?>[] { Block.class }, cb)).floatValue();
+                var ct = (mindustry.world.blocks.defense.turrets.Turret) cb;
+                float unscaled = (float) Math.hypot(ct.shootX, ct.shootY);
+                float dist = recoilCellMinDist == null || i >= recoilCellMinDist.length ? -1f : recoilCellMinDist[i];
+                Log.info("[drv] 口径偏移缩放: 格=@ 每格缩放=@ 未缩放口径=@ 期望≈@ | 实测子弹出膛距格心=@",
+                    cb.name, scale, unscaled, unscaled * scale, dist <= 0f ? "无子弹" : dist);
+                if(unscaled > worstUnscaled){ worstUnscaled = unscaled; worstDist = dist; }
+                if(dist > 0f) haveShot = true;
+            }
+            if(!haveShot){
+                Log.err("[drv] FAIL 口径偏移缩放用例没测到开火的格子（目标没进射程？）");
+            } else if(worstUnscaled > 0f){
+                if(worstDist < worstUnscaled - 2f)
+                    Log.info("[drv] PASS 缩小的大炮台子弹从缩放后的口径出来（实测 @ < 未缩放 @）", worstDist, worstUnscaled);
+                else
+                    Log.err("[drv] FAIL 缩小的大炮台炮口偏移没缩（实测 @ ≈ 未缩放 @）", worstDist, worstUnscaled);
+            }
+            if(recoilTarget != null){ recoilTarget.remove(); recoilTarget = null; }
+            // 【超频回归】合体炮台本体和里面每一格都要 >1（= 真的吃到超频）
+            float cellTs = 1f;
+            for(Object o : cells)
+                if(o instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild c){ cellTs = c.timeScale(); break; }
+            Log.info("[drv] 超频: 合体炮台本体 timeScale=@ 第一格 timeScale=@", recoilDemo.timeScale(), cellTs);
+            if(recoilDemo.timeScale() > 1f && cellTs > 1f)
+                Log.info("[drv] PASS 合体炮台吃到 OverdriveProjector 加速（本体 @ / 格子 @）", recoilDemo.timeScale(), cellTs);
+            else
+                Log.err("[drv] FAIL 合体炮台没被超频（本体 @ / 格子 @）", recoilDemo.timeScale(), cellTs);
         }catch(Throwable t){ Log.err("[drv] superTurretRecoilReport failed", t); }
     }
+
 
     /** 这台超级炮台里面所有格子一共打了几发。 */
     static int superTurretShots(Building b) {
