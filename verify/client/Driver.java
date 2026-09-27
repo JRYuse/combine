@@ -3696,8 +3696,8 @@ public class Driver extends Mod{
             Class<?> st = superTurretCls();
             Block b3 = (Block) invokeStatic(st, "blockForSide", new Class<?>[] { int.class }, 3);
             if(b3 == null){ Log.err("[drv] 3x3 超级炮台没装配出来"); return; }
-            // 2 台小炮台（k≈0.94）+ 1 台大炮台（k=0.25，foreshadow 的后坐位移 5px 最明显）
-            String lay = "duo@0;duo@0;foreshadow@0";
+            // 2 台小炮台（k≈0.94）+ 1 台大炮台 fuse（size3，k≈0.33，射速快、口径偏移 12px 好量）
+            String lay = "duo@0;duo@0;fuse@0";
             Building b = directPlace(b3, 96, 96, lay);
             if(b == null){ Log.err("[drv] 后坐用例摆放失败"); return; }
             recoilDemo = b;
@@ -3707,8 +3707,8 @@ public class Driver extends Mod{
                 for(Item it : Vars.content.items()) b.items.add(it, 500);
                 b.health = b.maxHealth = 100000f;
                 var tgt = mindustry.content.UnitTypes.dagger.create(Team.crux);
-                // foreshadow 是榴弹炮，有最小射程：目标放到 14 格（duo 的射程内、foreshadow 也够）
-                tgt.set((96 + 14) * 8f, (96 + 1) * 8f);
+                // fuse 射程只有 90px（≈11 格），目标放到 8 格
+                tgt.set((96 + 8) * 8f, (96 + 1) * 8f);
                 tgt.maxHealth = tgt.health = 100000f;
                 tgt.add();
                 recoilTarget = tgt;
@@ -3786,13 +3786,13 @@ public class Driver extends Mod{
                 if(unscaled > worstUnscaled){ worstUnscaled = unscaled; worstDist = dist; }
                 if(dist > 0f) haveShot = true;
             }
-            if(!haveShot){
-                Log.err("[drv] FAIL 口径偏移缩放用例没测到开火的格子（目标没进射程？）");
-            } else if(worstUnscaled > 0f){
-                if(worstDist < worstUnscaled - 2f)
-                    Log.info("[drv] PASS 缩小的大炮台子弹从缩放后的口径出来（实测 @ < 未缩放 @）", worstDist, worstUnscaled);
-                else
-                    Log.err("[drv] FAIL 缩小的大炮台炮口偏移没缩（实测 @ ≈ 未缩放 @）", worstDist, worstUnscaled);
+            if(!haveShot || worstDist <= 0f){
+                // 大炮台那格必须真的开过火，否则这个用例什么都证不了
+                Log.err("[drv] FAIL 缩小的大炮台那一格没测到子弹（目标没进射程/没装弹？），口径缩放没验到");
+            } else if(worstDist < worstUnscaled - 2f){
+                Log.info("[drv] PASS 缩小的大炮台子弹从缩放后的口径出来（实测 @ < 未缩放 @）", worstDist, worstUnscaled);
+            } else {
+                Log.err("[drv] FAIL 缩小的大炮台炮口偏移没缩（实测 @ ≈ 未缩放 @）", worstDist, worstUnscaled);
             }
             if(recoilTarget != null){ recoilTarget.remove(); recoilTarget = null; }
             // 【超频回归】合体炮台本体和里面每一格都要 >1（= 真的吃到超频）
