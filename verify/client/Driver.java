@@ -189,6 +189,16 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::superTurretPlace, 32f);
                 Timer.schedule(Driver::superTurretStep, 36f, 2f);
                 Timer.schedule(() -> { Log.info("[drv] superturret 模式超时结束"); Core.app.exit(); }, 200f);
+            }else if(mode.equals("mergebtn")){
+                // 用户要求：把"框选合体"按钮做进原版放置 UI（手机 = copy 键右边，桌面 = 蓝图键右边），
+                // 且点击后框选优先级要高于玩家单位移动。这里只搭场景 + 跑检查 + 截一张有放置 UI 行的图。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupSuperTurretScene, 6f);
+                Timer.schedule(Driver::checkSuperTurretButton, 14f);
+                Timer.schedule(() -> shot("mergebtn_row"), 17f);
+                Timer.schedule(() -> { Log.info("[drv] mergebtn 模式结束"); Core.app.exit(); }, 20f);
+                Timer.schedule(() -> { Log.info("[drv] mergebtn 超时结束"); Core.app.exit(); }, 120f);
             }else if(mode.equals("rep")){
                 // 用户复现存档（stainedMountains）：读档 → 存档 → 再读档，看物品会不会变多。
                 // 这些模组（ve 建 GL shader、饱和火力要 Java 25）在 headless 里跑不起来，所以用真客户端。
@@ -2501,6 +2511,34 @@ public class Driver extends Mod{
         }
     }
 
+    /** 深度优先收集所有名字匹配的元素（排查"同名元素有几个"用）。 */
+    static void collectByName(arc.scene.Element root, String name, Seq<arc.scene.Element> out) {
+        if (root == null) return;
+        if (name.equals(root.name)) out.add(root);
+        if (root instanceof arc.scene.Group g)
+            for (arc.scene.Element c : g.getChildren())
+                collectByName(c, name, out);
+    }
+
+    /** 直接子元素里名字匹配的个数。 */
+    static int countChildren(arc.scene.Element e, String name) {
+        int n = 0;
+        if (e instanceof arc.scene.Group g)
+            for (arc.scene.Element c : g.getChildren())
+                if (name.equals(c.name)) n++;
+        return n;
+    }
+
+    /** 收集所有"图标是 turret"的 ImageButton（用来确认可见的那个就是模组插进去的）。 */
+    static void collectTurretButtons(arc.scene.Element root, Seq<arc.scene.Element> out) {
+        if (root == null) return;
+        if (root instanceof arc.scene.ui.ImageButton ib
+            && ib.getStyle() != null && ib.getStyle().imageUp == mindustry.gen.Icon.turret) out.add(ib);
+        if (root instanceof arc.scene.Group g)
+            for (arc.scene.Element c : g.getChildren())
+                collectTurretButtons(c, out);
+    }
+
     static Object getField(Object o, String name) {
         try {
             Class<?> c = o.getClass();
@@ -3112,11 +3150,84 @@ public class Driver extends Mod{
             hideDialogs();
             var el = Core.scene == null ? null : Core.scene.find("combineSuperTurretButton");
             if (el == null) {
-                Log.err("[drv] FAIL HUD 上找不到超级组合炮台按钮");
+                // 新入口：按钮做进了原版放置 UI（buildPlacementUI 那一行）
+                el = Core.scene == null ? null : Core.scene.find("combineTurretMergeButton");
+            }
+            if (el == null) {
+                Log.err("[drv] FAIL 原版放置 UI / HUD 上都找不到框选合体按钮");
                 return;
             }
+            // 【位置】按钮必须在放置 UI 那一行里（PlacementFragment 建的 inputTable）
+            boolean inInputTable = false;
+            for (arc.scene.Element e2 = el; e2 != null; e2 = e2.parent)
+                if ("inputTable".equals(e2.name)) { inInputTable = true; break; }
+            String inputCls = Vars.control == null || Vars.control.input == null ? "null"
+                : Vars.control.input.getClass().getName();
+            Log.info("[drv] 框选合体按钮: 名字=@ 在放置 UI 行里=@ 输入处理器=@ 尺寸=@x@",
+                el.name, inInputTable, inputCls, (int) el.getWidth(), (int) el.getHeight());
+            // 【手机版】离屏直接建一张表跑 ComboMobileInput.buildPlacementUI，验"按钮插在 copy 键右边"：
+            // 原版顺序 = 拆除(hammer) / 斜向 / 复制(rotate→copy) / 确认(ok) …，我们的按钮应当落在下标 3。
+            try {
+                arc.scene.ui.layout.Table probe = new arc.scene.ui.layout.Table();
+                Class<?> mobCls = Class.forName("combine.input.ComboMobileInput", true, ml);
+                mindustry.input.InputHandler mobInput =
+                    (mindustry.input.InputHandler) mobCls.getConstructor().newInstance();
+                mobInput.buildPlacementUI(probe);
+                int idx = -1, n = probe.getCells().size;
+                for (int i = 0; i < n; i++) {
+                    var e = probe.getCells().get(i).get();
+                    if (e != null && "combineTurretMergeButton".equals(e.name)) { idx = i; break; }
+                }
+                StringBuilder names = new StringBuilder();
+                for (int i = 0; i < n; i++) {
+                    var e = probe.getCells().get(i).get();
+                    names.append(i).append(':').append(e == null ? "-" : (e.name == null ? e.getClass().getSimpleName() : e.name)).append(' ');
+                }
+                Log.info("[drv] 手机放置 UI 结构: @（合体按钮下标=@，期望 3 = 复制键右边）", names, idx);
+                if (idx == 3) Log.info("[drv] PASS 手机版：框选合体按钮就在 copy（复制/旋转）键的右边");
+                else Log.err("[drv] FAIL 手机版：合体按钮下标=@（期望 3）", idx);
+            } catch (Throwable t) {
+                Log.err("[drv] 手机放置 UI 结构检查失败", t);
+            }
+            if (inInputTable && inputCls.startsWith("combine.input.Combo")) {
+                Log.info("[drv] PASS 框选合体按钮长在原版放置 UI 那一行里（手机/桌面各一个 input 子类）");
+            } else {
+                Log.err("[drv] FAIL 按钮不在放置 UI 行里 / 输入处理器没换成我们的子类（在=@ cls=@）", inInputTable, inputCls);
+            }
+            // 【框选优先级】我们的处理器必须在**第 0 位**：arc 的 InputMultiplexer 从下标 0 开始派发，
+            // 排最后的话手机上拖拽先被 MobileInput 拿去移动单位了。
+            try {
+                var procs = Core.input.getInputProcessors();
+                Object ourProc = getStatic(placer, "processor");
+                boolean first = procs != null && !procs.isEmpty() && procs.first() == ourProc;
+                StringBuilder order = new StringBuilder();
+                for (int i = 0; i < Math.min(procs == null ? 0 : procs.size, 6); i++)
+                    order.append(i).append(':').append(procs.get(i).getClass().getSimpleName()).append(' ');
+                Log.info("[drv] 输入处理器顺序: @（我们的在第 0 位=@）", order, first);
+                if (first && ourProc != null) {
+                    placer.getMethod("start").invoke(null);
+                    java.lang.reflect.Method td = ourProc.getClass().getMethod("touchDown",
+                        int.class, int.class, int.class, arc.input.KeyCode.class);
+                    java.lang.reflect.Method tr = ourProc.getClass().getMethod("touchDragged",
+                        int.class, int.class, int.class);
+                    td.setAccessible(true); tr.setAccessible(true);
+                    int wx = (int) (Core.graphics.getWidth() * 0.35f), wy = (int) (Core.graphics.getHeight() * 0.55f);
+                    td.invoke(ourProc, wx, wy, 0, arc.input.KeyCode.mouseLeft);
+                    boolean eaten = Boolean.TRUE.equals(tr.invoke(ourProc, wx + 40, wy + 40, 0));
+                    Log.info("[drv] 框选期间拖动被模组处理器吃掉=@（true = 不会传给玩家单位移动）", eaten);
+                    if (eaten) Log.info("[drv] PASS 框选优先级高于玩家单位移动（拖动被吃掉）");
+                    else Log.err("[drv] FAIL 框选拖动没被吃掉（玩家单位会跟着动）");
+                    placer.getMethod("cancel").invoke(null);
+                } else {
+                    Log.err("[drv] FAIL 我们的输入处理器不在最前（顺序=@）", order);
+                }
+            } catch (Throwable t) {
+                Log.err("[drv] 框选优先级检查失败", t);
+            }
             arc.scene.Element btn = null;
-            if (el instanceof arc.scene.Group g) {
+            if (el instanceof arc.scene.ui.ImageButton ib) {
+                btn = ib; // 新入口：按钮自己就是那个 ImageButton（名字直接挂在它身上）
+            } else if (el instanceof arc.scene.Group g) {
                 for (arc.scene.Element c : g.getChildren())
                     if (c instanceof arc.scene.ui.ImageButton ib) {
                         btn = ib;

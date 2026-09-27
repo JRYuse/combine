@@ -221,6 +221,8 @@ public class Main extends Mod {
 
     // 超级组合炮台：快捷键/按钮 → 框选炮台 → 按数量生成对应边长的组合体（纯客户端交互）
     combine.turret.SuperTurretPlacer.register();
+    // 手机/桌面都把"框选合体"按钮做进**原版放置 UI**（buildPlacementUI 那一行）
+    installInputHandler();
 
     Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
     // 客户端在这之后才把蓝图库从磁盘读进来（assets.load(schematics)），再兜一次键；
@@ -394,6 +396,46 @@ public class Main extends Mod {
   /** 客户端才有的贴图/图标环境（专用服务器 Core.atlas 为 null）。 */
   static boolean visuals() {
     return !Vars.headless && arc.Core.atlas != null;
+  }
+
+  /**
+   * 把 InputHandler 换成"只重写 buildPlacementUI"的子类（手机 {@link combine.input.ComboMobileInput}、
+   * 桌面 {@link combine.input.ComboDesktopInput}），这样"框选合体"按钮就长在原版放置 UI 的那一行里
+   * （手机 = 复制键右边；桌面 = 蓝图/粘贴键右边）。
+   *
+   * <p>走原版 {@code Control.setInput()}：它会保留当前选中的方块、把老处理器的输入处理器与 UI 摘掉，
+   * 再调 {@code add()}（内部会重新调 {@code buildPlacementUI}），所以按钮立刻就位。
+   *
+   * <p>只替换**恰好是原版那两个类**的处理器：别的模组换了自己的子类就不动（宁可少个按钮，
+   * 也不能把别人的输入行为顶掉），这种情况保留 HUD 上的兜底按钮。
+   */
+  static void installInputHandler() {
+    if (Vars.headless)
+      return;
+    Events.on(ClientLoadEvent.class, e -> {
+      try {
+        if (Vars.control == null || Vars.control.input == null)
+          return;
+        mindustry.input.InputHandler cur = Vars.control.input;
+        String cn = cur.getClass().getName();
+        if (cn.equals("combine.input.ComboMobileInput") || cn.equals("combine.input.ComboDesktopInput"))
+          return;
+        if (cn.equals("mindustry.input.MobileInput")) {
+          Vars.control.setInput(new combine.input.ComboMobileInput());
+        } else if (cn.equals("mindustry.input.DesktopInput")) {
+          Vars.control.setInput(new combine.input.ComboDesktopInput());
+        } else {
+          // 别的模组/别的客户端换了自己的输入处理器：不替换，HUD 按钮继续当兜底
+          Log.info("[combine] 输入处理器是 @（不是原版那两个），框选合体按钮仍挂在 HUD 上", cn);
+          return;
+        }
+        combine.turret.SuperTurretPlacer.useHudButton = false;
+        Log.info("[combine] 框选合体按钮已挂进原版放置 UI（@）",
+            cn.equals("mindustry.input.MobileInput") ? "手机" : "桌面");
+      } catch (Throwable t) {
+        Log.err("[combine] 换输入处理器失败（框选合体按钮仍在 HUD 上）", t);
+      }
+    });
   }
 
   void getWhiteList() {
