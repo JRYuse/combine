@@ -1640,18 +1640,19 @@ public class ComboNet {
      * 硅 5555520/60，每帧还在百万/几十之间跳）。分子分母必须同源：池子是网络的，分母也得是网络的。
      */
     public static int panelItemCap(Building self){
-        // 勾了"物品"共享才算整张网络；没勾就只看本地组合体（分子分母仍然同源）
         int cap = componentItemCap(itemScope(self));
-        // 不在任何组合网络里（分量只有自己）时用这台方块自己的基础容量：
-        // 否则核心这类方块会算出 1，面板/审计就会把"核心里 12000 物品"误判成坏账
         if(cap <= 0) cap = ComboReflect.baseItemCap(self);
+        // ↓ 新增：SuperBlock 的真实容量是"里层每格物品上限之和"
+        if(self instanceof combine.storage.SuperBlock.SuperBlockBuild sb)
+            cap = Math.max(cap, sb.realItemCap);
         return Math.max(cap, 1);
     }
 
-    /** 同上，液体版。 */
     public static float panelLiquidCap(Building self){
         float cap = componentLiquidCap(liquidScope(self));
         if(cap <= 0f) cap = ComboReflect.baseLiquidCap(self);
+        if(self instanceof combine.storage.SuperBlock.SuperBlockBuild sb)
+            cap = Math.max(cap, sb.realLiquidCap);
         return Math.max(cap, 1f);
     }
 
@@ -2181,13 +2182,16 @@ public class ComboNet {
         float demand = 0f;
         for(Building m : ComboReflect.group(leader)){
             if(!m.isValid()) continue;
-            // 超级组合炮台：需求 = 里面每一台需热炮台之和（不是方块上那个"单台"标记值），
-            // 否则网络按需分配热量时会把整台合体炮台当成只要一份热（用户报的"合体后只
-            // 需要一个炮台的热量"）。
             if(m instanceof combine.turret.SuperTurret.SuperTurretBuild st){
                 demand += st.heatDemand();
                 continue;
             }
+            // ↓↓↓ 新增这一段
+            if(m instanceof combine.storage.SuperBlock.SuperBlockBuild sb){
+                demand += sb.heatDemand();   // 里面 N 格需热建筑的需求之和
+                continue;
+            }
+            // ↑↑↑ 新增这一段
             Float req = ComboReflect.getFloat(m.block, "heatRequirement");
             if(req != null && req > 0f) demand += req;
         }

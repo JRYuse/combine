@@ -23,6 +23,7 @@ import combine.saves.SafeWShort;
 import combine.saves.SafeWVer;
 import combine.storage.CombinedStorageBlock;
 import combine.storage.LiquidUnloader;
+import combine.storage.SuperBlock;
 import combine.turret.CombinedContinuousLiquidTurret;
 import combine.turret.CombinedItemTurret;
 import combine.turret.CombinedLiquidTurret;
@@ -216,6 +217,7 @@ public class Main extends Mod {
 
     // 超级组合炮台：快捷键/按钮 → 框选炮台 → 按数量生成对应边长的组合体（纯客户端交互）
     combine.turret.SuperTurretPlacer.register();
+    combine.storage.SuperBlockPlacer.register();
 
 //    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
     // 客户端在这之后才把蓝图库从磁盘读进来（assets.load(schematics)），再兜一次键；
@@ -400,6 +402,7 @@ public class Main extends Mod {
       // 跨距离传热用的探针（组合节点/连接器把热喂给"连线接进来的"需热建筑；和超级炮台开关无关）
       combine.util.ComboHeatProbe.create();
       createSuperTurrets();
+      createSuperBlocks();
       for (var entry : Replacer.replaced) {
         postInit(entry.value);
       }
@@ -686,9 +689,7 @@ public class Main extends Mod {
             + "每格一台炮台、不够的格子留空；物品/液体/电力整台共用，各格各自开火、各自冷却。"
             + "虚影跟着鼠标走，左键确定位置，右键/Q/Esc 取消。";
         st.alwaysUnlocked = true;
-        // 两个星球都能用（不挂科技树，显式声明，免得 onPlanet 过滤掉）
-        st.shownPlanets.add(Planets.serpulo);
-        st.shownPlanets.add(Planets.erekir);
+        st.shownPlanets.addAll(Vars.content.planets());
         st.init();
         st.postInit();
       } catch (Throwable t) {
@@ -700,6 +701,53 @@ public class Main extends Mod {
     }
     Log.info("[combine] 超级组合炮台：@ 种边长已装配",
         combine.turret.SuperTurret.MAX_SIDE - combine.turret.SuperTurret.MIN_SIDE + 1);
+  }
+
+  // 和方法定义：
+  void createSuperBlocks() {
+    if (!SuperBlock.enabled) {
+      Log.info("[combine] 超级组合方块当前停用（SuperBlock.enabled=false）");
+      return;
+    }
+    if (SuperBlock.bySide[SuperBlock.MIN_SIDE] != null) return;
+
+    // 热量探针
+    try {
+      SuperBlock.heatProbe = new SuperBlock.HeatProbe("super-block-heat");
+      SuperBlock.heatProbe.init();
+      SuperBlock.heatProbe.postInit();
+      if (visuals()) {
+        arc.graphics.g2d.TextureRegion reg = arc.Core.atlas.find("heat-source",
+                arc.Core.atlas.find("error"));
+        SuperBlock.heatProbe.region = reg;
+        SuperBlock.heatProbe.fullIcon = reg;
+        SuperBlock.heatProbe.uiIcon = reg;
+      }
+    } catch (Throwable t) {
+      Log.err("[combine] 超级组合方块热量探针装配失败", t);
+    }
+
+    for (int side = SuperBlock.MIN_SIDE; side <= SuperBlock.MAX_SIDE; side++) {
+      SuperBlock sb = new SuperBlock("super-block-" + side, side);
+      try {
+        sb.requirements(Category.effect, BuildVisibility.shown, new ItemStack[0]);
+        sb.localizedName = "超级组合方块 " + side + "x" + side;
+        sb.description = "在建造菜单里点它（或按快捷键 H）= 框选非炮台建筑："
+                + "按框里的建筑数量生成对应边长的一台，每格一台建筑、不够的格子留空；"
+                + "物品/液体/电力/热量整台共用。虚影跟着鼠标走，左键确定位置，右键/Q/Esc 取消。";
+        sb.alwaysUnlocked = true;
+        sb.shownPlanets.addAll(Vars.content.planets());
+        sb.init();
+        sb.postInit();
+      } catch (Throwable t) {
+        Log.err("[combine] 超级组合方块 @x@ 装配失败", side, side, t);
+      } finally {
+        ensureIcons(sb);
+      }
+      SuperBlock.bySide[side] = sb;
+    }
+    Log.info("[combine] 超级组合方块：@ 种边长已装配",
+            SuperBlock.MAX_SIDE - SuperBlock.MIN_SIDE + 1);
   }
 
   /**
