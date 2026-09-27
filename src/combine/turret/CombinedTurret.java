@@ -135,12 +135,6 @@ public class CombinedTurret extends Turret {
   @Override
   public void setStats() {
     super.setStats();
-
-    // 【关键】原版 PowerTurret / LaserTurret 的子弹信息就在这里显示。
-    // 不能直接写 ObjectMap.of(this, shootType)——CombinedTurret 只 extends Turret，
-    // this 的静态类型是 CombinedTurret，泛型推断出的 ObjectMap<CombinedTurret, BulletType>
-    // 传不进 StatValues.ammo(ObjectMap<Block, BulletType>)，编译器要么报错、要么静默选错。
-    // 显式声明成 ObjectMap<Block, BulletType> 才能让编译器和运行时都走上正确的重载。
     if (shootType != null) {
       stats.add(Stat.ammo, StatValues.ammo(ObjectMap.of(this, shootType)));
     }

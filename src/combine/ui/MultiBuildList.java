@@ -260,7 +260,7 @@ public class MultiBuildList {
             String state = has ? "[accent]已启用[]" : "[gray]未启用[]";
             t.add(state + " [white]" + u.localizedName + " [gray]" + u.name + "[]")
                     .left().growX().wrap().minWidth(0f);
-            t.add(isExpanded ? "[lightgray]▲[]" : "[lightgray]▼[]").right().padLeft(4f).padRight(4f);
+            t.image(isExpanded ? Icon.upOpen : Icon.downOpen).size(20f).right().padLeft(4f).padRight(4f);
         }, Styles.grayt, () -> {
             if(expanded.contains(u.name)) expanded.remove(u.name);
             else expanded.add(u.name);
