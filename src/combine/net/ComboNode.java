@@ -61,6 +61,11 @@ public class ComboNode extends Block {
         conductivePower = false;
         connectedPower = true;
         drawCached = false;
+        // 【热量必须不看朝向】原版 BuildingComp.calculateHeat 对 rotate=true 的热源要求"朝着"耗热方
+        // （(relativeTo(build)+2)%4 == build.rotation）。节点/连接器是"热量传送门"、本身没有朝向，
+        // 保持 rotate=true 会让"节点在东边才供得上热"—— 用户报的"制热机和需要热量的炮台之间
+        // 用节点连起来不传热"就是这么来的。改成不旋转，heat() 就会被无条件计入。
+        rotate = false;
         fullOverride = "power-node-large";
         buildType = ComboNodeBuild::new;
 
@@ -118,9 +123,23 @@ public class ComboNode extends Block {
             for(int i = 0; i < old.size; i++){
                 configurations.get(Integer.class).get(entity, old.get(i));
             }
+            int mask = -1;
             for(Point2 p : points){
+                // config() 的哨兵：共享部分（见 ComboNodeBuild.config()）
+                if(p.y == Integer.MIN_VALUE){
+                    mask = p.x;
+                    continue;
+                }
                 configurations.get(Integer.class).get(entity, Point2.pack(p.x + entity.tileX(), p.y + entity.tileY()));
             }
+            // 连线先落地再套配置：蓝图里存下的共享部分要能跟着蓝图一起回来
+            if(mask >= 0) ComboShare.set(entity, mask);
+        });
+
+        // 共享部分的开关（走原版 config 通道，字符串在多人游戏里能原样送到服务端）
+        config(String.class, (ComboNodeBuild entity, String value) -> {
+            int mask = ComboShare.decode(value);
+            if(mask >= 0) ComboShare.set(entity, mask);
         });
     }
 
@@ -164,7 +183,10 @@ public class ComboNode extends Block {
     public static boolean linkTarget(Building b){
         return b != null && b.isValid()
             && (b instanceof ComboNodeBuild
-                || ComboReflect.isComboBuild(b) || CoopCombo.eligible(b.block));
+                || ComboReflect.isComboBuild(b) || CoopCombo.eligible(b.block)
+                // 热相关的方块（mod 的制热机 / 需热炮台）即使不在组合池白名单里也要能连 ——
+                // 用户报的"afflict 和 slag-heater 用组合节点连接和没组合一样"就是被这条拒了。
+                || ComboReflect.isHeatBuild(b));
     }
 
     /**
@@ -338,11 +360,46 @@ public class ComboNode extends Block {
         return out;
     }
 
-    public class ComboNodeBuild extends Building implements HeatBlock {
+    public class ComboNodeBuild extends Building implements HeatBlock, ComboShare.Holder {
         public IntSeq links = new IntSeq();
         public float heat = 0f;
         public float heatCap = 100f;
         public int lastLinkHash = Integer.MIN_VALUE;
+        /** 这张网络共享哪些部分（物品/液体/电力/热量），见 {@link ComboShare}。 */
+        public int shareMask = ComboShare.ALL;
+        /** 最后一次改配置的序号：同一张网络里"后改的说了算"。 */
+        public int shareStamp = 1;
+
+        @Override
+        public int shareMask(){
+            return shareMask;
+        }
+
+        @Override
+        public void shareMask(int mask){
+            shareMask = mask & ComboShare.ALL;
+        }
+
+        @Override
+        public int shareStamp(){
+            return shareStamp;
+        }
+
+        @Override
+        public void shareStamp(int stamp){
+            shareStamp = stamp;
+        }
+
+        /**
+         * 电力没勾共享时，节点不当导线。
+         *
+         * <p>组合节点 consumesPower = false，原版并网判据会把它当导体：贴着的组合体照样并网，
+         * 那"各接各的电"就不成立。原版每个连接判据都会问一次 conductsTo，在这里拦掉最干净。
+         */
+        @Override
+        public boolean conductsTo(Building other){
+            return shareBit(ComboShare.POWER) && super.conductsTo(other);
+        }
 
         @Override
         public void placed(){
@@ -438,6 +495,7 @@ public class ComboNode extends Block {
 
         @Override
         public void updateTile(){
+          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
             super.updateTile();
             int hash = linkHash();
             if(hash != lastLinkHash){
@@ -467,7 +525,8 @@ public class ComboNode extends Block {
             if(other == null || !other.isValid()) return;
             links.addUnique(other.pos());
             ComboReflect.markGroupDirty(other);
-            if(power != null && other.power != null){
+            // 没勾"电力"就不写电力连线（节点自己的 conductsTo 也会拦掉邻接并网）
+            if(shareBit(ComboShare.POWER) && power != null && other.power != null){
                 power.links.addUnique(other.pos());
                 if(other.team == team){
                     other.power.links.addUnique(pos());
@@ -591,10 +650,14 @@ public class ComboNode extends Block {
 
         @Override
         public Point2[] config(){
-            Point2[] out = new Point2[links.size];
-            for(int i = 0; i < out.length; i++){
+            // 【最后一项是哨兵】共享部分的掩码塞在 Point2(mask, Integer.MIN_VALUE) 里 ——
+            // 偏移量绝不可能取到 Integer.MIN_VALUE，所以能和真实的连线偏移区分开。
+            // 这样蓝图、复制粘贴（原版走 build.config()）能把共享配置一起带走。
+            Point2[] out = new Point2[links.size + 1];
+            for(int i = 0; i < links.size; i++){
                 out[i] = Point2.unpack(links.get(i)).sub(tile.x, tile.y);
             }
+            out[links.size] = new Point2(shareMask, Integer.MIN_VALUE);
             return out;
         }
 
@@ -626,13 +689,21 @@ public class ComboNode extends Block {
                 table.add("覆盖组合建筑: " + members).color(Pal.accent).left();
             }
             table.row();
+            table.add("共享: " + ComboShare.describe(shareMask)).color(Pal.accent).left();
+            table.row();
             table.add("网络热量: " + Strings.fixed(heat, 1) + "/" + Strings.fixed(heatCap, 1))
                 .color(Pal.lightOrange).left();
                 }
 
+        /** 点开节点弹出来的配置面板：勾选共享哪些部分（点任意一个连接件都一样）。 */
+        @Override
+        public void buildConfiguration(Table table){
+            ComboShareUi.build(table, this);
+        }
+
         @Override
         public byte version(){
-            return 2;
+            return 3;
         }
 
         @Override
@@ -642,6 +713,7 @@ public class ComboNode extends Block {
             for(int i = 0; i < links.size; i++){
                 write.i(links.get(i));
             }
+            write.b(shareMask);
         }
 
         @Override
@@ -666,6 +738,9 @@ public class ComboNode extends Block {
                     }
                 }
             }
+            // v3 起存"共享哪些部分"；旧存档按全共享（老行为）
+            shareMask = revision >= 3 ? (read.b() & ComboShare.ALL) : ComboShare.ALL;
+            shareStamp = 1;
         }
     }
 }

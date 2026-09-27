@@ -233,10 +233,14 @@ public class CombinedStorageBlock extends StorageBlock {
   public static void rescan() {
     tracked.clear();
     if (world != null) {
+      // "只玩家组合"打开时别登记 AI 敌人的仓库：它们不会被组合，登记了每轮重建都要过一遍。
+      boolean playersOnly = combine.util.ComboTeams.playersOnly;
       for (Tile tile : world.tiles) {
         // 所有组合仓库都登记（coreMerge=false 的强化版也要能"相邻成组"，
         // coreMerge 只决定"要不要并进核心"）
         if (tile != null && tile.build instanceof CombinedStorageBuild sb) {
+          if (playersOnly && !combine.util.ComboTeams.playerTeam(sb.team))
+            continue;
           tracked.add(sb);
         }
       }

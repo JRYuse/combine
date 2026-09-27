@@ -5,6 +5,7 @@ import arc.Core;
 import arc.graphics.g2d.Draw;
 import arc.graphics.g2d.TextureRegion;
 import arc.math.Mathf;
+import arc.math.geom.Point2;
 import arc.scene.ui.layout.Table;
 import arc.struct.Seq;
 import arc.util.Strings;
@@ -33,6 +34,7 @@ public class ComboConnector extends PowerBlock {
         update = true;
         solid = true;
         destructible = true;
+        configurable = true;
         hasPower = true;
         hasItems = false;
         hasLiquids = false;
@@ -40,9 +42,26 @@ public class ComboConnector extends PowerBlock {
         outputsPower = false;
         conductivePower = true;
         connectedPower = true;
+        // 同 ComboNode：热量传送门不该有朝向（否则只有特定方位的耗热方读得到节点热）
+        rotate = false;
         group = mindustry.world.meta.BlockGroup.power;
         buildType = ComboConnectorBuild::new;
         fullOverride = "power-node";
+
+        // 共享哪些部分（物品/液体/电力/热量）：点开连接器就能勾选
+        config(String.class, (ComboConnectorBuild entity, String value) -> {
+            int mask = ComboShare.decode(value);
+            if(mask >= 0) ComboShare.set(entity, mask);
+        });
+        // 蓝图/复制粘贴带过来的共享配置（哨兵见 ComboConnectorBuild.config()）
+        config(Point2[].class, (ComboConnectorBuild entity, Point2[] points) -> {
+            for(Point2 p : points){
+                if(p.y == Integer.MIN_VALUE){
+                    ComboShare.set(entity, p.x);
+                    return;
+                }
+            }
+        });
     }
 
     @Override
@@ -81,8 +100,56 @@ public class ComboConnector extends PowerBlock {
                     / Math.max(power.power.graph.getLastPowerNeeded(), 0.001f))));
     }
 
-    public class ComboConnectorBuild extends Building {
+    public class ComboConnectorBuild extends Building implements ComboShare.Holder, mindustry.world.blocks.heat.HeatBlock {
         public int lastLinkHash = Integer.MIN_VALUE;
+        /**
+         * 对外暴露的网络热量（连接器当导热管用）。
+         *
+         * <p>节点早就有这个字段，连接器原来没有 —— 于是"组合体 → 导热管 → 需热方"这条链
+         * 只要中间经过连接器就断了（用户报的"组合节点和组合连接器不能传递热量"）。
+         * 数值由 {@code ComboNet.updateHeatConnector} 每帧写成本图网络的热量总和。
+         */
+        public float heat = 0f;
+        public float heatCap = 100f;
+        /** 这张网络共享哪些部分（物品/液体/电力/热量），见 {@link ComboShare}。 */
+        public int shareMask = ComboShare.ALL;
+        /** 最后一次改配置的序号：同一张网络里"后改的说了算"。 */
+        public int shareStamp = 1;
+
+        @Override
+        public int shareMask(){
+            return shareMask;
+        }
+
+        @Override
+        public void shareMask(int mask){
+            shareMask = mask & ComboShare.ALL;
+        }
+
+        @Override
+        public int shareStamp(){
+            return shareStamp;
+        }
+
+        @Override
+        public void shareStamp(int stamp){
+            shareStamp = stamp;
+        }
+
+        /**
+         * 电力没勾共享时，连接器不当导线：原版并网判据（consumesPower=false 的方块算导体）
+         * 会把它贴着的两个组合体的电网并起来，那"各接各的电"就不成立。
+         */
+        @Override
+        public boolean conductsTo(Building other){
+            return shareBit(ComboShare.POWER) && super.conductsTo(other);
+        }
+
+        /** 点开连接器弹出来的配置面板：勾选共享哪些部分。 */
+        @Override
+        public void buildConfiguration(Table table){
+            ComboShareUi.build(table, this);
+        }
 
         @Override
         public void placed(){
@@ -98,12 +165,24 @@ public class ComboConnector extends PowerBlock {
 
         @Override
         public void updateTile(){
+          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
             super.updateTile();
             int hash = linkHash();
             if(hash != lastLinkHash){
                 lastLinkHash = hash;
                 ComboNet.markDirty();
             }
+            if(enabled) ComboNet.updateHeatConnector(this);
+        }
+
+        @Override
+        public float heat(){
+            return heat;
+        }
+
+        @Override
+        public float heatFrac(){
+            return Mathf.clamp(heat / Math.max(heatCap, 0.001f));
         }
 
         private int linkHash(){
@@ -149,7 +228,7 @@ public class ComboConnector extends PowerBlock {
             table.row();
             table.add("[accent]组合连接器[]").left();
             table.row();
-            table.add("相邻组合体通过连续连接器共享物品/液体/电力").color(Pal.accent).left();
+            table.add("相邻组合体通过连续连接器共享: " + ComboShare.describe(shareMask)).color(Pal.accent).left();
 
             Seq<Building> members = ComboNet.componentMembers(this);
             if(!members.isEmpty()){
@@ -190,17 +269,27 @@ public class ComboConnector extends PowerBlock {
 
         @Override
         public byte version(){
-            return 1;
+            return 2;
         }
 
         @Override
         public void write(Writes write){
             super.write(write);
+            write.b(shareMask);
         }
 
         @Override
         public void read(Reads read, byte revision){
             super.read(read, revision);
+            // v2 起存"共享哪些部分"；旧存档按全共享（老行为）
+            shareMask = revision >= 2 ? (read.b() & ComboShare.ALL) : ComboShare.ALL;
+            shareStamp = 1;
+        }
+
+        /** 蓝图/复制粘贴要带上共享配置（哨兵项，见 ComboNode 的同款写法）。 */
+        @Override
+        public Object config(){
+            return new Point2[]{ new Point2(shareMask, Integer.MIN_VALUE) };
         }
     }
 }

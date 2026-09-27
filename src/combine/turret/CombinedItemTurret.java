@@ -94,7 +94,10 @@ public class CombinedItemTurret extends ItemTurret {
     // liquidCapacity"限流，共享冷却池总量超过单台容量后管道会算出负流量而彻底断流
     // （调用方是原版代码，炮塔侧无法拦截）。抬高为假容量，
     // 真实上限 = 组总容量（acceptLiquid 组容量 + handleLiquid 超量退回 + 每帧截断）。
-    baseLiquidCapacity = liquidCapacity;
+    // 只在第一次 init 记录基础容量（内容加载器可能再次 init()，那时已是 9999 假容量）。
+    if (ComboReflect.captureBaseLiquidCapOnce(this)) {
+      baseLiquidCapacity = liquidCapacity;
+    }
     liquidCapacity = 9999f;
     hasLiquids = true;
   }
@@ -679,6 +682,7 @@ public class CombinedItemTurret extends ItemTurret {
 
     @Override
     public void updateTile() {
+      if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
       if (isLeader() && comboDirty)
         rebuildCombo();
       // FIX[liquid]: 领导者每帧按组总容量截断共享池
@@ -1219,9 +1223,18 @@ public class CombinedItemTurret extends ItemTurret {
         if (team != mindustry.Vars.player.team())
           return;
 
+        // 只留过程量条（血量）：弹药/物品/液体/电力这些条都挪到悬浮面板（用户要求
+        // display() 里别再列物品/液体/电力）。
         cont.table(bars -> {
           bars.defaults().growX().height(18f).pad(4);
-          displayBars(bars);
+          if (!arc.math.Mathf.zero(block.health, 0.001f)) {
+            final float h = health, mh = maxHealth;
+            bars.add(new Bar(
+                () -> Core.bundle.get("stat.health", "Health") + " " + (int) Math.max(h, 0),
+                () -> Pal.health,
+                () -> arc.math.Mathf.clamp(h / mh)));
+            bars.row();
+          }
         }).growX();
         cont.row();
 
@@ -1237,32 +1250,7 @@ public class CombinedItemTurret extends ItemTurret {
 
     public void buildComboIO(Table table) {
       table.left();
-      table.add("[lightgray]组合体构成:").left();
-      table.row();
-      ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-      for (Building member : ComboNet.displayMembers(this, group().size)) {
-        if (member.isValid()) {
-          int old = blockCounts.get(member.block, 0);
-          blockCounts.put(member.block, old + 1);
-        }
-      }
-      Seq<Block> sorted = new Seq<>();
-      for (Block b : blockCounts.keys())
-        sorted.add(b);
-      sorted.sort(b -> b.id);
-      boolean hasContent = false;
-      for (Block b : sorted) {
-        int count = blockCounts.get(b, 0);
-        if (count > 0) {
-          hasContent = true;
-          table.add(b.localizedName + "*" + count).color(Color.white).left();
-          table.row();
-        }
-      }
-      if (!hasContent) {
-        table.add("[darkGray]无").left();
-        table.row();
-      }
+      ComboUi.addComposition(table, this, group().size);
     }
   }
 }

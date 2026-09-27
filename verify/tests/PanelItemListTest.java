@@ -84,6 +84,57 @@ public class PanelItemListTest implements ApplicationListener{
             !declared.contains(Items.coal, true));
         check("面板现在会列出池子里实际有的煤（displayItems 兜住了）", listed.contains(Items.coal, true));
 
+        // ---------- 核心：物资分母不许用 getMaximumAccepted（"核心焚化"规则下它是 1073741823） ----------
+        try{
+            Vars.state.rules.coreIncinerates = true;   // 用户 1.jpg 就是这个规则：getMaximumAccepted = Integer.MAX_VALUE/2
+            Block coreB = null;
+            for(Block bb : Vars.content.blocks())
+                if(bb.getClass().getName().contains("CombinedCoreBlock") || (bb.name.equals("core-shard"))){ coreB = bb; break; }
+            Building core = coreB == null ? null : place(coreB, 90, 90, Team.sharded);
+            run(20);
+            if(core != null && core.items != null){
+                core.items.set(Items.copper, 1234);
+                run(3);
+                Class<?> cp = Class.forName("combine.coop.CoopPanel", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+                String desc = String.valueOf(cp.getMethod("describe", Building.class).invoke(null, core));
+                System.out.println("[PL] 核心面板: " + desc);
+                System.out.println("[PL] 核心 getMaximumAccepted(copper)=" + core.getMaximumAccepted(Items.copper));
+                check("核心面板的分母不是 1073741823（用组上限）", !desc.contains("1073741823"));
+                check("核心面板里铜的分母是组上限（" + desc + "）",
+                    desc.contains("=1234/4000") && !desc.contains("/1073741823"));
+            }
+            Vars.state.rules.coreIncinerates = false;
+        }catch(Throwable t){
+            System.out.println("[PL] 核心分母检查异常: " + t);
+            check("核心分母检查能跑起来", false);
+        }
+
+        // ---------- 面板行集合迟滞：物品在 0/1 边缘抖时行不该进出（用户报"面板一直跳"） ----------
+        try{
+            Class<?> cp = Class.forName("combine.coop.CoopPanel", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+            java.lang.reflect.Method rows = cp.getMethod("itemRows", mindustry.world.modules.ItemModule.class);
+            mindustry.world.modules.ItemModule pool = new mindustry.world.modules.ItemModule();
+            pool.set(Items.copper, 1);
+            @SuppressWarnings("unchecked")
+            Seq<Item> r1 = (Seq<Item>)rows.invoke(null, pool);
+            boolean has1 = r1.contains(Items.copper, true);
+            pool.set(Items.copper, 0);                    // 抖到 0
+            @SuppressWarnings("unchecked")
+            Seq<Item> r2 = (Seq<Item>)rows.invoke(null, pool);
+            boolean has2 = r2.contains(Items.copper, true);
+            run(240);                                     // 超过 3 秒迟滞窗口（240 tick ≈ 4s）
+            @SuppressWarnings("unchecked")
+            Seq<Item> r3 = (Seq<Item>)rows.invoke(null, pool);
+            boolean has3 = r3.contains(Items.copper, true);
+            System.out.println("[PL] 行迟滞: 有货=" + has1 + " 刚归零=" + has2 + " 4 秒后=" + has3);
+            check("有货时列出该物品", has1);
+            check("归零后 3 秒内这一行还留着（0/1 抖动不再让面板跳）", has2);
+            check("超过迟滞窗口后行才撤掉", !has3);
+        }catch(Throwable t){
+            System.out.println("[PL] 行迟滞检查异常: " + t);
+            check("行迟滞检查能跑起来", false);
+        }
+
         System.out.println("[PL] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
         System.exit(fail==0?0:1);
       }catch(Throwable t){ t.printStackTrace(); System.exit(2); }

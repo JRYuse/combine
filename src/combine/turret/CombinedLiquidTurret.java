@@ -501,6 +501,7 @@ public class CombinedLiquidTurret extends LiquidTurret {
 
     @Override
     public void updateTile() {
+      if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
       if (isLeader() && comboDirty)
         rebuildCombo();
       if (isLeader())
@@ -667,10 +668,17 @@ public class CombinedLiquidTurret extends LiquidTurret {
         cont.row();
         if (team != player.team())
           return;
-        // ===== 仿原版：血量/液体/电力等全部 bars（displayBars 遍历 block 注册的 bar） =====
+        // 只留过程量条（血量）：液体/电力条挪到悬浮面板（用户要求 display() 里别再列物品/液体/电力）。
         cont.table(bars -> {
           bars.defaults().growX().height(18f).pad(4);
-          displayBars(bars);
+          if (!arc.math.Mathf.zero(block.health, 0.001f)) {
+            final float h = health, mh = maxHealth;
+            bars.add(new Bar(
+                () -> Core.bundle.get("stat.health", "Health") + " " + (int) Math.max(h, 0),
+                () -> Pal.health,
+                () -> arc.math.Mathf.clamp(h / mh)));
+            bars.row();
+          }
         }).growX();
         cont.row();
 
@@ -686,49 +694,8 @@ public class CombinedLiquidTurret extends LiquidTurret {
 
     public void buildComboIO(Table table) {
       table.left();
-      table.add("[lightgray]组合体构成:").left();
-      table.row();
-      ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-      for (Building member : ComboNet.displayMembers(this, group().size)) {
-        if (member.isValid()) {
-          int old = blockCounts.get(member.block, 0);
-          blockCounts.put(member.block, old + 1);
-        }
-      }
-      Seq<Block> sorted = new Seq<>();
-      for (Block b : blockCounts.keys())
-        sorted.add(b);
-      sorted.sort(b -> b.id);
-      boolean hasContent = false;
-      for (Block b : sorted) {
-        int count = blockCounts.get(b, 0);
-        if (count > 0) {
-          hasContent = true;
-          table.add(b.localizedName + "*" + count).color(Color.white).left();
-          table.row();
-        }
-      }
-      if (!hasContent) {
-        table.add("[darkGray]无").left();
-        table.row();
-      }
-      // 共享液体池状态
-      LiquidModule liq = liquids;
-      if (liq == null) {
-        CombinedLiquidTurretBuild l = leader();
-        if (l != null)
-          liq = l.liquids;
-      }
-      if (liq != null) {
-        for (Liquid l : content.liquids()) {
-          float amt = liq.get(l);
-          if (amt > 0.001f) {
-            table.add("[lightgray]" + l.localizedName + ":[] " + Strings.fixed(amt, 1)
-                + "/" + Strings.fixed(perLiquidCap(), 1)).left();
-            table.row();
-          }
-        }
-      }
+      // 共享液体池那一串也去掉了（悬浮面板里有液体池）。
+      ComboUi.addComposition(table, this, group().size);
     }
   }
 }

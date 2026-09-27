@@ -73,7 +73,7 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
         // FIX[液体输满]: 记录真实单块容量后抬高假容量，防止原版 moveLiquid 按单块容量截断流入
         // FIX[液体容量显示]: 用 -1 作哨兵；只在尚未抬高假容量时记录真实值（兼容重复 init），
         // 无液体的克隆块不抬高，避免 baseLiquidCap 回退读出 9999 污染池上限
-        if (liquidCapacity > 0.001f && liquidCapacity != 9999f) {
+        if (liquidCapacity > 0.001f && ComboReflect.captureBaseLiquidCapOnce(this)) {
             baseLiquidCapacity = liquidCapacity;
             liquidCapacity = 9999f;
         }
@@ -252,6 +252,7 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
 
         @Override
         public void updateTile() {
+          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
             comboPreUpdate();
 
 
@@ -386,81 +387,12 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
             // 原版注册的 bar 都在这儿画：进度条 + 「单位数量/上限」（bar.unitcap）。
             // 以前只画了我们自己那条进度，把原版这两条全丢了，所以看不到单位数量那条。
             displayBars(table);
-            float totalPower = 0f;
-            for (IUnitCombo member : group()) {
-                Building mb = (Building) member;
-                if (mb.isValid() && mb.block.consPower != null)
-                    totalPower += mb.block.consPower.usage;
-            }
-            if (totalPower > 0 && power != null) {
-                final float tp = totalPower;
-                table.add(new Bar(
-                        () -> "电力 " + Strings.fixed(tp * power.status * 60f, 1) + " ⚡/s",
-                        () -> Pal.power,
-                        () -> power.status));
-                table.row();
-            }
-            Building l = (Building) leader();
-            ItemModule sharedItems = l != null && l.items != null ? l.items : items;
-            if (sharedItems != null) {
-                final int cap = ComboNet.effectiveItemCap(this);
-                for (Item item : content.items()) {
-                    int total = sharedItems.get(item);
-                    if (total > 0) {
-                        final int t = total;
-                        table.add(new Bar(
-                                () -> item.localizedName + ": " + t + "/" + cap,
-                                () -> item.color,
-                                () -> (float) t / cap));
-                        table.row();
-                    }
-                }
-            }
-            LiquidModule sharedLiq = l != null && l.liquids != null ? l.liquids : liquids;
-            if (sharedLiq != null) {
-                final float cap = ComboNet.effectiveLiquidCap(this);
-                for (Liquid liquid : content.liquids()) {
-                    float total = sharedLiq.get(liquid);
-                    if (total > 0.001f) {
-                        final float t = total;
-                        table.add(new Bar(
-                                () -> liquid.localizedName + ": " + Strings.fixed(t, 1) + "/" + Strings.fixed(cap, 1),
-                                () -> liquid.barColor != null ? liquid.barColor : liquid.color,
-                                () -> t / cap));
-                        table.row();
-                    }
-                }
-            }
+            // 物品池 / 液体池 / 电力条挪到悬浮面板（用户要求 display() 只留组合体构成）。
         }
 
         public void buildComboIO(Table table) {
             table.left();
-            table.add("[lightgray]组合体构成:").left();
-            table.row();
-            ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (Building member : ComboNet.displayMembers(this, group().size)) {
-                if (member.isValid()) {
-                    int old = blockCounts.get(member.block, 0);
-                    blockCounts.put(member.block, old + 1);
-                }
-            }
-            Seq<Block> sortedBlocks = new Seq<>();
-            for (Block b : blockCounts.keys())
-                sortedBlocks.add(b);
-            sortedBlocks.sort(b -> b.id);
-            boolean hasContent = false;
-            for (Block b : sortedBlocks) {
-                int count = blockCounts.get(b, 0);
-                if (count > 0) {
-                    hasContent = true;
-                    table.add(b.localizedName + "*" + count).color(Color.white).left();
-                    table.row();
-                }
-            }
-            if (!hasContent) {
-                table.add("[darkGray]无").left();
-                table.row();
-            }
+            ComboUi.addComposition(table, this, group().size);
         }
 
         public void buildLocalIO(Table table) {

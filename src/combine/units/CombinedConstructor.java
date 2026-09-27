@@ -112,6 +112,7 @@ public IUnitCombo comboLeader;
 
         @Override
         public void updateTile() {
+          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
             comboPreUpdate();
 
             // FIX[白嫖]: 本 tick 将跨完工线而池子付不起时, 冻结效率停在完工线下等料。
@@ -181,43 +182,8 @@ public IUnitCombo comboLeader;
             table.row();
             table.add("[accent]组合 x" + count + "[] " + block.localizedName).left();
             table.row();
-            Table bars = new Table();
-            bars.left();
-            bars.update(() -> {
-                bars.clearChildren();
-                bars.defaults().growX().height(18f).pad(4);
-                IUnitCombo l = leader();
-                if (((Building) l).items != null) {
-                    for (Item item : content.items()) {
-                        int total = ((Building) l).items.get(item);
-                        if (total > 0) {
-                            final int t = total;
-                            final int cap = Math.max(l.gItemCap(), 1);
-                            bars.add(new Bar(
-                                    () -> item.localizedName + ": " + t + "/" + cap,
-                                    () -> item.color,
-                                    () -> (float) t / cap));
-                            bars.row();
-                        }
-                    }
-                }
-                if (((Building) l).liquids != null) {
-                    for (Liquid liquid : content.liquids()) {
-                        float total = ((Building) l).liquids.get(liquid);
-                        if (total > 0.001f) {
-                            final float t = total;
-                            final float cap = Math.max(l.gLiquidCap(), 1f);
-                            bars.add(new Bar(
-                                    () -> liquid.localizedName + ": "
-                                            + Strings.fixed(t, 1) + "/" + Strings.fixed(cap, 1),
-                                    () -> liquid.barColor != null ? liquid.barColor : liquid.color,
-                                    () -> t / cap));
-                            bars.row();
-                        }
-                    }
-                }
-            });
-            table.add(bars).growX().left();
+            // 物品池 / 液体池条挪到悬浮面板（用户要求 display() 只留组合体构成）。
+            ComboUi.addComposition(table, this, group().size);
                 }
 
         // -------------------- 序列化 --------------------

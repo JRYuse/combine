@@ -35,6 +35,10 @@
 
 ## 其他约定
 
+- **同时兼容手机（安卓）和电脑**：只用两端都有的 API（别依赖 `DesktopInput`/鼠标专用绑定/文件对话框）；
+  每个功能都要有触摸端入口，取消/退出也只能靠触摸完成；交付必须用 `./gradlew --offline deploy`（含 `classes.dex`）；
+  新增内容的 `uiIcon/region` 要有兜底、`localizedName` 绝不为 null（null 会让小地图/面板 `GlyphLayout.setText` 直接闪退）。
+  详见 `/root/.codex/AGENTS.md` 里"模组必须同时兼容手机（安卓）和电脑"那一节。
 - **交付模组**用：`verify/deliver.sh`（等价于下面三步，别漏）
   1. 用**兼容安卓的编译命令**：`./gradlew --offline deploy`
      （`deploy` = desktop + android 合并，产物里有 `classes.dex`；只跑 `./gradlew jar` 出来的是纯桌面包，安卓端装不上）

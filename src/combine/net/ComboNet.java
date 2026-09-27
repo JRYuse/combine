@@ -5,6 +5,7 @@ import combine.Main;
 import combine.coop.CoopCombo;
 import combine.storage.CombinedStorageBlock.CombinedStorageBuild;
 import combine.storage.CombinedStorageBlock;
+import combine.util.ComboPower;
 import combine.util.ComboReflect;
 import combine.util.ComboUi;
 import arc.struct.IntFloatMap;
@@ -24,6 +25,7 @@ import mindustry.type.Item;
 import mindustry.type.Liquid;
 import mindustry.ui.Bar;
 import mindustry.world.Block;
+import mindustry.world.Tile;
 import mindustry.world.blocks.heat.HeatBlock;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
@@ -45,8 +47,25 @@ import static mindustry.Vars.world;
  * ComboNodeBuild 同步到原版 PowerModule.links。
  */
 public class ComboNet {
-    private static final IntFloatMap heatAlloc = new IntFloatMap();
+    /**
+     * 按"组 leader pos"记录的热量分配额，带写入帧号。
+     *
+     * 【时序修复】旧实现每帧第一次调用时整体清空 —— Groups.build 的更新顺序是放置顺序，
+     * 需热建筑若比节点先 update（玩家先放炮台、后放节点就是这样），它读到的永远是
+     * "本帧刚被清空、节点还没分配"的 0，热量永远传不到（用户报的 afflict 收不到热）。
+     * 现在改成"保留最近一次分配结果 + 帧号过期判断"： 读取方拿到的是上一帧的分配值
+     * （热量是连续量，差一帧毫无影响）；写入方只覆盖自己分量的键，互不连通的
+     * 多张网络也不再互相清空。
+     */
+    private static final arc.struct.IntMap<HeatAllocEntry> heatAlloc = new arc.struct.IntMap<>();
     private static long heatFrame = -1L;
+    /** 分配结果超过这么多 tick 没刷新就视为无效（组已拆/换图）。 */
+    private static final long heatAllocExpireTicks = 30L;
+
+    private static class HeatAllocEntry {
+        long frame;
+        float amount;
+    }
     /**
      * 读档窗口标记。
      *
@@ -81,6 +100,19 @@ public class ComboNet {
      */
     private static int loadDedupeFrames = 0;
     private static final int loadDedupeGraceFrames = 20;
+
+    /**
+     * 【现场拆出来的池子】"取消勾选共享"时，被拆开的模块是**真库存被分成两份**，
+     * 不是存档里那种"同一口池子被每台各写了一份副本"。
+     *
+     * <p>读档去重（{@link #mergeDistinctItems}）是按"内容完全相同 = 重复副本、只留一份"判的 ——
+     * 而现场拆出来的两份碰巧内容相同（例如按容量比例对半分），重新勾上共享时就会被当成副本丢掉一份，
+     * 玩家看到的是"取消再勾上，物品少一半"。所以拆出来的模块在这里登记一下，
+     * 重新合并时按**真库存相加**处理。
+     */
+    private static final ObjectSet<ItemModule> freshSplitItems = new ObjectSet<>();
+    private static final ObjectSet<LiquidModule> freshSplitLiquids = new ObjectSet<>();
+    private static final int freshSplitLimit = 512;
 
     /** 读档去重语义还生效吗（CombinedStorageBlock / CoopCombo 共用）。 */
     public static boolean pendingLoadDedupe(){
@@ -132,6 +164,10 @@ public class ComboNet {
             Building b = tile.build;
             if(b == null)
                 return;
+            // 【性能】开了"只玩家组合"时，非玩家队伍的建筑变化（敌人基地被打掉/自己重建）
+            // 不该触发整张网络的重新扫描 —— 那一下在大型基地图上就是几十毫秒的卡顿。
+            if(combine.util.ComboTeams.playersOnly && !combine.util.ComboTeams.playerTeam(b.team))
+                return;
             if(isLinker(b)){
                 markDirty();
                 return;
@@ -163,6 +199,7 @@ public class ComboNet {
     /** 每帧一次的收口：只有真的脏了才重建。 */
     private static void flush(){
         if(loadDedupeFrames > 0) loadDedupeFrames --;
+        sweepAbandonedHeatProbes();
         if(!dirty) return;
         dirty = false;
         rebuild();
@@ -178,13 +215,21 @@ public class ComboNet {
     public static Seq<Building> allComboBuildings(){
         Seq<Building> all = new Seq<>();
         ObjectSet<Building> set = new ObjectSet<>();
+        // 【性能/用户报】"进大型基地图非常卡，我怀疑敌人的建筑也组合；设置成只有玩家建筑组合还是很卡"。
+        // 分组那一步早就按 ComboTeams.playerTeam 挡了，可**扫描/重建**这一层没挡 —— 于是
+        // 3 万台建筑（其中 1.7 万台可组合的敌方建筑）每帧/每次网络重建都要过一遍。开关打开时
+        // 这里直接把非玩家队伍的建筑滤掉，模组的开销只跟玩家自己的建筑数有关。
+        boolean playersOnly = combine.util.ComboTeams.playersOnly;
         for(Building b : Groups.build){
+            if(playersOnly && !combine.util.ComboTeams.playerTeam(b.team)) continue;
             if(ComboReflect.inWorld(b) && set.add(b)) all.add(b);
         }
         for(CombinedStorageBlock.CombinedStorageBuild sb : CombinedStorageBlock.trackedSet()){
+            if(playersOnly && !combine.util.ComboTeams.playerTeam(sb.team)) continue;
             if(ComboReflect.inWorld(sb) && set.add(sb)) all.add(sb);
         }
         for(Building cb : CoopCombo.trackedBuildings()){
+            if(playersOnly && !combine.util.ComboTeams.playerTeam(cb.team)) continue;
             if(ComboReflect.inWorld(cb) && set.add(cb)) all.add(cb);
         }
         return all;
@@ -201,6 +246,9 @@ public class ComboNet {
     /** WorldLoadBeginEvent：进入读档语义窗口。 */
     public static void beginWorldLoad(){
         loadingWorld = true;
+        // 换了世界：上一张地图现场拆出来的池子不再有意义
+        freshSplitItems.clear();
+        freshSplitLiquids.clear();
         // 读档后头几帧仍按去重语义合并（本地组合体/网络还在重建，见 loadDedupeFrames 注释）
         loadDedupeFrames = loadDedupeGraceFrames;
         // 这一轮读档的"离谱池子体检"还没做（见 repairInsanePools）
@@ -342,6 +390,20 @@ public class ComboNet {
                         collectGroup(link, out, visitedGroups, visited, queue);
                     }
                 }
+                // 【贴着也算连上】用户报："用组合节点连接 afflict 和 slag-heater，虽然可以传热，
+                // 但是这两个显示没有组合在一起、afflict 面板热量是 0" —— 根因就是这里：
+                // 热量那条路（collectLinkedHeatBuildings）本来就认"贴着节点的建筑"，于是热传过去了；
+                // 可组合网络这条只认 links，贴着的组合体不算成员 → 面板不成组、也读不到产热方。
+                // 现在和连接器/节点贴节点统一：节点**贴着**的组合体（含它所在的本地组合体）也算连上。
+                if(n.proximity != null)
+                    for(Building nb : n.proximity){
+                        if(nb == null || !nb.isValid()) continue;
+                        if(nb instanceof ComboNode.ComboNodeBuild){
+                            enqueueVertex(nb, visited, queue);
+                        }else if(ComboReflect.isComboBuild(nb)){
+                            collectGroup(nb, out, visitedGroups, visited, queue);
+                        }
+                    }
             }
         }
 
@@ -353,15 +415,206 @@ public class ComboNet {
     private static long componentCacheTick = Long.MIN_VALUE;
     private static final arc.struct.IntMap<Seq<Building>> componentCache = new arc.struct.IntMap<>();
 
+    /**
+     * 悬浮面板用：网络分量成员 + 经连接件**明确连进来**的"纯热"建筑。
+     *
+     * <p>用户报："用组合节点连接 afflict 和 slag-heater，虽然可以传热，但是这两个显示没有组合在一起、
+     * afflict 面板热量是 0"。原因是那类方块**没被本模组替换**（mod 自己的制热机 / 需热炮台），
+     * 节点连线只把它们当"热端"（{@link #collectLinkedHeatBuildings}），进不了并池分量 —— 于是面板
+     * 的"构成"里没有它们、热量那一段（Σ 产热方 heat()）也就读不到产热方。
+     *
+     * <p>这里只给**显示**用：把它们并进成员表（构成/热量能一起看），物品/液体的并池照旧只认
+     * {@link #componentMembers}（这些方块不该被并池，见 collectLinkedHeatBuildings 的注释）。
+     */
+    public static Seq<Building> panelMembers(Building self){
+        Seq<Building> comp = componentMembers(self);
+        Seq<Building> linkers = new Seq<>();
+        for(int i = 0; i < comp.size; i++)
+            if(isLinker(comp.get(i))) linkers.add(comp.get(i));
+        if(linkers.isEmpty()) return comp;
+        Seq<Building> heat;
+        try{
+            heat = collectLinkedHeatBuildings(linkers);
+        }catch(Throwable t){
+            return comp;
+        }
+        if(heat.isEmpty()) return comp;
+        Seq<Building> out = new Seq<>();
+        ObjectSet<Building> seen = new ObjectSet<>();
+        for(int i = 0; i < comp.size; i++)
+            if(comp.get(i) != null && seen.add(comp.get(i))) out.add(comp.get(i));
+        for(int i = 0; i < heat.size; i++)
+            if(heat.get(i) != null && heat.get(i).isValid() && seen.add(heat.get(i))) out.add(heat.get(i));
+        return out;
+    }
+
     /** 清掉分量缓存（网络结构变化时调用，避免同一帧内显示旧网络）。 */
     static void invalidateComponentCache(){
         componentCacheTick = Long.MIN_VALUE;
         componentCache.clear();
     }
 
+    /** 只和玩家队友组合：AI 敌人的建筑不进网络 */
+    private static boolean ComboUtilTeamOk(Building b){
+        return combine.util.ComboTeams.playerTeam(b == null ? null : b.team);
+    }
+
     private static boolean isLinker(Building b){
         return b instanceof ComboConnector.ComboConnectorBuild
             || b instanceof ComboNode.ComboNodeBuild;
+    }
+
+    /**
+     * 从某个连接件出发，收集**同一张网络里的全部连接件**（节点 / 连接器）。
+     *
+     * <p>走法必须和 {@link #componentMembers} 一致：连接器靠邻接接下一棒、节点靠 links
+     * 接下一棒，成员只是"导线上的落脚点"（通过它的邻接/被谁链接找到别的连接件）。
+     */
+    public static Seq<Building> componentLinkers(Building linker){
+        Seq<Building> out = new Seq<>();
+        if(world == null || linker == null || !linker.isValid() || !isLinker(linker)) return out;
+        ObjectSet<Building> seen = new ObjectSet<>();
+        Queue<Building> queue = new Queue<>();
+        seen.add(linker);
+        queue.addLast(linker);
+        while(!queue.isEmpty()){
+            Building v = queue.removeFirst();
+            out.add(v);
+            if(v instanceof ComboConnector.ComboConnectorBuild c){
+                if(c.proximity != null)
+                    for(Building nb : c.proximity)
+                        if(nb != null && nb.isValid() && isLinker(nb) && seen.add(nb)) queue.addLast(nb);
+                // 贴着连接器的成员也可能是"节点连着的另一头"，从成员再找连接件
+                for(Building m : componentMembersOfVertex(c))
+                    for(Building l : nearbyLinkers(m))
+                        if(seen.add(l)) queue.addLast(l);
+            }else if(v instanceof ComboNode.ComboNodeBuild n){
+                for(int i = 0; i < n.links.size; i++){
+                    Building l = world.build(n.links.get(i));
+                    if(l == null || !l.isValid()) continue;
+                    if(isLinker(l)){
+                        if(seen.add(l)) queue.addLast(l);
+                    }else if(ComboReflect.isComboBuild(l)){
+                        for(Building o : nearbyLinkers(l)) if(seen.add(o)) queue.addLast(o);
+                    }
+                }
+                // 【贴着也算连上】和 componentMembers 保持一致：贴着节点的组合体（含它这一片本地组合体）
+                // 也算同一张网络里的成员，再从成员身上找别的连接件（用户把节点摆在两台之间、
+                // 不点连线时就是这么用的）。
+                if(n.proximity != null)
+                    for(Building nb : n.proximity){
+                        if(nb == null || !nb.isValid()) continue;
+                        if(nb instanceof ComboNode.ComboNodeBuild){
+                            if(seen.add(nb)) queue.addLast(nb);
+                        }else if(ComboReflect.isComboBuild(nb)){
+                            for(Building m : ComboReflect.group(nb))
+                                for(Building o : nearbyLinkers(m)) if(seen.add(o)) queue.addLast(o);
+                        }
+                    }
+            }
+        }
+        return out;
+    }
+
+    /** 一个连接件旁边的组合体成员（只取邻接，不跨距离）。 */
+    private static Seq<Building> componentMembersOfVertex(Building vertex){
+        Seq<Building> out = new Seq<>();
+        if(vertex == null || vertex.proximity == null) return out;
+        for(Building nb : vertex.proximity)
+            if(nb != null && nb.isValid() && ComboReflect.isComboBuild(nb)) out.add(nb);
+        return out;
+    }
+
+    /** 贴着某个成员、或者 links 里写着这个成员的连接件。 */
+    private static Seq<Building> nearbyLinkers(Building member){
+        Seq<Building> out = new Seq<>();
+        if(member == null) return out;
+        try{
+            if(member.proximity != null)
+                for(Building nb : member.proximity)
+                    if(nb != null && nb.isValid() && isLinker(nb)) out.add(nb);
+            for(Building nb : CoopCombo.trackedNodesCopy())
+                if(nb instanceof ComboNode.ComboNodeBuild node && node.links != null
+                    && node.links.contains(member.pos())) out.add(nb);
+        }catch(Throwable ignored){
+        }
+        return out;
+    }
+
+    /**
+     * 共享配置变了（玩家在节点/连接器的面板上勾选）：立刻让它在整张网络上生效。
+     *
+     * <p>三件事：本地组合体重新分组（有任一项没勾就不再把两端当一台机器）、
+     * 节点电力连线重新对齐、池子/容量重算（交给本帧的重建）。
+     */
+    public static void onShareChanged(Building linker){
+        try{
+            invalidateComponentCache();
+            Seq<Building> linkers = componentLinkers(linker);
+            for(int i = 0; i < linkers.size; i++)
+                if(linkers.get(i) instanceof ComboNode.ComboNodeBuild node) syncNodePower(node);
+            Seq<Building> members = componentMembers(linker);
+            for(int i = 0; i < members.size; i++){
+                Building m = members.get(i);
+                ComboReflect.markGroupDirty(m);
+                ComboPower.mark(m);
+            }
+            for(int i = 0; i < linkers.size; i++) ComboPower.mark(linkers.get(i));
+        }catch(Throwable t){
+            Log.err("[combine] 共享配置生效失败（不影响游戏）", t);
+        }
+        try{
+            CombinedStorageBlock.markDirty();
+            CoopCombo.markDirty();
+        }catch(Throwable ignored){
+        }
+        markDirty();
+    }
+
+    /**
+     * 节点与它连接目标的电力连线要和"电力"开关对齐：
+     * 勾了就连上（并到一张电网），取消勾选就把连线拆掉、两端各建一张新电网。
+     */
+    private static void syncNodePower(ComboNode.ComboNodeBuild node){
+        try{
+            if(node == null || !node.isValid() || node.power == null) return;
+            boolean on = node.shareBit(ComboShare.POWER);
+            boolean changed = false;
+            for(int i = 0; i < node.links.size; i++){
+                Building other = world.build(node.links.get(i));
+                if(other == null || !other.isValid() || other.power == null) continue;
+                boolean linked = node.power.links.contains(other.pos()) || other.power.links.contains(node.pos());
+                if(on){
+                    if(!linked){
+                        node.power.links.addUnique(other.pos());
+                        other.power.links.addUnique(node.pos());
+                        if(node.power.graph != null && other.power.graph != null) node.power.graph.addGraph(other.power.graph);
+                        changed = true;
+                    }
+                }else if(linked){
+                    node.power.links.removeValue(other.pos());
+                    other.power.links.removeValue(node.pos());
+                    changed = true;
+                }
+                ComboPower.mark(other);
+            }
+            if(changed){
+                // 【两端各建一张新电网】只给一边 reflow 会把"旧的那张（合并过的）电网"继续留给对面
+                mindustry.world.blocks.power.PowerGraph self = new mindustry.world.blocks.power.PowerGraph();
+                self.reflow(node);
+                self.update();
+                for(int i = 0; i < node.links.size; i++){
+                    Building other = world.build(node.links.get(i));
+                    if(other != null && other.power != null && other.power.graph != self){
+                        mindustry.world.blocks.power.PowerGraph og = new mindustry.world.blocks.power.PowerGraph();
+                        og.reflow(other);
+                        og.update();
+                    }
+                }
+            }
+            ComboPower.mark(node);
+        }catch(Throwable ignored){
+        }
     }
 
     private static void enqueueVertex(Building v, ObjectSet<Building> visited, Queue<Building> queue){
@@ -380,6 +633,7 @@ public class ComboNet {
         if(!visitedGroups.add(leader)) return;
         for(Building m : ComboReflect.group(leader)){
             if(m == null || !m.isValid()) continue;
+            if(!ComboUtilTeamOk(m)) continue; // 只和玩家队友组合
             out.addUnique(m);
             for(Building nb : m.proximity){
                 if(nb == null || !nb.isValid()) continue;
@@ -392,7 +646,7 @@ public class ComboNet {
     public static int effectiveItemCap(Building self){
         if(self == null) return 1;
         int cap = 0;
-        for(Building m : displayMembers(self, ComboReflect.group(self).size)){
+        for(Building m : itemScope(self)){
             if(m.isValid()) cap += ComboReflect.baseItemCap(m);
         }
         if(cap <= 0){
@@ -406,7 +660,7 @@ public class ComboNet {
     public static float effectiveLiquidCap(Building self){
         if(self == null) return 1f;
         float cap = 0f;
-        for(Building m : displayMembers(self, ComboReflect.group(self).size)){
+        for(Building m : liquidScope(self)){
             if(m.isValid()) cap += ComboReflect.baseLiquidCap(m);
         }
         if(cap <= 0.001f){
@@ -414,6 +668,23 @@ public class ComboNet {
             cap = v == null ? 0f : v;
         }
         return Math.max(cap, 1f);
+    }
+
+    /**
+     * 物品容量的取值范围：勾了"物品"共享就按整张网络算，没勾就只看本地组合体
+     * （两端各留各的池子，容量当然也只能算各自那一片）。
+     */
+    public static Seq<Building> itemScope(Building self){
+        if(self == null) return new Seq<>();
+        if(!ComboShare.shares(self, ComboShare.ITEMS)) return ComboReflect.group(self);
+        return displayMembers(self, ComboReflect.group(self).size);
+    }
+
+    /** 同上，液体版。 */
+    public static Seq<Building> liquidScope(Building self){
+        if(self == null) return new Seq<>();
+        if(!ComboShare.shares(self, ComboShare.LIQUIDS)) return ComboReflect.group(self);
+        return displayMembers(self, ComboReflect.group(self).size);
     }
 
     /** display 用的“有效组合体”：网络组合大于本地组时返回网络成员，否则返回本地组。 */
@@ -681,6 +952,19 @@ public class ComboNet {
                         Building l = ComboNode.groupRep(link);
                         if(l != null && vertexSet.contains(l)) addEdge(edges, n, l);
                     }
+                    // 【贴着也算连上】节点紧挨着另一个节点 / 贴着一片组合体时，和 componentMembers
+                    // 保持一致：并池/热量/面板都按同一张网络算（用户把节点摆在两台之间不点连线时
+                    // 就是这么用的）。
+                    if(n.proximity != null)
+                        for(Building nb : n.proximity){
+                            if(nb == null || !nb.isValid()) continue;
+                            if(nb instanceof ComboNode.ComboNodeBuild && vertexSet.contains(nb)){
+                                addEdge(edges, n, nb);
+                            }else if(ComboReflect.isComboBuild(nb)){
+                                Building l = ComboNode.groupRep(nb);
+                                if(l != null && vertexSet.contains(l)) addEdge(edges, n, l);
+                            }
+                        }
                 }
             }
 
@@ -727,9 +1011,26 @@ public class ComboNet {
             splitAcrossComponents(compMembers);
             _tD = System.nanoTime();
 
+            // 6.5) 共享配置：同一张网络里的连接件统一成同一份，并建"成员 -> 网络配置"索引。
+            //      有任一项没勾的网络还会把节点电力连线重新对齐（勾上就连，取消就拆）。
+            Seq<Integer> compMasks = new Seq<>();
+            for(int i = 0; i < components.size; i++) compMasks.add(resolveShareMask(components.get(i)));
+            ComboShare.clearMemberMasks();
+            for(int i = 0; i < components.size; i++){
+                int mask = compMasks.get(i);
+                if(ComboShare.fullShare(mask)) continue;
+                Seq<Building> members = compMembers.get(i);
+                for(int k = 0; k < members.size; k++) ComboShare.setMemberMask(members.get(k).pos(), mask);
+            }
+            for(int i = 0; i < components.size; i++){
+                Seq<Building> verts = components.get(i);
+                for(int k = 0; k < verts.size; k++)
+                    if(verts.get(k) instanceof ComboNode.ComboNodeBuild node) syncNodePower(node);
+            }
+
             // 7) 分量内合并共享池：运行期“相加”，读档窗口“去重”。
-            for(Seq<Building> members : compMembers){
-                mergeComponent(members, loadPhase);
+            for(int i = 0; i < compMembers.size; i++){
+                mergeComponent(compMembers.get(i), compMasks.get(i), loadPhase);
             }
             // 8) 登记"网络成员 -> 整张网络"的索引，给组合仓库那套本地并仓逻辑查（见 networkMembers）。
             netByPos.clear();
@@ -913,10 +1214,13 @@ public class ComboNet {
                 }
             }
             for(int k = 0; k < n; k++){
+                // 现场拆出来的池子：重新共享时按真库存相加（见 freshSplitItems）
+                markFreshItem(shares[k]);
                 for(Building m : comps.get(compIdx[k])){
                     if(m.items == old) m.items = shares[k];
                 }
             }
+            freshSplitItems.remove(old);
         }
     }
 
@@ -993,11 +1297,25 @@ public class ComboNet {
                 }
             }
             for(int k = 0; k < n; k++){
+                markFreshLiquid(shares[k]);
                 for(Building m : comps.get(compIdx[k])){
                     if(m.liquids == old) m.liquids = shares[k];
                 }
             }
+            freshSplitLiquids.remove(old);
         }
+    }
+
+    private static void markFreshItem(ItemModule mod){
+        if(mod == null) return;
+        if(freshSplitItems.size > freshSplitLimit) freshSplitItems.clear();
+        freshSplitItems.add(mod);
+    }
+
+    private static void markFreshLiquid(LiquidModule mod){
+        if(mod == null) return;
+        if(freshSplitLiquids.size > freshSplitLimit) freshSplitLiquids.clear();
+        freshSplitLiquids.add(mod);
     }
 
     /**
@@ -1006,33 +1324,134 @@ public class ComboNet {
      * 读档窗口(loadPhase=true)：各成员手里是存档写下的同一份池的重复副本，
      * 合并 = 相同副本只留一份、不同内容相加，绝不能把重复副本当两份真库存相加。
      */
-    private static void mergeComponent(Seq<Building> members, boolean loadPhase){
-        if(members.size <= 0) return;
+    /**
+     * 一张网络里每个连接件的共享配置统一成一份。
+     *
+     * <p>"连接在一起的组合节点行为一致、点任意一个都能改整张网络的配置"就靠这里兜底：
+     * 取 stamp 最大（＝最后被改过）的那个连接件的配置，并列时取 pos 最小的，
+     * 然后写回整张网络的所有连接件。纯本地组合体（没有连接件）恒为全共享 = 老行为。
+     */
+    private static int resolveShareMask(Seq<Building> vertices){
+        int best = -1, bestStamp = Integer.MIN_VALUE, bestPos = Integer.MAX_VALUE;
+        for(int i = 0; i < vertices.size; i++){
+            Building v = vertices.get(i);
+            if(!(v instanceof ComboShare.Holder h)) continue;
+            int st = h.shareStamp();
+            if(st > bestStamp || (st == bestStamp && v.pos() < bestPos)){
+                bestStamp = st;
+                bestPos = v.pos();
+                best = h.shareMask();
+            }
+        }
+        if(best < 0) return ComboShare.ALL;
+        for(int i = 0; i < vertices.size; i++)
+            if(vertices.get(i) instanceof ComboShare.Holder h){
+                h.shareMask(best);
+                h.shareStamp(bestStamp);
+            }
+        return best & ComboShare.ALL;
+    }
 
-        ItemModule itemTarget = pickItemModule(members, loadPhase);
-        if(itemTarget != null){
-            for(Building m : members){
-                if(m.items == null || m.items == itemTarget) continue;
-                if(!loadPhase) moveItems(m.items, itemTarget);
-                m.items = itemTarget;
+    /** 一张网络里的成员按"本地组合体"分组（节点/连接器跨距离接起来的那几片各自算一组）。 */
+    private static Seq<Seq<Building>> localGroups(Seq<Building> members){
+        Seq<Seq<Building>> groups = new Seq<>();
+        ObjectMap<Building, Seq<Building>> byRep = new ObjectMap<>();
+        for(int i = 0; i < members.size; i++){
+            Building m = members.get(i);
+            if(m == null) continue;
+            Building rep = ComboNode.groupRep(m);
+            if(rep == null) rep = m;
+            Seq<Building> g = byRep.get(rep);
+            if(g == null){
+                g = new Seq<>();
+                byRep.put(rep, g);
+                groups.add(g);
+            }
+            g.add(m);
+        }
+        return groups;
+    }
+
+    /**
+     * 分量内统一共享池 —— 按共享配置**逐项**处理。
+     *
+     * <p>运行期(loadPhase=false)：各成员手里是真实库存，合并 = 相加到 pos 最小的成员模块；
+     * 读档窗口(loadPhase=true)：各成员手里是存档写下的同一份池的重复副本，
+     * 合并 = 相同副本只留一份、不同内容相加，绝不能把重复副本当两份真库存相加。
+     *
+     * <p>没勾共享的那一项不在整张网络里并，而是回到"本地组合体"粒度：相邻成组的成员照旧
+     * 共用一份（组合体本身的语义），组与组之间各留各的。
+     */
+    private static void mergeComponent(Seq<Building> members, int mask, boolean loadPhase){
+        if(members.size <= 0) return;
+        boolean shareItems = (mask & ComboShare.ITEMS) != 0;
+        boolean shareLiquids = (mask & ComboShare.LIQUIDS) != 0;
+        // 两项都共享时不用分组，省掉一次遍历（默认配置就走这条路，和以前一模一样）
+        Seq<Seq<Building>> groups = (shareItems && shareLiquids) ? null : localGroups(members);
+
+        if(shareItems){
+            ItemModule itemTarget = pickItemModule(members, loadPhase);
+            if(itemTarget != null){
+                for(Building m : members){
+                    if(m.items == null || m.items == itemTarget) continue;
+                    if(!loadPhase) moveItems(m.items, itemTarget);
+                    m.items = itemTarget;
+                }
+            }
+        }else{
+            // 刚把"物品"取消勾选时两边还是同一口池子：先按本地组合体的容量比例拆回去
+            splitItemsAcrossComponents(groups);
+            for(Seq<Building> g : groups){
+                ItemModule target = pickItemModule(g, loadPhase);
+                if(target == null) continue;
+                for(Building m : g){
+                    if(m.items == null || m.items == target) continue;
+                    if(!loadPhase) moveItems(m.items, target);
+                    m.items = target;
+                }
             }
         }
 
-        LiquidModule liquidTarget = pickLiquidModule(members, loadPhase);
-        if(liquidTarget != null){
-            for(Building m : members){
-                if(m.liquids == null || m.liquids == liquidTarget) continue;
-                if(!loadPhase) moveLiquids(m.liquids, liquidTarget);
-                m.liquids = liquidTarget;
+        if(shareLiquids){
+            LiquidModule liquidTarget = pickLiquidModule(members, loadPhase);
+            if(liquidTarget != null){
+                for(Building m : members){
+                    if(m.liquids == null || m.liquids == liquidTarget) continue;
+                    if(!loadPhase) moveLiquids(m.liquids, liquidTarget);
+                    m.liquids = liquidTarget;
+                }
+            }
+        }else{
+            splitLiquidsAcrossComponents(groups);
+            for(Seq<Building> g : groups){
+                LiquidModule target = pickLiquidModule(g, loadPhase);
+                if(target == null) continue;
+                for(Building m : g){
+                    if(m.liquids == null || m.liquids == target) continue;
+                    if(!loadPhase) moveLiquids(m.liquids, target);
+                    m.liquids = target;
+                }
             }
         }
 
         int itemCap = componentItemCap(members);
         float liquidCap = componentLiquidCap(members);
-        for(Building m : members){
-            ComboReflect.setItemCap(m, itemCap);
-            ComboReflect.setLiquidCap(m, liquidCap);
-            ComboReflect.markClean(m);
+        if(groups == null){
+            for(Building m : members){
+                ComboReflect.setItemCap(m, itemCap);
+                ComboReflect.setLiquidCap(m, liquidCap);
+                ComboReflect.markClean(m);
+            }
+        }else{
+            for(Seq<Building> g : groups){
+                int ic = shareItems ? itemCap : componentItemCap(g);
+                float lc = shareLiquids ? liquidCap : componentLiquidCap(g);
+                for(Building m : g){
+                    ComboReflect.setItemCap(m, ic);
+                    ComboReflect.setLiquidCap(m, lc);
+                    ComboReflect.markClean(m);
+                }
+            }
         }
     }
 
@@ -1154,7 +1573,10 @@ public class ComboNet {
         // 紧接着 mergeComponent() 把每个成员的模块都指向 dst —— 那份库存被静默丢掉
         //（用户报的"物品异常减少"）。
         for(ItemModule mod : unique){
-            if(mod != dst) moveItems(mod, dst);
+            if(mod != dst){
+                moveItems(mod, dst);
+                freshSplitItems.remove(mod);
+            }
         }
         return dst;
     }
@@ -1174,7 +1596,10 @@ public class ComboNet {
         LiquidModule dst = moduleOfFirstLiquid(members, unique);
         // 同上：目标不一定是 unique.get(0)，必须遍历全部、只跳过目标自己
         for(LiquidModule mod : unique){
-            if(mod != dst) moveLiquids(mod, dst);
+            if(mod != dst){
+                moveLiquids(mod, dst);
+                freshSplitLiquids.remove(mod);
+            }
         }
         return dst;
     }
@@ -1182,6 +1607,8 @@ public class ComboNet {
     private static boolean sameItems(ItemModule a, ItemModule b){
         if(a == b) return true;
         if(a == null || b == null) return false;
+        // 现场拆出来的池子是真库存（不是读档留下的重复副本），哪怕内容一模一样也不能当副本丢掉
+        if(freshSplitItems.contains(a) || freshSplitItems.contains(b)) return false;
         for(Item item : content.items()){
             if(a.get(item) != b.get(item)) return false;
         }
@@ -1191,6 +1618,7 @@ public class ComboNet {
     private static boolean sameLiquids(LiquidModule a, LiquidModule b){
         if(a == b) return true;
         if(a == null || b == null) return false;
+        if(freshSplitLiquids.contains(a) || freshSplitLiquids.contains(b)) return false;
         for(Liquid liquid : content.liquids()){
             if(Math.abs(a.get(liquid) - b.get(liquid)) > 0.001f) return false;
         }
@@ -1212,7 +1640,8 @@ public class ComboNet {
      * 硅 5555520/60，每帧还在百万/几十之间跳）。分子分母必须同源：池子是网络的，分母也得是网络的。
      */
     public static int panelItemCap(Building self){
-        int cap = componentItemCap(componentMembers(self));
+        // 勾了"物品"共享才算整张网络；没勾就只看本地组合体（分子分母仍然同源）
+        int cap = componentItemCap(itemScope(self));
         // 不在任何组合网络里（分量只有自己）时用这台方块自己的基础容量：
         // 否则核心这类方块会算出 1，面板/审计就会把"核心里 12000 物品"误判成坏账
         if(cap <= 0) cap = ComboReflect.baseItemCap(self);
@@ -1221,7 +1650,7 @@ public class ComboNet {
 
     /** 同上，液体版。 */
     public static float panelLiquidCap(Building self){
-        float cap = componentLiquidCap(componentMembers(self));
+        float cap = componentLiquidCap(liquidScope(self));
         if(cap <= 0f) cap = ComboReflect.baseLiquidCap(self);
         return Math.max(cap, 1f);
     }
@@ -1235,9 +1664,11 @@ public class ComboNet {
      */
     public static ItemModule panelItemPool(Building self){
         if(self == null) return null;
-        // 1) 节点/连接器接起来的**网络**共用池
-        ItemModule netPool = poolModuleFor(self);
-        if(netPool != null) return netPool;
+        // 1) 勾了"物品"共享时：节点/连接器接起来的**网络**共用池
+        if(ComboShare.shares(self, ComboShare.ITEMS)){
+            ItemModule netPool = poolModuleFor(self);
+            if(netPool != null) return netPool;
+        }
         // 2) 本地组合体（相邻成组）里成员真的共用一份时，取那一份
         ItemModule shared = null;
         for(Building m : ComboReflect.group(self)){
@@ -1251,8 +1682,10 @@ public class ComboNet {
     /** 同上，液体版。 */
     public static LiquidModule panelLiquidPool(Building self){
         if(self == null) return null;
-        LiquidModule netPool = poolLiquidFor(self);
-        if(netPool != null) return netPool;
+        if(ComboShare.shares(self, ComboShare.LIQUIDS)){
+            LiquidModule netPool = poolLiquidFor(self);
+            if(netPool != null) return netPool;
+        }
         LiquidModule shared = null;
         for(Building m : ComboReflect.group(self)){
             if(m == null || m.liquids == null) continue;
@@ -1301,34 +1734,95 @@ public class ComboNet {
     // -------------------- 节点热量网络 --------------------
 
     public static float heatFor(Building consumer){
-        if(consumer == null) return 0f;
-        beginHeatFrame();
+        if(consumer == null || state == null) return 0f;
         Building leader = ComboReflect.leader(consumer);
-        return leader == null ? 0f : heatAlloc.get(leader.pos(), 0f);
+        if(leader == null) return 0f;
+        HeatAllocEntry e = heatAlloc.get(leader.pos());
+        // 没分配过，或分配结果已经过期（网络拆了/换图了）→ 视为无热
+        if(e == null || state.updateId - e.frame > heatAllocExpireTicks) return 0f;
+        return e.amount;
     }
 
     public static void updateHeatNode(ComboNode.ComboNodeBuild node){
         if(node == null || state == null || node.power == null) return;
+        // 没勾"热量"：整张网络不通热（节点自己也不再当热源往外送）
+        if(!node.shareBit(ComboShare.HEAT)){
+            node.heat = 0f;
+            // 【关键】探针不在这里摘就没人摘了：distributeHeat 不再跑，
+            // feedRemoteHeatConsumers 里的"摘除不再喂热的探针"也随之停摆，
+            // 探针把上一份热量永远喂给 afflict —— "取消热量传递后还在传热"（用户报的）。
+            clearHeatProbes(componentMembers(node));
+            return;
+        }
         beginHeatFrame();
 
         // 节点互连后，同一条链上的每个节点看到的组完全一样 —— 热量分配必须由
         // 链上唯一"负责人"（互连/贴邻节点簇里 pos 最小者）做一次，否则同一批
         // 产热组的存量热被每个节点各扣一遍、需热组各领一份（越领越多/速耗翻倍）。
+        // （不是负责人的节点**不要**把自己清零：负责人这一轮会把整张网络里所有连接件的
+        //  对外热量一起写好，清零会把那份抹掉。）
         if(!isHeatAuthority(node)){
-            node.heat = 0f;
             return;
         }
 
-        Seq<Building> groups = linkedHeatGroups(node);
+        distributeHeat(node, true);
+    }
+
+    /**
+     * 连接器网络的热量。
+     *
+     * <p>两部分：一是让**贴着连接器的导热管/热熔炉能读到整张网络的热量**（连接器和节点一样
+     * 当导热管用，用户报的"组合连接器不能传递热量"）；二是配置里把某项取消勾选、两端不再是
+     * 同一台机器时，按勾选的"热量"在网络层通算（全共享时本地组合体自己那套已经在算，
+     * 这里不能再分配一遍，会重复计热）。
+     */
+    public static void updateHeatConnector(ComboConnector.ComboConnectorBuild conn){
+        if(conn == null || state == null || world == null) return;
+        if(!conn.shareBit(ComboShare.HEAT)){
+            conn.heat = 0f;
+            clearHeatProbes(componentMembers(conn));
+            return;
+        }
+        beginHeatFrame();
+        if(!isConnectorHeatAuthority(conn)) return;
+        distributeHeat(conn, !ComboShare.fullShare(conn.shareMask()));
+    }
+
+    /** 连接器网络的热量负责人：分量里没有节点、且是 pos 最小的那个连接器。 */
+    private static boolean isConnectorHeatAuthority(ComboConnector.ComboConnectorBuild conn){
+        try{
+            Seq<Building> linkers = componentLinkers(conn);
+            for(int i = 0; i < linkers.size; i++){
+                Building l = linkers.get(i);
+                if(l instanceof ComboNode.ComboNodeBuild) return false;   // 有节点：交给节点那一套
+                if(l instanceof ComboConnector.ComboConnectorBuild c && c != conn && c.pos() < conn.pos()) return false;
+            }
+        }catch(Throwable ignored){
+        }
+        return true;
+    }
+
+    /**
+     * 网络热量：{@code allocate} = 要不要把整张网络的产热按需热比例分给组内需热端
+     * （节点网络一直要；连接器网络只在"两端不再是同一台机器"时才要，否则重复计热）。
+     *
+     * <p>不管分不分配，都会把**整张网络的热量写到网络里每个连接件身上** ——
+     * 节点和连接器都是 HeatBlock，贴着它们的原版导热管/热路由器/热熔炉就能读到整组热量
+     * （用户报的"组合节点和组合连接器不能传递热量"）。
+     */
+    private static void distributeHeat(Building hub, boolean allocate){
+        Seq<Building> groups = linkedHeatGroupsFor(hub);
+        Seq<Building> linkers = componentLinkers(hub);
+        Seq<Building> members = componentMembers(hub);
+        ObjectSet<Building> memberSet = new ObjectSet<>();
+        for(int i = 0; i < members.size; i++) memberSet.add(members.get(i));
+
         int n = groups.size;
-        if(n == 0){
-            node.heat = 0f;
-            return;
-        }
-
         float[] source = new float[n];
         float[] demand = new float[n];
-        float totalSource = 0f, totalDemand = 0f;
+        // 经连接件从网络外面进来的热（导热管从别处引过来 / 原版产热方块贴着节点或连接器）
+        float totalSource = linkerExternalHeat(linkers, memberSet);
+        float totalDemand = 0f;
         for(int i = 0; i < n; i++){
             Building leader = groups.get(i);
             source[i] = groupHeatSource(leader);
@@ -1336,20 +1830,288 @@ public class ComboNet {
             totalSource += source[i];
             totalDemand += demand[i];
         }
+        // 【连线接进来的"纯热"方块】组合节点也能连 mod 的制热机 / 需热炮台（它们不在组合池里，
+        // 不该共享物品/液体，但热量必须通算）：先把它们产的热并进网络总热量。
+        Seq<Building> heatLinked = collectLinkedHeatBuildings(linkers);
+        for(int i = 0; i < heatLinked.size; i++) totalSource += heatSourceOf(heatLinked.get(i));
 
-        if(totalDemand > 0.001f){
+        if(allocate && totalDemand > 0.001f){
             for(int i = 0; i < n; i++){
                 float amount = totalSource * demand[i] / totalDemand;
-                heatAlloc.increment(groups.get(i).pos(), amount);
+                // 一个组只属于一个连通分量、一个分量只有一个分配负责人，直接覆盖写
+                // （旧实现 increment 累加 + 每帧整体清空，两件事都与时序/多网络冲突，见 heatAlloc 声明）
+                HeatAllocEntry e = heatAlloc.get(groups.get(i).pos());
+                if(e == null){
+                    e = new HeatAllocEntry();
+                    heatAlloc.put(groups.get(i).pos(), e);
+                }
+                e.frame = state.updateId;
+                e.amount = amount;
                 if(amount > 0.001f && source[i] > 0.001f){
                     deductStoredHeat(groups.get(i), amount * source[i] / Math.max(totalSource, 0.001f));
                 }
             }
-            node.heat = 0f;
-        }else{
-            // 没有网络内需热端时，节点作为 HeatBlock 向相邻的原版/组合需热建筑供热。
-            node.heat = totalSource;
         }
+
+        // 连接件对外供热：贴在节点/连接器上的导热管、热熔炉都能读到整张网络的热量
+        for(int i = 0; i < linkers.size; i++) setLinkerHeat(linkers.get(i), totalSource);
+
+        // 【连线接进来的需热端】节点/连接器是跨距离连接的，可原版 calculateHeat 只看贴着
+        // proximity 的邻居 —— "制热机 --节点连线-- 需热炮台"里炮台读不到节点上的热。
+        // 这里给那些"在网里、但没贴着连接件"的需热建筑插一个热探针（用户报的那条）。
+        feedRemoteHeatConsumers(groups, heatLinked, linkers, totalSource);
+    }
+
+    private static void setLinkerHeat(Building linker, float value){
+        if(linker instanceof ComboNode.ComboNodeBuild node) node.heat = value;
+        else if(linker instanceof ComboConnector.ComboConnectorBuild conn) conn.heat = value;
+    }
+
+    /** 给"连线接进来、又没贴着连接件"的需热建筑插的热探针（pos → 探针）。 */
+    private static final arc.struct.IntMap<combine.util.ComboHeatProbe.ComboHeatProbeBuild> heatProbes = new arc.struct.IntMap<>();
+
+    /**
+     * 把整张网络的热量喂给**跨距离连线接进来**的需热建筑。
+     *
+     * <p>贴着节点/连接器的建筑本来就通过原版 {@code calculateHeat} 看得见（见
+     * {@link #setLinkerHeat}），但"制热机 --节点连线-- 需热炮台"里炮台离节点很远，
+     * 原版只看 {@code proximity}，读到的热是 0（用户报的"热量传不到炮台"）。
+     * 这里给这类建筑在它自己坐标上插一个热探针（{@code rotate=false}，
+     * 原版当作"整份热都在这一格"），其 {@code heat()} = 网络总热量。
+     */
+    private static void feedRemoteHeatConsumers(Seq<Building> groups, Seq<Building> heatLinked,
+                                                Seq<Building> linkers, float totalSource){
+        if(state == null || combine.util.ComboHeatProbe.probe == null){
+            warnProbeNullOnce();
+            return;
+        }
+        arc.struct.IntSet keep = new arc.struct.IntSet();
+        for(int i = 0; i < groups.size; i++){
+            Building leader = groups.get(i);
+            if(leader == null) continue;
+            for(Building m : ComboReflect.group(leader)){
+                if(m == null || !m.isValid() || !isHeatConsumer(m)) continue;
+                if(touchesLinker(m, linkers)) continue; // 贴着连接件：原版路径看得见，别重复计
+                if(attachHeatProbe(m, totalSource)) keep.add(m.pos());
+            }
+        }
+        // 连线接进来的"纯热"需热建筑（mod 炮台等）：一样给它们插探针
+        for(int i = 0; i < heatLinked.size; i++){
+            Building m = heatLinked.get(i);
+            if(m == null || !m.isValid() || !isHeatConsumer(m)) continue;
+            if(touchesLinker(m, linkers)) continue;
+            if(attachHeatProbe(m, totalSource)) keep.add(m.pos());
+        }
+        // 不再需要喂热的（断线/拆了/改成贴着连接件了）把探针摘掉，免得残留一份旧热量。
+        // 【 guard 】只摘"最近两 tick 没人喂"的：本 tick 或上一 tick 刚被喂过的探针属于
+        // 另一张并存的网络（同一 tick 里对方可能还没轮到 update），不能顺手摘掉，
+        // 否则两张网络共存时探针每帧被拆了又建、afflict 的热量会闪烁。
+        arc.struct.IntSeq stale = new arc.struct.IntSeq();
+        for(var it = heatProbes.iterator(); it.hasNext();){
+            var e = it.next();
+            if(!keep.contains(e.key) && state.updateId - e.value.lastFed > 1) stale.add(e.key);
+        }
+        for(int i = 0; i < stale.size; i++){
+            int pos = stale.get(i);
+            combine.util.ComboHeatProbe.ComboHeatProbeBuild pb = heatProbes.remove(pos);
+            Building host = world.build(pos);
+            if(pb != null && host != null && host.proximity != null) host.proximity.remove((Building) pb);
+        }
+    }
+
+    /**
+     * 把一组建筑身上挂的热探针全部摘掉（取消"热量"共享时调用，见 updateHeatNode/updateHeatConnector）。
+     * 只摘"本网络喂过"的（lastFed 在近两 tick 内）——并存的另一张网络可能也在喂其中某台，
+     * 那种探针不归我们管（distributeHeat 正常走时它们会被续期/摘除）。
+     */
+    private static void clearHeatProbes(Seq<Building> members){
+        if(members == null) return;
+        boolean clearAlloc = heatAlloc.size > 0;
+        for(int i = 0; i < members.size; i++){
+            Building m = members.get(i);
+            if(m == null || !m.isValid()) continue;
+            // 网络分配额一并清：heatFor 的过期判断有 30 tick 宽限，不清的话
+            // 取消共享后 afflict 还能从 heatAlloc 里捡到最多半秒的余热
+            if(clearAlloc){
+                Building l = ComboReflect.leader(m);
+                if(l != null) heatAlloc.remove(l.pos());
+            }
+            combine.util.ComboHeatProbe.ComboHeatProbeBuild pb = heatProbes.get(m.pos());
+            if(pb == null) continue;
+            if(state != null && state.updateId - pb.lastFed > 1) continue;   // 别的网络在喂，别拆
+            heatProbes.remove(m.pos());
+            if(m.proximity != null) m.proximity.remove((Building) pb);
+        }
+    }
+
+    /** 每帧一次的兜底清扫：任何网络都不再喂的探针（拆节点/节点停用/断线残留），超过 30 tick 摘除。 */
+    private static void sweepAbandonedHeatProbes(){
+        if(heatProbes.size == 0 || state == null) return;
+        arc.struct.IntSeq stale = new arc.struct.IntSeq();
+        for(var it = heatProbes.iterator(); it.hasNext();){
+            var e = it.next();
+            if(state.updateId - e.value.lastFed > heatAllocExpireTicks) stale.add(e.key);
+        }
+        for(int i = 0; i < stale.size; i++){
+            int pos = stale.get(i);
+            combine.util.ComboHeatProbe.ComboHeatProbeBuild pb = heatProbes.remove(pos);
+            Building host = world.build(pos);
+            if(pb != null && host != null && host.proximity != null) host.proximity.remove((Building) pb);
+        }
+    }
+
+    private static boolean probeNullWarned = false;
+    private static void warnProbeNullOnce(){
+        if(probeNullWarned) return;
+        probeNullWarned = true;
+        Log.warn("[combine] ComboHeatProbe 未注册：远程需热建筑（如 afflict）无法通过网络获得热量，请确认加载时调用了 ComboHeatProbe.create()");
+    }
+
+    /** 给一台需热建筑插/更新探针。 */
+    private static boolean attachHeatProbe(Building host, float heat){
+        try{
+            combine.util.ComboHeatProbe.ComboHeatProbeBuild pb = heatProbes.get(host.pos());
+            if(pb == null){
+                Building raw = combine.util.ComboHeatProbe.probe.newBuilding();
+                if(!(raw instanceof combine.util.ComboHeatProbe.ComboHeatProbeBuild build)) return false;
+                build.create(combine.util.ComboHeatProbe.probe, host.team);
+                Tile fake = new Tile(host.tileX(), host.tileY());
+                setTileBlock(fake, combine.util.ComboHeatProbe.probe);
+                build.tile = fake;
+                build.set(host.x, host.y);
+                build.proximity = new Seq<>();
+                build.team = host.team;
+                fake.build = build; // isValid() 靠这一条（它不在世界网格里）
+                pb = build;
+                heatProbes.put(host.pos(), pb);
+            }
+            pb.amount = Math.max(0f, heat);
+            pb.lastFed = state.updateId;   // 喂一次续一期，ComboNet 据此识别"没人喂的探针"
+            pb.team = host.team;
+            pb.set(host.x, host.y);
+            if(host.proximity == null) host.proximity = new Seq<>();
+            if(!host.proximity.contains(pb, true)) host.proximity.add(pb);
+            return true;
+        }catch(Throwable t){
+            // 以前这里静默返回 false：探针挂不上时远程热量无声无息地断掉，
+            // 玩家只看到" afflict 收不到热"却没有任何线索 —— 每台建筑只报一次
+            if(host != null && attachFailWarned.add(host.pos())){
+                Log.err("[combine] 给 " + host.block.name + "（" + host.tileX() + "," + host.tileY() + "）挂热探针失败，该建筑的远程组合热量将无法送达", t);
+            }
+            return false;
+        }
+    }
+
+    private static final ObjectSet<Integer> attachFailWarned = new ObjectSet<>();
+
+    /** 需热建筑：实现了原版 HeatConsumer，或 block 上写了正的 heatRequirement。 */
+    private static boolean isHeatConsumer(Building b){
+        if(b == null || b.block == null) return false;
+        if(b instanceof mindustry.world.blocks.heat.HeatConsumer) return true;
+        Float req = ComboReflect.getFloat(b.block, "heatRequirement");
+        return req != null && req > 0f;
+    }
+
+    /**
+     * 顺着连接件的连线/邻接收集"和热有关、但不属于组合池"的建筑。
+     *
+     * <p>用户报："afflict 和 slag-heater 用组合节点连接和没组合一样" —— 那些方块没被本模组
+     * 替换（mod 自带的制热机 / 需热炮台），既不在组合白名单里、也没有组合分组。它们不该参与
+     * 物品/液体并池（所以不进 componentMembers），但热量必须经节点通算，这里单独收出来。
+     */
+    private static Seq<Building> collectLinkedHeatBuildings(Seq<Building> linkers){
+        Seq<Building> out = new Seq<>();
+        ObjectSet<Building> seen = new ObjectSet<>();
+        Queue<Building> q = new Queue<>();
+        for(int i = 0; i < linkers.size; i++) q.addLast(linkers.get(i));
+        int guard = 0;
+        while(!q.isEmpty() && guard++ < 512){
+            Building cur = q.removeFirst();
+            Seq<Building> nbs = new Seq<>();
+            if(cur instanceof ComboNode.ComboNodeBuild n){
+                for(int i = 0; i < n.links.size; i++){
+                    Building l = world.build(n.links.get(i));
+                    if(l != null && l.isValid()) nbs.add(l);
+                }
+            }
+            if(cur.proximity != null)
+                for(Building nb : cur.proximity)
+                    if(nb != null && nb.isValid()) nbs.add(nb);
+            for(int i = 0; i < nbs.size; i++){
+                Building nb = nbs.get(i);
+                // 组合体/连接件本身走原来那套（池子+热量都在那边算），不在这里重复
+                if(isLinker(nb) || ComboReflect.isComboBuild(nb)) continue;
+                if(!ComboReflect.isHeatBuild(nb)) continue;
+                if(seen.add(nb)){
+                    out.add(nb);
+                    q.addLast(nb); // 热建筑之间还能继续接力（导热管串等）
+                }
+            }
+        }
+        return out;
+    }
+
+    /** 这台建筑这一帧对外供的热（产热机才有，需热方/导热管为 0）。 */
+    private static float heatSourceOf(Building b){
+        try{
+            if(b instanceof HeatBlock hb) return Math.max(0f, hb.heat());
+        }catch(Throwable ignored){
+        }
+        return 0f;
+    }
+
+    /** 这台建筑有没有贴着连接件（贴着的走原版相邻路径，不需要探针）。 */
+    private static boolean touchesLinker(Building b, Seq<Building> linkers){
+        if(b.proximity == null) return false;
+        for(int i = 0; i < b.proximity.size; i++){
+            Building nb = b.proximity.get(i);
+            if(nb == null) continue;
+            for(int k = 0; k < linkers.size; k++)
+                if(nb == linkers.get(k)) return true;
+        }
+        return false;
+    }
+
+    /** 让假 Tile 的 block() 也是这个方块（Tile.block 是 protected，反射设一次）。 */
+    static void setTileBlock(Tile tile, Block block){
+        try{
+            java.lang.reflect.Field f = Tile.class.getDeclaredField("block");
+            f.setAccessible(true);
+            f.set(tile, block);
+        }catch(Throwable ignored){
+        }
+    }
+
+    /**
+     * 贴着连接件、但**没有**贴着组内成员的外来热源 —— 让"热量从网络外面经节点/连接器进来"
+     * 也成立（导热管把别处的热引到节点上，组内需热端就能用）。
+     *
+     * <p>贴着成员的（成员自己那套本来就看得见）和连接件本身（各自的分量会算）都不重复计入，
+     * 否则"A 组的热经导热管兜一圈又算回 A 组"会自馈翻倍。
+     */
+    private static float linkerExternalHeat(Seq<Building> linkers, ObjectSet<Building> memberSet){
+        float sum = 0f;
+        for(int i = 0; i < linkers.size; i++){
+            Building l = linkers.get(i);
+            if(l == null || l.proximity == null) continue;
+            for(Building nb : l.proximity){
+                if(nb == null || !nb.isValid() || nb.team != l.team) continue;
+                if(!(nb instanceof HeatBlock hb)) continue;
+                if(memberSet.contains(nb) || isLinker(nb)) continue;
+                // 【只收"源头型"邻居】导热管/热熔炉这类 HeatConsumer 的 heat 很可能就是从
+                // 本网络（这个节点/连接器）读过去的 —— 再算成输入会自馈，几帧就涨到几百。
+                if(nb instanceof mindustry.world.blocks.heat.HeatConsumer) continue;
+                if(touchesMembers(nb, memberSet)) continue;
+                sum += Math.max(0f, hb.heat());
+            }
+        }
+        return sum;
+    }
+
+    private static boolean touchesMembers(Building b, ObjectSet<Building> memberSet){
+        if(b.proximity == null) return false;
+        for(Building nb : b.proximity) if(nb != null && memberSet.contains(nb)) return true;
+        return false;
     }
 
     /**
@@ -1385,12 +2147,12 @@ public class ComboNet {
         return true;
     }
 
-    private static Seq<Building> linkedHeatGroups(ComboNode.ComboNodeBuild node){
-        // 直接走网络分量：节点互连后链上所有组都是同一个"组合网络"，
+    private static Seq<Building> linkedHeatGroupsFor(Building hub){
+        // 直接走网络分量：节点互连/连接器接力后链上所有组都是同一个"组合网络"，
         // 产热/需热要和物品/液体池按同一套连通性通算。
         Seq<Building> out = new Seq<>();
         ObjectSet<Building> seen = new ObjectSet<>();
-        for(Building m : componentMembers(node)){
+        for(Building m : componentMembers(hub)){
             if(m == null || !m.isValid() || m instanceof ComboNode.ComboNodeBuild) continue;
             if(!ComboReflect.isComboBuild(m)) continue;
             Building leader = ComboReflect.leader(m);
@@ -1419,6 +2181,13 @@ public class ComboNet {
         float demand = 0f;
         for(Building m : ComboReflect.group(leader)){
             if(!m.isValid()) continue;
+            // 超级组合炮台：需求 = 里面每一台需热炮台之和（不是方块上那个"单台"标记值），
+            // 否则网络按需分配热量时会把整台合体炮台当成只要一份热（用户报的"合体后只
+            // 需要一个炮台的热量"）。
+            if(m instanceof combine.turret.SuperTurret.SuperTurretBuild st){
+                demand += st.heatDemand();
+                continue;
+            }
             Float req = ComboReflect.getFloat(m.block, "heatRequirement");
             if(req != null && req > 0f) demand += req;
         }
@@ -1439,10 +2208,19 @@ public class ComboNet {
         ComboReflect.setStoredHeat(stored, Math.max(0f, cur - amount));
     }
 
+    /**
+     * 每帧最多一次的陈旧分配清理。只在网络写入方（节点/连接器的 updateTile）调用 ——
+     * 读取方（heatFor）绝不清空，否则"需热建筑比节点先 update"时读到的永远是 0。
+     */
     private static void beginHeatFrame(){
         if(state != null && heatFrame != state.updateId){
-            heatAlloc.clear();
             heatFrame = state.updateId;
+            arc.struct.IntSeq staleKeys = new arc.struct.IntSeq();
+            for(var it = heatAlloc.iterator(); it.hasNext();){
+                var en = it.next();
+                if(state.updateId - en.value.frame > heatAllocExpireTicks) staleKeys.add(en.key);
+            }
+            for(int i = 0; i < staleKeys.size; i++) heatAlloc.remove(staleKeys.get(i));
         }
     }
 }

@@ -103,19 +103,24 @@ public class ComboPower {
       return;
     try {
       Seq<Building> targets = new Seq<>();
+      // "只玩家组合"打开时，AI 敌人的建筑不参与组合、也不需要模组替它们对账电网 ——
+      // 大型进攻图上有几万台敌方建筑，全收进来就是一次几十毫秒的卡顿（用户报"进去非常卡"）。
+      boolean playersOnly = ComboTeams.playersOnly;
       if (fullPass) {
         fullPass = false;
         if (world != null && world.tiles != null) {
           for (Tile t : world.tiles) {
             Building b = t == null ? null : t.build;
-            if (b != null && b.isValid() && b.power != null)
+            if (b != null && b.isValid() && b.power != null
+                && (!playersOnly || ComboTeams.playerTeam(b.team)))
               targets.add(b);
           }
         }
       } else if (sweep && world != null) {
         // 兜底：只扫"每帧都在更新"的建筑（组合建筑都在里面），不动原版那些 update=false 的
         for (Building b : Groups.build) {
-          if (b != null && b.isValid() && b.power != null)
+          if (b != null && b.isValid() && b.power != null
+              && (!playersOnly || ComboTeams.playerTeam(b.team)))
             targets.add(b);
         }
       }

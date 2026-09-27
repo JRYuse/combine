@@ -59,7 +59,7 @@ public class CombinedPump extends Pump {
     @Override
     public void init() {
         super.init();
-        if (liquidCapacity != 9999f) {
+        if (ComboReflect.captureBaseLiquidCapOnce(this)) {
             baseLiquidCapacity = liquidCapacity;
             displayLiquid = baseLiquidCapacity;
         }
@@ -373,6 +373,7 @@ public class CombinedPump extends Pump {
 
         @Override
         public void updateTile() {
+          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
             if (pendingLeaderPos != -1) {
                 Building b = world.build(pendingLeaderPos);
                 if (b instanceof CombinedPumpBuild leaderBuild && leaderBuild.isValid()
@@ -504,58 +505,8 @@ public class CombinedPump extends Pump {
                                 () -> Pal.health, () -> Mathf.clamp(h / mh)));
                         barsTable.row();
                     }
-                    // 电力条：按整组耗电显示（组里没人耗电就不画）
-                    float totalPowerUsage = 0f;
-                    for (CombinedPumpBuild member : group())
-                        if (member.isValid() && member.block.consPower != null)
-                            totalPowerUsage += member.block.consPower.usage;
-                    ComboUi.addPowerBar(barsTable, this, totalPowerUsage);
-                    // 需要输入的液体（如 reinforced-pump 的氢气）也要显示，否则玩家看不出缺什么
-                    LiquidModule needSource = liquids;
-                    if (needSource == null) {
-                        CombinedPumpBuild l3 = leader();
-                        if (l3 != null)
-                            needSource = l3.liquids;
-                    }
-                    if (needSource != null && block.consumers != null) {
-                        final LiquidModule fLiq = needSource;
-                        final float lcap3 = Math.max(comboTotalLiquidCap, 1f);
-                        for (Consume cons : block.consumers) {
-                            Liquid need = null;
-                            if (cons instanceof ConsumeLiquid cl)
-                                need = cl.liquid;
-                            else if (cons instanceof ConsumeLiquids cls && cls.liquids.length > 0)
-                                need = cls.liquids[0].liquid;
-                            if (need == null || need == liquidDrop)
-                                continue;
-                            final Liquid needF = need;
-                            barsTable.add(new Bar(
-                                    () -> needF.localizedName + ": " + Strings.fixed(fLiq.get(needF), 1) + "/" + Strings.fixed(lcap3, 1),
-                                    () -> needF.barColor != null ? needF.barColor : needF.color,
-                                    () -> fLiq.get(needF) / lcap3));
-                            barsTable.row();
-                        }
-                    }
-                    LiquidModule liq = liquids;
-                    if (liq == null) {
-                        CombinedPumpBuild l = leader();
-                        if (l != null)
-                            liq = l.liquids;
-                    }
-                    if (liq != null) {
-                        for (Liquid liquid : content.liquids()) {
-                            float total = liq.get(liquid);
-                            if (total > 0.001f) {
-                                final float t = total, c = Math.max(comboTotalLiquidCap, 1f);
-                                barsTable.add(new Bar(
-                                        () -> liquid.localizedName + ": " + Strings.fixed(t, 1) + "/"
-                                                + Strings.fixed(c, 1),
-                                        () -> liquid.barColor != null ? liquid.barColor : liquid.color,
-                                        () -> t / c));
-                                barsTable.row();
-                            }
-                        }
-                    }
+                    // 液体池 / 电力条挪到悬浮面板（用户要求 display() 只留组合体构成）；
+                    // 这里只留过程量条（血量）。
                 });
                 cont.add(barsTable).growX().left();
                 cont.row();
@@ -571,26 +522,7 @@ public class CombinedPump extends Pump {
 
         public void buildComboIO(Table table) {
             table.left();
-            table.add("[lightgray]组合体构成:").left();
-            table.row();
-            ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (Building member : ComboNet.displayMembers(this, group().size)) {
-                if (member.isValid()) {
-                    int old = blockCounts.get(member.block, 0);
-                    blockCounts.put(member.block, old + 1);
-                }
-            }
-            Seq<Block> sorted = new Seq<>();
-            for (Block b : blockCounts.keys())
-                sorted.add(b);
-            sorted.sort(b -> b.id);
-            for (Block b : sorted) {
-                int count = blockCounts.get(b, 0);
-                if (count > 0) {
-                    table.add(b.localizedName + "*" + count).color(Color.white).left();
-                    table.row();
-                }
-            }
+            ComboUi.addComposition(table, this, group().size);
         }
 
         // -------------------- 序列化 --------------------

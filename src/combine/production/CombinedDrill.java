@@ -919,6 +919,7 @@ public class CombinedDrill extends Block {
         // ---- 核心更新 ----
         @Override
         public void updateTile() {
+          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
             if (pendingLeaderPos != -1) {
                 Building b = world.build(pendingLeaderPos);
                 if (b instanceof CombinedDrillBuild leaderBuild && leaderBuild.isValid() && leaderBuild.team == team) {
@@ -1453,102 +1454,38 @@ public class CombinedDrill extends Block {
                         () -> Mathf.clamp(h / mh)));
                 table.row();
             }
-            float totalPower = 0f;
-            for (CombinedDrillBuild member : group()) {
-                if (member.isValid() && member.block.consPower != null)
-                    totalPower += member.block.consPower.usage;
-            }
-            if (totalPower > 0 && power != null) {
-                final float tp = totalPower;
-                table.add(new Bar(
-                        () -> "电力 " + Strings.fixed(tp * power.status * 60f, 1) + " ⚡/s",
-                        () -> Pal.power,
-                        () -> power.status));
-                table.row();
-            }
             final float ls = lastDrillSpeed;
             table.add(new Bar(
                     () -> Core.bundle.format("bar.drillspeed", Strings.fixed(ls * 60f * timeScale(), 2)),
                     () -> Pal.ammo,
                     () -> warmup));
             table.row();
-            if (items != null) {
-                for (Item item : content.items()) {
-                    int total = items.get(item);
-                    if (total > 0) {
-                        final int t = total, c = ComboNet.effectiveItemCap(this);
-                        table.add(new Bar(
-                                () -> item.localizedName + ": " + t + "/" + c,
-                                () -> item.color,
-                                () -> (float) t / c));
-                        table.row();
-                    }
-                }
-            }
-            LiquidModule sharedLiq = this.liquids;
-            if (sharedLiq == null) {
-                CombinedDrillBuild l = leader();
-                if (l != null)
-                    sharedLiq = l.liquids;
-            }
-            if (sharedLiq == null) {
-                for (CombinedDrillBuild member : group()) {
-                    if (member.liquids != null) {
-                        sharedLiq = member.liquids;
-                        break;
-                    }
-                }
-            }
-            if (sharedLiq != null) {
-                for (Liquid liquid : content.liquids()) {
-                    float total = sharedLiq.get(liquid);
-                    if (total > 0.001f) {
-                        final float t = total, c = ComboNet.effectiveLiquidCap(this);
-                        table.add(new Bar(
-                                () -> liquid.localizedName + ": " + Strings.fixed(t, 1) + "/" + Strings.fixed(c, 1),
-                                () -> liquid.barColor != null ? liquid.barColor : liquid.color,
-                                () -> t / c));
-                        table.row();
-                    }
-                }
-            }
+            // 物品池 / 液体池 / 电力条都挪到悬浮面板了（用户要求 display() 只留组合体构成）；
+            // 这里只留"过程量"条（血量 / 本机钻速）。
         }
 
         public void buildComboIO(Table table) {
             table.left();
-            table.add("[lightgray]组合体构成:").left();
-            table.row();
-            ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (Building member : ComboNet.displayMembers(this, group().size)) {
-                if (member.isValid()) {
-                    int old = blockCounts.get(member.block, 0);
-                    blockCounts.put(member.block, old + 1);
+            ComboUi.addComposition(table, this, group().size);
+
+            // 【每种物品的整组挖速】用户要求："给组合钻头的 display() 加上每种物品的挖掘
+            // 总速率，要统计组合体里所有组合钻头"。每台各有自己的矿种/覆盖格数，整组产量
+            // 按矿种分别累加（件/秒），一行一样、超宽换行。
+            ObjectFloatMap<Item> rates = new ObjectFloatMap<>();
+            groupDrillRates(rates);
+            if (rates.size > 0) {
+                StringBuilder sb = new StringBuilder();
+                for (Item item : content.items()) {
+                    float r = rates.get(item, 0f);
+                    if (r <= 0.001f)
+                        continue;
+                    if (sb.length() > 0)
+                        sb.append("  ");
+                    sb.append(item.localizedName == null ? item.name : item.localizedName)
+                            .append(' ').append(Strings.fixed(r, 2)).append("/s");
                 }
-            }
-            Seq<Block> sortedBlocks = new Seq<>();
-            for (Block b : blockCounts.keys())
-                sortedBlocks.add(b);
-            sortedBlocks.sort(b -> b.id);
-            boolean hasContent = false;
-            for (Block b : sortedBlocks) {
-                int count = blockCounts.get(b, 0);
-                if (count > 0) {
-                    hasContent = true;
-                    table.add(b.localizedName + "*" + count).color(Color.white).left();
-                    table.row();
-                }
-            }
-            if (!hasContent) {
-                table.add("[darkGray]无").left();
-                table.row();
-            }
-            // 【整组挖速】用户报"矿机组合挖速没变化"：以前面板每一台只显示**本机**那一份
-            // （矿种 × 钻速 × 覆盖格数），组合多少台数字都一样。这里补一行整组合计：
-            // 每台各自挖、共用一口池子，整组产量就是 Σ 各成员那一份。
-            if (group().size > 1) {
-                float speed = groupDrillSpeed();
-                if (speed > 0.001f) {
-                    table.add("[lightgray]整组挖速: " + Strings.fixed(speed, 1) + "/s（" + group().size + " 台）[]").left();
+                if (sb.length() > 0) {
+                    table.add("[lightgray]挖速: " + sb + "[]").left().width(ComboUi.COMPOSITION_WIDTH).wrap();
                     table.row();
                 }
             }
@@ -1556,19 +1493,41 @@ public class CombinedDrill extends Block {
 
         /** 整组产量（件/秒）：Σ 各成员自己的那一份（自己的矿种 × 自己的钻速 × 覆盖格数）。 */
         public float groupDrillSpeed() {
+            ObjectFloatMap<Item> rates = new ObjectFloatMap<>();
+            groupDrillRates(rates);
             float sum = 0f;
-            for (CombinedDrillBuild m : group()) {
-                if (m == null || !m.isValid())
-                    continue;
-                CombinedDrill mb2 = (CombinedDrill) m.block;
-                if (mb2.mode == Mode.beam) {
-                    if (m.lastItem != null && m.facingAmount > 0)
-                        sum += 60f / mb2.getDrillTime(m.lastItem) * m.facingAmount;
-                } else if (m.dominantItem != null && m.dominantItems > 0) {
-                    sum += 60f / mb2.getDrillTime(m.dominantItem) * m.dominantItems;
-                }
-            }
+            for (ObjectFloatMap.Entry<Item> e : rates)
+                sum += e.value;
             return sum;
+        }
+
+        /**
+         * 每种物品的整组挖掘总速率（件/秒）累加进 {@code out}。
+         *
+         * <p>统计范围是**整个组合体**（连接器/节点接进来的也算，和"构成"同一份成员表）。
+         *
+         * <p>每台取的就是它自己那份**运行期速率** {@code lastDrillSpeed}（件/tick，三种模式都由
+         * updateTile 维护），乘 60 × timeScale() 换成件/秒 —— 和每台面板上那条"钻速"条
+         * （{@code bar.drillspeed}）口径完全一致，于是整组 = 那一堆条之和（用户要求：
+         * "应该是全部钻头挖某个物品的速率，不是某个单独钻头的速率"）。
+         * 某台当前没在挖（lastDrillSpeed=0 或没有当前矿种）就不计入。
+         */
+        public void groupDrillRates(ObjectFloatMap<Item> out) {
+            if (out == null)
+                return;
+            for (Building m : ComboNet.displayMembers(this, group().size)) {
+                if (!(m instanceof CombinedDrillBuild d) || !d.isValid())
+                    continue;
+                CombinedDrill db = (CombinedDrill) d.block;
+                Item mining = db.mode == Mode.beam ? d.lastItem : d.dominantItem;
+                if (mining == null)
+                    continue;
+                float perSecond = d.lastDrillSpeed * 60f * d.timeScale();
+                // 注意：arc 的 ObjectFloatMap.increment(key, defaultAmount, amount) 参数顺序很反直觉
+                // （第三个才是要加的量），这里直接写 put(get+…) 免得再踩。
+                if (perSecond > 0.0001f)
+                    out.put(mining, out.get(mining, 0f) + perSecond);
+            }
         }
 
         public void buildLocalIO(Table table) {

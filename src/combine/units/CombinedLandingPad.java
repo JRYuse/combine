@@ -56,7 +56,7 @@ public class CombinedLandingPad extends LandingPad {
     @Override
     public void init() {
         super.init();
-        if (liquidCapacity != 9999f) {
+        if (ComboReflect.captureBaseLiquidCapOnce(this)) {
             baseLiquidCapacity = liquidCapacity;
             displayLiquid = baseLiquidCapacity;
         }
@@ -489,6 +489,7 @@ public class CombinedLandingPad extends LandingPad {
         // -------------------- 核心逻辑 --------------------
         @Override
         public void updateTile() {
+          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
             if (pendingLeaderPos != -1) {
                 Building b = world.build(pendingLeaderPos);
                 if (b instanceof CombinedLandingPadBuild leaderBuild && leaderBuild.isValid()
@@ -600,51 +601,12 @@ public class CombinedLandingPad extends LandingPad {
                                 () -> Pal.health, () -> Mathf.clamp(h / mh)));
                         barsTable.row();
                     }
-                    // 电力条：按整组耗电显示（组里没人耗电就不画）
-                    float totalPowerUsage = 0f;
-                    for (CombinedLandingPadBuild member : group())
-                        if (member.isValid() && member.block.consPower != null)
-                            totalPowerUsage += member.block.consPower.usage;
-                    ComboUi.addPowerBar(barsTable, this, totalPowerUsage);
                     final float cd = cooldown;
                     barsTable.add(new Bar(
                             () -> "接收冷却 " + Strings.fixed(cd * 100f, 0) + "%",
                             () -> Pal.accent, () -> 1f - cd));
                     barsTable.row();
-                    if (items != null) {
-                        final int t = items.total(), c = Math.max(comboTotalItemCap, 1);
-                        barsTable.add(new Bar(() -> "物品 " + t + "/" + c, () -> Pal.items,
-                                () -> (float) t / c));
-                        barsTable.row();
-                        for (Item item : content.items()) {
-                            int total = items.get(item);
-                            if (total > 0) {
-                                final int ti = total;
-                                barsTable.add(new Bar(
-                                        () -> item.localizedName + ": " + ti + "/" + c,
-                                        () -> item.color, () -> (float) ti / c));
-                                barsTable.row();
-                            }
-                        }
-                    }
-                    LiquidModule liq = liquids;
-                    if (liq == null) {
-                        CombinedLandingPadBuild l = leader();
-                        if (l != null)
-                            liq = l.liquids;
-                    }
-                    if (liq != null) {
-                        for (Liquid liquid : cachedLiquids) {
-                            float total = liq.get(liquid);
-                            final float t = total, c = Math.max(comboTotalLiquidCap, 1f);
-                            barsTable.add(new Bar(
-                                    () -> liquid.localizedName + ": " + Strings.fixed(t, 1) + "/"
-                                            + Strings.fixed(c, 1),
-                                    () -> liquid.barColor != null ? liquid.barColor : liquid.color,
-                                    () -> t / c));
-                            barsTable.row();
-                        }
-                    }
+                    // 物品池 / 液体池 / 电力条挪到悬浮面板（用户要求 display() 只留组合体构成）。
                 });
                 cont.add(barsTable).growX().left();
                 cont.row();
@@ -660,26 +622,7 @@ public class CombinedLandingPad extends LandingPad {
 
         public void buildComboIO(Table table) {
             table.left();
-            table.add("[lightgray]组合体构成:").left();
-            table.row();
-            ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (Building member : ComboNet.displayMembers(this, group().size)) {
-                if (member.isValid()) {
-                    int old = blockCounts.get(member.block, 0);
-                    blockCounts.put(member.block, old + 1);
-                }
-            }
-            Seq<Block> sorted = new Seq<>();
-            for (Block b : blockCounts.keys())
-                sorted.add(b);
-            sorted.sort(b -> b.id);
-            for (Block b : sorted) {
-                int count = blockCounts.get(b, 0);
-                if (count > 0) {
-                    table.add(b.localizedName + "*" + count).color(Color.white).left();
-                    table.row();
-                }
-            }
+            ComboUi.addComposition(table, this, group().size);
         }
 
         // -------------------- 序列化 --------------------

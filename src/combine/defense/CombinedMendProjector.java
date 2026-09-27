@@ -61,7 +61,7 @@ public class CombinedMendProjector extends MendProjector {
     @Override
     public void init() {
         super.init();
-        if (liquidCapacity != 9999f) {
+        if (ComboReflect.captureBaseLiquidCapOnce(this)) {
             baseLiquidCapacity = liquidCapacity;
             displayLiquid = baseLiquidCapacity;
         }
@@ -525,6 +525,7 @@ public class CombinedMendProjector extends MendProjector {
 
         @Override
         public void updateTile() {
+          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
             if (pendingLeaderPos != -1) {
                 Building b = world.build(pendingLeaderPos);
                 if (b instanceof CombinedMendProjectorBuild leaderBuild && leaderBuild.isValid()
@@ -651,104 +652,13 @@ public class CombinedMendProjector extends MendProjector {
                         () -> Pal.health, () -> Mathf.clamp(h / mh)));
                 table.row();
             }
-            float totalPower = 0f;
-            for (CombinedMendProjectorBuild member : group()) {
-                if (member.isValid() && member.block.consPower != null)
-                    totalPower += member.block.consPower.usage;
-            }
-            if (totalPower > 0 && power != null) {
-                final float tp = totalPower;
-                table.add(new Bar(() -> "电力 " + Strings.fixed(tp * power.status * 60f, 1) + " ⚡/s", () -> Pal.power,
-                        () -> power.status));
-                table.row();
-            }
-            // 收集组合体中所有涉及物品（跨类型）
-            Seq<Item> involvedItems = new Seq<>();
-            for (CombinedMendProjectorBuild member : group()) {
-                if (member.isValid()) {
-                    for (Item item : ((CombinedMendProjector) member.block).cachedItems) {
-                        if (!involvedItems.contains(item))
-                            involvedItems.add(item);
-                    }
-                }
-            }
-            if (items != null) {
-                for (Item item : combine.util.ComboReflect.displayItems(items, involvedItems)) {
-                    int total = items.get(item);
-                    if (total > 0) {
-                        final int t = total, c = Math.max(comboTotalItemCap, 1);
-                        table.add(new Bar(() -> item.localizedName + ": " + t + "/" + c, () -> item.color,
-                                () -> (float) t / c));
-                        table.row();
-                    }
-                }
-            }
-            // 收集组合体中所有涉及液体（跨类型）
-            Seq<Liquid> involvedLiquids = new Seq<>();
-            for (CombinedMendProjectorBuild member : group()) {
-                if (member.isValid()) {
-                    for (Liquid liquid : ((CombinedMendProjector) member.block).cachedLiquids) {
-                        if (!involvedLiquids.contains(liquid))
-                            involvedLiquids.add(liquid);
-                    }
-                }
-            }
-            LiquidModule sharedLiq = this.liquids;
-            if (sharedLiq == null) {
-                CombinedMendProjectorBuild l = leader();
-                if (l != null)
-                    sharedLiq = l.liquids;
-            }
-            if (sharedLiq == null) {
-                for (CombinedMendProjectorBuild member : group()) {
-                    if (member.liquids != null) {
-                        sharedLiq = member.liquids;
-                        break;
-                    }
-                }
-            }
-            if (sharedLiq != null) {
-                for (Liquid liquid : involvedLiquids) {
-                    float total = sharedLiq.get(liquid);
-                    if (total > 0.001f) {
-                        final float t = total, c = Math.max(comboTotalLiquidCap, 1f);
-                        table.add(new Bar(
-                                () -> liquid.localizedName + ": " + Strings.fixed(t, 1) + "/" + Strings.fixed(c, 1),
-                                () -> liquid.barColor != null ? liquid.barColor : liquid.color, () -> t / c));
-                        table.row();
-                    }
-                }
-            }
+            // 物品池 / 液体池 / 电力条挪到悬浮面板（用户要求 display() 只留组合体构成）；
+            // 这里只留过程量条（血量）。
         }
 
         public void buildComboIO(Table table) {
             table.left();
-            table.add("[lightgray]组合体构成:").left();
-            table.row();
-            ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-            for (Building member : ComboNet.displayMembers(this, group().size)) {
-                if (member.isValid()) {
-                    int old = blockCounts.get(member.block, 0);
-                    blockCounts.put(member.block, old + 1);
-                }
-            }
-            Seq<Block> sortedBlocks = new Seq<>();
-            for (Block b : blockCounts.keys())
-                sortedBlocks.add(b);
-            sortedBlocks.sort(b -> b.id);
-            boolean hasContent = false;
-            for (Block b : sortedBlocks) {
-                int count = blockCounts.get(b, 0);
-                if (count > 0) {
-                    hasContent = true;
-                    table.add(b.localizedName + "*" + count).color(Color.white).left();
-                    table.row();
-                }
-            }
-            if (!hasContent) {
-                table.add("[darkGray]无").left();
-                table.row();
-            }
+            ComboUi.addComposition(table, this, group().size);
         }
 
         // 地图区里只写"原版那一份字节"（MendBuild 写 heat/phaseHeat，这里 super.write 就是它），

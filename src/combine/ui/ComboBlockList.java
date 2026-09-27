@@ -237,6 +237,17 @@ public class ComboBlockList {
     paneW = Mathf.clamp(logicalW - 90f, 300f, 620f);
     colW = Math.max((paneW - 18f) / 3f, 80f);
 
+    // 【只和玩家队友组合】总开关：AI 敌人的建筑不再互相组合（玩家队伍照旧）
+    table.check("[accent]只和玩家队友组合[]（关掉 = 谁跟谁贴一起都能组合）",
+        combine.util.ComboTeams.playersOnly, v -> {
+          combine.util.ComboTeams.set(v);
+          try {
+            combine.net.ComboNet.markDirty();
+            combine.coop.CoopCombo.markDirty();
+          } catch (Throwable ignored) {
+          }
+        }).left().padBottom(8f).row();
+
     final String[] query = {searchText};
     final int[] filter = {filterMode};
     final Table list = new Table();

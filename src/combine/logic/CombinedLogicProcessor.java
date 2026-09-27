@@ -180,6 +180,7 @@ public class CombinedLogicProcessor extends LogicBlock {
 
     @Override
     public void updateTile() {
+      if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
       if (isLeader() && comboDirty)
         rebuildCombo();
       CombinedLogicProcessorBuild lead = leader();
@@ -287,32 +288,7 @@ public class CombinedLogicProcessor extends LogicBlock {
 
     public void buildComboIO(Table table) {
       table.left();
-      table.add("[lightgray]组合体构成:").left();
-      table.row();
-      ObjectIntMap<Block> blockCounts = new ObjectIntMap<>();
-      for (Building member : ComboNet.displayMembers(this, group().size)) {
-        if (member.isValid()) {
-          int old = blockCounts.get(member.block, 0);
-          blockCounts.put(member.block, old + 1);
-        }
-      }
-      Seq<Block> sortedBlocks = new Seq<>();
-      for (Block b : blockCounts.keys())
-        sortedBlocks.add(b);
-      sortedBlocks.sort(b -> b.id);
-      boolean hasContent = false;
-      for (Block b : sortedBlocks) {
-        int count = blockCounts.get(b, 0);
-        if (count > 0) {
-          hasContent = true;
-          table.add(b.localizedName + "*" + count).color(Color.white).left();
-          table.row();
-        }
-      }
-      if (!hasContent) {
-        table.add("[darkGray]无").left();
-        table.row();
-      }
+      ComboUi.addComposition(table, this, group().size);
     }
   }
 }

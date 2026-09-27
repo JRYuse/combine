@@ -28,6 +28,30 @@ public class HeatProducerTest implements ApplicationListener{
         if(bu != null){ try{ bu.updateProximity(); }catch(Throwable ignored){} }
         return bu; }
     static Block find(String name){ for(Block b : Vars.content.blocks()) if(b.name.equals(name)) return b; return null; }
+    static void clearArea(){
+        for(int y=40;y<140;y++) for(int x=20;x<240;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+        run(5); }
+    /** 用节点的"点目标 = 连线"接口把节点跟组合体连上（等同玩家点两下）。 */
+    static void tapNode(Building node, Building target){
+        try{
+            java.lang.reflect.Method m = node.getClass().getMethod("onConfigureBuildTapped", Building.class);
+            m.setAccessible(true);
+            m.invoke(node, target);
+        }catch(Throwable t){ System.out.println("[HP] 节点连线失败: " + t); } }
+    static boolean adjacent(Building a, Building b){
+        if(a == null || b == null || a.proximity == null) return false;
+        for(Building nb : a.proximity) if(nb == b) return true;
+        return false; }
+    static void setRotation(Building b, int rotation){
+        try{
+            var f = b.getClass().getField("rotation");
+            f.setByte(b, (byte)rotation);
+        }catch(Throwable t){ System.out.println("[HP] 设置朝向失败: " + t); } }
+    static int rel(Building a, Building b){
+        try{
+            java.lang.reflect.Method m = a.getClass().getMethod("relativeTo", Building.class);
+            return ((Number)m.invoke(a, b)).intValue();
+        }catch(Throwable t){ return -99; } }
     /** 读 heat()（HeathBlock 接口方法在实现类上，Building 类型没有）。 */
     static float heatOf(Object o){
         try{
@@ -56,6 +80,15 @@ public class HeatProducerTest implements ApplicationListener{
             }
         }catch(Throwable ignored){}
         return -1f; }
+    static Object field(Object o, String name){
+        try{
+            Class<?> c = o.getClass();
+            while(c != null){
+                try{ var f = c.getDeclaredField(name); f.setAccessible(true); return f.get(o); }
+                catch(NoSuchFieldException ignored){ c = c.getSuperclass(); }
+            }
+        }catch(Throwable ignored){}
+        return null; }
 
     @Override public void init(){
       try{
@@ -134,11 +167,67 @@ public class HeatProducerTest implements ApplicationListener{
         // 贴着 3 台放一个耗热方看它到底拿到多少热
         if(router != null){
             Building r = place(router, 60 + sz, 60 + sz, Team.sharded);
+            // 原版热量是"要对着"的（HeatProducer.rotate = true）：制热机必须朝向耗热方那一边。
+            // 朝向编码别猜：按原版判据 rotation == (relativeTo(源) + 2) % 4 反推每一台的朝向。
+            for(Building b : all) if(adjacent(r, b)) setRotation(b, (rel(r, b) + 2) % 4);
             all[0].liquids.add(Liquids.slag, 100000f);
             run(60);
             System.out.println("[HP] 导热/耗热方 heat=" + heatOf(r) + "（自身 " + fieldF(r, "heat") + "）");
-            check("导热/耗热方拿到的热量 ≤ 相邻 3 台之和（" + (per * 3 + 1f) + "），不是 3×整组",
-                heatOf(r) <= per * 3 + 1f);
+            // 产热会继续涨（producerHeat 是平滑逼近的），所以这里重新量一次整组产量
+            float ownSumNow = 0f;
+            for(Building b : all) ownSumNow += fieldF(b, "producerHeat");
+            float perNow = ownSumNow / all.length;
+            System.out.println("[HP] 此刻整组产量=" + ownSumNow + "（每台 " + perNow + "）");
+            // 用户报："一个组合体的热量不能通过热量传输器统一输出，只能输出靠近热量传输器的一个的"
+            // → 组合体 = 一台大机器：贴上去的导热管应该拿到**整组**的热量；
+            //   但不能 N 倍（10 台各报整组 = 耗热方看到 10× 整组，那是以前修过的老 bug）
+            check("导热管拿到整组热量（不再只是贴着的那一台：" + heatOf(r) + " ≈ 整组 " + ownSumNow + "）",
+                heatOf(r) > perNow * 1.5f && heatOf(r) > ownSumNow * 0.9f);
+            check("导热管拿到的不是 N 倍（≤ 整组之和 " + ownSumNow + "）", heatOf(r) <= ownSumNow + 1f);
+        }
+
+        // ---- 组合节点 / 组合连接器传热（用户报的"组合节点和组合连接器不能传递热量"）----
+        Block nodeB = null, connB = null, redirector = find("heat-redirector");
+        for(Block b : Vars.content.blocks()){
+            if(nodeB == null && b.getClass().getName().equals("combine.net.ComboNode")) nodeB = b;
+            if(connB == null && b.getClass().getName().equals("combine.net.ComboConnector")) connB = b;
+        }
+        if(redirector == null || nodeB == null || connB == null){
+            System.out.println("[HP] 缺导热管/节点/连接器，跳过传热用例（redirector=" + redirector + " node=" + nodeB + " conn=" + connB + "）");
+        }else{
+            // 组合节点：两台制热机成组 → 节点（激光连上）→ 贴着节点的导热管
+            clearArea();
+            Building h1 = place(heater, 60, 60, Team.sharded);
+            Building h2 = place(heater, 63, 60, Team.sharded);
+            Building node = place(nodeB, 68, 60, Team.sharded);      // 1x1，占 (68,60)
+            Building rd = place(redirector, 69, 59, Team.sharded);   // 3x3，占 (69..71,59..61)，只贴着节点
+            run(10);
+            tapNode(node, h2);
+            run(10);
+            h1.liquids.add(Liquids.slag, 100000f);
+            run(120);
+            float groupOwn = fieldF(h1, "producerHeat") + fieldF(h2, "producerHeat");
+            float nodeHeat = fieldF(node, "heat"), rdHeat = heatOf(rd);
+            System.out.println("[HP] 节点传热: 组内两台产热=" + groupOwn + " 节点heat=" + nodeHeat
+                + " 贴着节点的导热管 heat=" + rdHeat + "（导热管自身字段 " + fieldF(rd, "heat") + "）");
+            check("组合节点把整组热量传给贴着的导热管（组内 " + groupOwn + "）",
+                groupOwn > 0.1f && rdHeat > groupOwn * 0.9f && rdHeat < groupOwn * 2.1f);
+
+            // 组合连接器：两组制热机中间只放连接器，导热管只贴着连接器
+            clearArea();
+            Building c1 = place(heater, 60, 60, Team.sharded);
+            Building c2 = place(heater, 63, 60, Team.sharded);
+            Building conn = place(connB, 66, 60, Team.sharded);      // 1x1，贴着 c2
+            Building rd2 = place(redirector, 67, 59, Team.sharded);  // 3x3，占 (67..69,59..61)，只贴着连接器
+            run(10);
+            c1.liquids.add(Liquids.slag, 100000f);
+            run(120);
+            float groupOwn2 = fieldF(c1, "producerHeat") + fieldF(c2, "producerHeat");
+            float connHeat = fieldF(conn, "heat"), rdHeat2 = heatOf(rd2);
+            System.out.println("[HP] 连接器传热: 组内两台产热=" + groupOwn2 + " 连接器heat=" + connHeat
+                + " 贴着连接器的导热管 heat=" + rdHeat2 + " 相邻吗=" + adjacent(conn, rd2));
+            check("组合连接器把整组热量传给贴着的导热管（组内 " + groupOwn2 + "）",
+                groupOwn2 > 0.1f && rdHeat2 > groupOwn2 * 0.9f && rdHeat2 < groupOwn2 * 2.1f);
         }
 
         System.out.println("[HP] RESULT " + (fail==0?"ALL PASS":(fail+" FAILED")) + " (pass="+pass+")");
