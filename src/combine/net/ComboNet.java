@@ -27,6 +27,7 @@ import mindustry.ui.Bar;
 import mindustry.world.Block;
 import mindustry.world.Tile;
 import mindustry.world.blocks.heat.HeatBlock;
+import mindustry.world.blocks.heat.HeatConsumer;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
 
@@ -2166,10 +2167,19 @@ public class ComboNet {
         return out;
     }
 
-    /** 这台建筑这一帧对外供的热（产热机才有，需热方/导热管为 0）。 */
+    /**
+     * 这台建筑这一帧对外供的热（只有"源头型"产热方块才有；需热方/导热管一律 0）。
+     *
+     * <p>【必须排除 HeatConsumer，否则自馈到 Float.MAX_VALUE】导热管/热路由器
+     * （{@code HeatConductor}）同时是 HeatBlock **和** HeatConsumer：它的 heat() 往往是
+     * 从贴着它的组合节点/连接器读过去的（见 {@link #setLinkerHeat} 把网络总热量写进连接件）。
+     * 如果这里再把它当"外来热源"加进总量：node.heat → 导热管.heat → 又算回总量 → node.heat 翻倍，
+     * 每帧 ×2，几十帧就冲到 Float.MAX_VALUE（用户报的"节点连制热机+热量传输装置，热量输出变成
+     * 浮点数最大值"）。产热源头不会再是从我们网络读热的下游，所以只认非 HeatConsumer 的 HeatBlock。
+     */
     private static float heatSourceOf(Building b){
         try{
-            if(b instanceof HeatBlock hb) return Math.max(0f, hb.heat());
+            if(b instanceof HeatBlock hb && !(b instanceof HeatConsumer)) return Math.max(0f, hb.heat());
         }catch(Throwable ignored){
         }
         return 0f;
