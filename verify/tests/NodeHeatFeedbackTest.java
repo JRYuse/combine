@@ -149,11 +149,11 @@ public class NodeHeatFeedbackTest implements arc.ApplicationListener {
 
       int ox = -1, oy = -1;
       outer:
-      for (int y = 50; y < 130; y++)
-        for (int x = 50; x < 180; x++) {
+      for (int y = 40; y < 125; y++)
+        for (int x = 40; x < 200; x++) {
           boolean ok = true;
-          for (int dy = -4; dy <= 26 && ok; dy++)
-            for (int dx = -2; dx <= 18; dx++) {
+          for (int dy = -4; dy <= 36 && ok; dy++)
+          for (int dx = -2; dx <= 12; dx++) {
               Tile t = Vars.world.tile(x + dx, y + dy);
               if (t == null || t.floor() == null || t.floor().isLiquid || t.block() != Blocks.air) {
                 ok = false;
@@ -206,8 +206,47 @@ public class NodeHeatFeedbackTest implements arc.ApplicationListener {
         run(20);
       }
 
+      // 场景D：连接器桥接"热源 | 连接器 | 一串小型热量传输机"（截图里是一排热量传输机）
+      Block smallCond = null;
+      Block elecHeater = null;
+      for (Block b : Vars.content.blocks())
+        if (b.name.equals("small-heat-redirector")) { smallCond = b; break; }
+      for (Block b : Vars.content.blocks())
+        if (b.name.equals("electric-heater")) { elecHeater = b; break; }
+      Building heatD = null;
+      Building[] rowD = new Building[0];
+      if (connB != null && smallCond != null) {
+        // 竖向摆：连接器在一头、热源在另一头，中间一串小型热量传输机（截图里是一长排）
+        heatD = place(heater, ox + 2, oy + 22);          // size3 → y 22..24
+        Building connD = place(connB, ox + 3, oy + 25);
+        Building[] r8 = new Building[4];
+        for (int i = 0; i < 4; i++)
+          r8[i] = place(smallCond, ox + 3, oy + 26 + i * 2);
+        rowD = r8;
+        run(5);
+        if (heatD != null && heatD.liquids != null) heatD.liquids.add(Liquids.slag, 5000f);
+        run(20);
+      }
+
+      // 场景E：组合产热机（电制热机 = CombinedGenerator 供热模式）—连接器—一串小型热量传输机
+      Building heatE = null;
+      Building[] rowE = new Building[0];
+      if (connB != null && smallCond != null && elecHeater != null) {
+        heatE = place(elecHeater, ox + 1, oy + 30);
+        if (psrc != null) place(psrc, ox + 1, oy + 28);
+        Building connE = place(connB, ox + 3, oy + 30);
+        rowE = new Building[] {
+            place(smallCond, ox + 4, oy + 30),
+            place(smallCond, ox + 6, oy + 30),
+            place(smallCond, ox + 8, oy + 30)
+        };
+        run(20);
+      }
+
       float maxCond = 0f, maxNode = 0f, maxHeat = 0f, maxCondB = 0f;
       float maxCondC = 0f;
+      float maxRowD = 0f;
+      float maxRowE = 0f;
       for (int i = 0; i < 300; i++) {
         arc.util.Time.delta = 1f;
         Vars.logic.update();
@@ -222,6 +261,15 @@ public class NodeHeatFeedbackTest implements arc.ApplicationListener {
         if (heatC != null && heatC.liquids != null) heatC.liquids.add(Liquids.slag, 5f);
         float cC = condC == null ? -1f : heatOf(condC);
         if (Float.isFinite(cC)) maxCondC = Math.max(maxCondC, cC);
+        if (heatD != null && heatD.liquids != null) heatD.liquids.add(Liquids.slag, 5f);
+        for (Building r : rowD) {
+          float rv = r == null ? -1f : heatOf(r);
+          if (Float.isFinite(rv)) maxRowD = Math.max(maxRowD, rv);
+        }
+        for (Building r : rowE) {
+          float rv = r == null ? -1f : heatOf(r);
+          if (Float.isFinite(rv)) maxRowE = Math.max(maxRowE, rv);
+        }
       }
       System.out.println("[NHF] 峰值热量: (A)导热管=" + maxCond + " 节点=" + maxNode + " 制热机=" + maxHeat
           + " | (B)热源-节点-导热管: 导热管=" + maxCondB);
@@ -234,6 +282,23 @@ public class NodeHeatFeedbackTest implements arc.ApplicationListener {
       if (connB != null)
         check("场景C：热源—连接器—导热管 的导热管热量也没爆（峰值 " + maxCondC + "）",
             Float.isFinite(maxCondC) && maxCondC > 0.01f && maxCondC < 100f);
+      if (connB != null && smallCond != null)
+      check("场景D：连接器+一串小型热量传输机 的峰值也没爆（峰值 " + maxRowD + "）",
+            Float.isFinite(maxRowD) && maxRowD > 0.01f && maxRowD < 100f);
+      if (rowD.length > 0) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < rowD.length; i++)
+          sb.append(i).append('=').append(rowD[i] == null ? "-" : String.valueOf(heatOf(rowD[i]))).append(' ');
+        System.out.println("[NHF] 场景D 各台最终热量: " + sb);
+      }
+      if (rowE.length > 0) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < rowE.length; i++)
+          sb.append(i).append('=').append(rowE[i] == null ? "-" : String.valueOf(heatOf(rowE[i]))).append(' ');
+        System.out.println("[NHF] 场景E(组合电制热机) 各台最终热量: " + sb);
+        check("场景E：组合电制热机—连接器—一串热量传输机 峰值没爆（峰值 " + maxRowE + "）",
+            Float.isFinite(maxRowE) && maxRowE > 0.01f && maxRowE < 100f);
+      }
 
       System.out.println("[NHF] RESULT " + (fail == 0 ? "ALL PASS" : (fail + " FAILED")) + " (pass=" + pass + ")");
       System.exit(fail == 0 ? 0 : 1);

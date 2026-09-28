@@ -2008,6 +2008,10 @@ public class ComboNet {
             for(Building m : ComboReflect.group(leader)){
                 if(m == null || !m.isValid() || !isHeatConsumer(m)) continue;
                 if(touchesLinker(m, linkers)) continue; // 贴着连接件：原版路径看得见，别重复计
+                // 【已经有热邻居的不用探针】它贴着别的热方块（导热管链/产热方），原版 calculateHeat
+                // 会顺着邻居把热传过来；再给每个都插一份"整网热量"的探针，就会在链条上逐格叠加
+                // （用户报的"连接器接一排热量传输机，热量一格一格涨上去"）。
+                if(hasHeatNeighbor(m)) continue;
                 if(attachHeatProbe(m, totalSource)) keep.add(m.pos());
             }
         }
@@ -2016,6 +2020,7 @@ public class ComboNet {
             Building m = heatLinked.get(i);
             if(m == null || !m.isValid() || !isHeatConsumer(m)) continue;
             if(touchesLinker(m, linkers)) continue;
+            if(hasHeatNeighbor(m)) continue;
             if(attachHeatProbe(m, totalSource)) keep.add(m.pos());
         }
         // 不再需要喂热的（断线/拆了/改成贴着连接件了）把探针摘掉，免得残留一份旧热量。
@@ -2196,6 +2201,18 @@ public class ComboNet {
             if(nb == null) continue;
             for(int k = 0; k < linkers.size; k++)
                 if(nb == linkers.get(k)) return true;
+        }
+        return false;
+    }
+
+    /** 这台建筑旁边有没有别的热方块（探针不算）——有的话原版 calculateHeat 会顺邻居把热传过来。 */
+    private static boolean hasHeatNeighbor(Building b){
+        if(b.proximity == null) return false;
+        for(int i = 0; i < b.proximity.size; i++){
+            Building nb = b.proximity.get(i);
+            if(nb == null || !nb.isValid() || nb == b) continue;
+            if(nb instanceof combine.util.ComboHeatProbe.ComboHeatProbeBuild) continue;
+            if(nb instanceof HeatBlock) return true;
         }
         return false;
     }
