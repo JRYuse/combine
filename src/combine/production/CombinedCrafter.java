@@ -106,7 +106,7 @@ public class CombinedCrafter extends GenericCrafter {
 
     // ==================== 原有字段 ====================
     public float displayLiquid;
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
     public float itemCapacityMultiplier = 1f;
     public float liquidCapacityMultiplier = 1f;
     public float safetyBuffer = 0.15f;

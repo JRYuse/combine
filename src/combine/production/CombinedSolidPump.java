@@ -45,7 +45,7 @@ import static mindustry.Vars.*;
  * SolidPumpBuild，不重复声明）。
  */
 public class CombinedSolidPump extends SolidPump {
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
     public float baseLiquidCapacity = 10f;
     public float displayLiquid;
 

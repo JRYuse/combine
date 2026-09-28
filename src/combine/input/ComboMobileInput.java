@@ -14,6 +14,6 @@ public class ComboMobileInput extends MobileInput {
   @Override
   public void buildPlacementUI(Table table) {
     super.buildPlacementUI(table);
-    ComboInputButton.add(table, 3);
+    ComboInputButton.add(table);
   }
 }

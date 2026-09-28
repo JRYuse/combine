@@ -37,7 +37,7 @@ import static mindustry.Vars.*;
  * 每台切割自己面前的墙，产出进入共享池，由全体成员向外输出。
  */
 public class CombinedWallCrafter extends WallCrafter {
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
     public float itemCapacityMultiplier = 1f;
     /** 单台液容（记在 init 第一次，之后 liquidCapacity 被抬成 9999 假容量）。 */
     public float baseLiquidCapacity = 10f;

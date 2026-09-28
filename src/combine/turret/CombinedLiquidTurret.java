@@ -38,7 +38,7 @@ import static mindustry.Vars.*;
  * 各成员存档里的液体在重建时合并进共享池（总量守恒）。
  */
 public class CombinedLiquidTurret extends LiquidTurret {
-  public boolean allowCrossTypeCombo = true;
+  public boolean allowCrossTypeCombo = false;
   public float baseLiquidCapacity = 10f;
   public float displayLiquid;
   public boolean baseCapCaptured = false;

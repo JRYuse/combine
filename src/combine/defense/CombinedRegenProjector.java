@@ -40,7 +40,7 @@ import static mindustry.Vars.iconMed;
 import mindustry.world.blocks.defense.RegenProjector;
 
 public class CombinedRegenProjector extends RegenProjector {
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
     public float baseLiquidCapacity = 10f;
     public float displayLiquid;
 

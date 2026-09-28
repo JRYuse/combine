@@ -55,7 +55,7 @@ import static mindustry.Vars.iconMed;
 import mindustry.world.blocks.defense.ForceProjector;
 
 public class CombinedForceProjector extends ForceProjector {
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
     public float baseLiquidCapacity = 10f;
     public float displayLiquid;
 

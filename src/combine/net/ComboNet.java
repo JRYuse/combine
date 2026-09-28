@@ -178,7 +178,10 @@ public class ComboNet {
             if(b.proximity != null){
                 for(Building nb : b.proximity){
                     if(nb == null) continue;
-                    if(isLinker(nb) || netMemberPos.contains(nb.pos())){
+                    // 【相邻两种组合建筑也可能刚并成一张网（合体炮台↔组合炮台 / 跨类型要节点的那条边）】
+                    // 以前只认"邻居是网络成员/连接件"，于是一台孤立的组合建筑旁边又放一台组合建筑时
+                    // 不会重算网络 —— 表现就是"合体炮台挨着组合炮台也不组合"（用户报的）。
+                    if(isLinker(nb) || netMemberPos.contains(nb.pos()) || ComboReflect.isComboBuild(nb)){
                         markDirty();
                         return;
                     }
@@ -631,7 +634,6 @@ public class ComboNet {
         Building leader = ComboReflect.leader(member);
         if(leader == null) leader = member;
         if(!visitedGroups.add(leader)) return;
-        boolean cross = crossTypeCombinable(leader);
         for(Building m : ComboReflect.group(leader)){
             if(m == null || !m.isValid()) continue;
             if(!ComboUtilTeamOk(m)) continue; // 只和玩家队友组合
@@ -640,7 +642,7 @@ public class ComboNet {
                 if(nb == null || !nb.isValid()) continue;
                 if(isLinker(nb)){
                     enqueueVertex(nb, visited, queue);
-                }else if(cross && ComboReflect.isComboBuild(nb) && crossTypeCombinable(nb)){
+                }else if(ComboReflect.isComboBuild(nb) && crossAdjacencyAllowed(leader, nb)){
                     // 相邻的两台不同类机器（两边都允许跨类型组合）= 一台整机：权威图
                     // （rebuildInner 里 crossTypeCombinable 那条边）也是这么连的，
                     // 这里不跟上的话，"节点/连接器面板少算几台、池子其实已经并了"就又会不一致。
@@ -952,7 +954,6 @@ public class ComboNet {
             // 「相邻 + 两边都声明 allowCrossTypeCombo」的两个本地组合体直接连一条边 ——
             // 后续并池/容量/面板/电网全走连接器那套现成逻辑（热量本来就靠原版 proximity 直传，不受影响）。
             for(Building leader : groupLeaders){
-                if(!crossTypeCombinable(leader)) continue;
                 Seq<Building> group = ComboReflect.group(leader);
                 if(group == null || group.isEmpty()) group = Seq.with(leader);
                 for(Building mem : group){
@@ -961,7 +962,12 @@ public class ComboNet {
                         if(nb == null || !nb.isValid() || !ComboReflect.isComboBuild(nb)) continue;
                         Building other = ComboNode.groupRep(nb);
                         if(other == null || other == leader) continue;
-                        if(!vertexSet.contains(other) || !crossTypeCombinable(other)) continue;
+                        if(!vertexSet.contains(other)) continue;
+                        if(!crossTypeCombinable(leader) || !crossTypeCombinable(other)) {
+                            // 默认只有同种组合建筑相邻才并池；**合体炮台 ↔ 组合炮台**是例外，相邻也当一台整机。
+                            if(!(isSuperTurret(leader) && isTurretCombo(other))
+                                && !(isSuperTurret(other) && isTurretCombo(leader))) continue;
+                        }
                         addEdge(edges, leader, other);
                     }
                 }
@@ -1141,6 +1147,22 @@ public class ComboNet {
         }
         crossTypeCache.put(blk, r);
         return r;
+    }
+
+    /** 相邻的两台不同类组合体能不能并成一台整机。默认要求两边都声明 allowCrossTypeCombo；
+     *  例外：合体炮台（SuperTurret）↔ 组合炮台（CombinedTurret 族）相邻也直接并。 */
+    static boolean crossAdjacencyAllowed(Building a, Building b){
+        if(a == null || b == null) return false;
+        if(crossTypeCombinable(a) && crossTypeCombinable(b)) return true;
+        return (isSuperTurret(a) && isTurretCombo(b)) || (isSuperTurret(b) && isTurretCombo(a));
+    }
+
+    static boolean isSuperTurret(Building b){
+        return b != null && b.block instanceof combine.turret.SuperTurret;
+    }
+
+    static boolean isTurretCombo(Building b){
+        return b != null && b.block instanceof mindustry.world.blocks.defense.turrets.Turret;
     }
 
     private static void addEdge(ObjectMap<Building, Seq<Building>> edges, Building a, Building b){

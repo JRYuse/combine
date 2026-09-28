@@ -100,7 +100,7 @@ public class CombinedGenerator extends ConsumeGenerator {
   public float heaterWarmupRate = 0.15f;
 
   // ==================== 组合体通用字段 ====================
-  public boolean allowCrossTypeCombo = true;
+  public boolean allowCrossTypeCombo = false;
   public float itemCapacityMultiplier = 1f;
   public float liquidCapacityMultiplier = 1f;
   public float baseLiquidCapacity = 10f;

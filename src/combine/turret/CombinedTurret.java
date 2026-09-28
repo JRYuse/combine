@@ -70,7 +70,7 @@ public class CombinedTurret extends Turret {
   /** LaserTurret.shootDuration：光束维持时长（帧） */
   public float shootDuration = 100f;
 
-  public boolean allowCrossTypeCombo = true;
+  public boolean allowCrossTypeCombo = false;
   public float baseLiquidCapacity = 10f;
   public float displayLiquid;
   public boolean baseCapCaptured = false;

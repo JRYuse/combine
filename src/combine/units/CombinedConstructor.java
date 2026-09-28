@@ -26,7 +26,7 @@ import static mindustry.Vars.*;
  */
 public class CombinedConstructor extends Constructor implements IUnitCombo.IUnitComboBlock {
     /** 是否允许跨方块类型成组 */
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
 
     public CombinedConstructor(String name) {
         super(name);

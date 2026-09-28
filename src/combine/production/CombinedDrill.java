@@ -82,7 +82,7 @@ public class CombinedDrill extends Block {
     public Mode mode = Mode.drill;
 
     // ==================== 组合体通用 ====================
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
     public float itemCapacityMultiplier = 1f;
     public float liquidCapacityMultiplier = 1f;
     public float baseLiquidCapacity = 10f;

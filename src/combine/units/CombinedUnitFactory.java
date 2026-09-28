@@ -58,7 +58,7 @@ import static mindustry.Vars.*;
  */
 public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnitComboBlock {
     /** 是否允许跨方块类型成组（true = 工厂可与重构厂互通成组） */
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
 
     @Override
     public boolean allowCrossTypeCombo() {

@@ -15,6 +15,6 @@ public class ComboDesktopInput extends DesktopInput {
   @Override
   public void buildPlacementUI(Table table) {
     super.buildPlacementUI(table);
-    ComboInputButton.add(table, 1);
+    ComboInputButton.add(table);
   }
 }

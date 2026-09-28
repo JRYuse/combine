@@ -40,7 +40,7 @@ import static mindustry.Vars.iconMed;
 import mindustry.world.blocks.defense.OverdriveProjector;
 
 public class CombinedOverdriveProjector extends OverdriveProjector {
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
     public float itemCapacityMultiplier = 1f;
     public float liquidCapacityMultiplier = 1f;
     public float baseLiquidCapacity = 10f;

@@ -26,13 +26,8 @@ public final class ComboInputButton {
   private ComboInputButton() {
   }
 
-  /**
-   * 往放置 UI 里插按钮。
-   *
-   * @param index 插到**这一行按钮里**的第几个（0 = 最左）。手机版用 3（"复制/旋转"切换键的右边），
-   *              桌面版用 1（蓝图/粘贴键的右边）。
-   */
-  static void add(Table table, int index) {
+  /** 往放置 UI 里插按钮：放在那一行**最左**（= 拆除键左边）。 */
+  static void add(Table table) {
     try {
       if (table == null || !SuperTurret.enabled)
         return;
@@ -48,16 +43,71 @@ public final class ComboInputButton {
       cell.update(i -> i.setChecked(SuperTurretPlacer.selecting()));
       cell.size(48f).tooltip("超级组合炮台：点一下框选炮台合体（再点一下 / 右键 / Esc 取消）");
 
-      // 直接 append（正常 Table API）：布局一定对、按钮一定点得到。
-      // 之前试过把格子挪到"复制键右边"（改 cells 顺序 + 反射改 Cell.row/column），
-      // 但原版 inputTable 的行结构/计数器不稳定，挪完按钮被 Table.layout() 排成 3x3 像素
-      // （用户报的"合体炮台按钮没显示"）。位置让位给"能显示能点"——按钮就放在这一行最右。
+      // 【放到这一行最左】先正常 append（布局一定对），再挪到"本行第一个格子"之前。
+      // Cell 的 row/column 是包级私有，挪完必须一起改，否则 Table.layout() 会把它排歪（3x3 像素）。
+      Seq<Cell> cells = table.getCells();
+      if(!cells.isEmpty() && cellFields()){
+        int myRow = cellRow(cell);
+        int rowStart = cells.size - 1;
+        while(rowStart > 0 && cellRow(cells.get(rowStart - 1)) == myRow) rowStart--;
+        cells.remove(cell, true);
+        cells.insert(rowStart, cell);
+        int col = 0;
+        for(int i = rowStart; i < cells.size; i++){
+          Cell c = cells.get(i);
+          if(cellRow(c) != myRow) break;
+          setCellRowCol(c, myRow, col++);
+        }
+        if(fAbove != null){
+          try{ fAbove.setInt(cell, -1); }catch(Throwable ignored){}
+        }
+      }
       table.invalidate();
     } catch (Throwable t) {
       Log.err("[combine] 放置 UI 里挂「框选合体」按钮失败（还能用快捷键/HUD 按钮）", t);
     }
   }
 
-  // Cell 的 row/column/cellAboveIndex 是包级私有；直接改 cells 顺序会让 Table.layout()
-  // 算歪（实测按钮被排成 3x3 像素 = 用户报的"按钮没显示"）。所以这里只走正常 append。
+  // ---- Cell 的 row/column/cellAboveIndex 是包级私有：反射读写（拿不到就留在行尾，至少能显示能点）----
+  static java.lang.reflect.Field fRow, fColumn, fAbove;
+  static boolean fieldsTried = false;
+
+  static boolean cellFields() {
+    if (fieldsTried)
+      return fRow != null && fColumn != null;
+    fieldsTried = true;
+    try {
+      Class<?> c = Class.forName("arc.scene.ui.layout.Cell");
+      fRow = c.getDeclaredField("row");
+      fRow.setAccessible(true);
+      fColumn = c.getDeclaredField("column");
+      fColumn.setAccessible(true);
+      try {
+        fAbove = c.getDeclaredField("cellAboveIndex");
+        fAbove.setAccessible(true);
+      } catch (Throwable ignored) {
+      }
+    } catch (Throwable t) {
+      fRow = fColumn = null;
+    }
+    return fRow != null && fColumn != null;
+  }
+
+  static int cellRow(Cell c) {
+    if (!cellFields())
+      return -1;
+    try {
+      return fRow.getInt(c);
+    } catch (Throwable t) {
+      return -1;
+    }
+  }
+
+  static void setCellRowCol(Cell c, int row, int column) {
+    try {
+      fRow.setInt(c, row);
+      fColumn.setInt(c, column);
+    } catch (Throwable ignored) {
+    }
+  }
 }

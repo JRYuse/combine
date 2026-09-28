@@ -42,7 +42,7 @@ import static mindustry.Vars.*;
  * 每台泵往共享池注入自己地格的液体，池子由全体成员向外输出。
  */
 public class CombinedPump extends Pump {
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
     public float baseLiquidCapacity = 10f;
     public float displayLiquid;
 

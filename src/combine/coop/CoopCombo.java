@@ -81,7 +81,7 @@ public class CoopCombo {
   public static boolean enabled = true;
 
   /** 允许**不同类型**的机器组合（跨类型）。关掉就退回"只有同一种方块才能成组"。 */
-  public static boolean allowCrossType = true;
+  public static boolean allowCrossType = false;
 
   /**
    * 跨类型组里保护"中间产物"：把会吃这种料的邻居排到搬运顺序最前面，

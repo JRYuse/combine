@@ -26,7 +26,7 @@ import mindustry.world.modules.LiquidModule;
  * 外部热源 + 跨距离组合网络热量汇成一份共享需热池（不再只有贴着产热机那一台有热）。
  */
 public class CombinedVariableReactor extends VariableReactor {
-  public boolean allowCrossTypeCombo = true;
+  public boolean allowCrossTypeCombo = false;
   /** 单台液容（init 第一次记下，之后 liquidCapacity 被抬成 9999 假容量）。 */
   public float baseLiquidCapacity = 30f;
 

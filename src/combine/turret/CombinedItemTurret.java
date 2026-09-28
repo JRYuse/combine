@@ -42,7 +42,7 @@ import static mindustry.Vars.*;
 
 public class CombinedItemTurret extends ItemTurret {
 
-  public boolean allowCrossTypeCombo = true;
+  public boolean allowCrossTypeCombo = false;
 
   public CombinedItemTurret(String name) {
     super(name);

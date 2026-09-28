@@ -44,7 +44,7 @@ import static mindustry.Vars.iconMed;
 import mindustry.world.blocks.campaign.LaunchPad;
 
 public class CombinedLaunchPad extends LaunchPad {
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
     public float baseLiquidCapacity = 10f;
     public float displayLiquid;
 

@@ -37,7 +37,7 @@ import static mindustry.Vars.*;
  * 冷却水从共享液体池扣除，池子由全体成员向外输出。
  */
 public class CombinedLandingPad extends LandingPad {
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
     public float baseLiquidCapacity = 10f;
     public float displayLiquid;
 

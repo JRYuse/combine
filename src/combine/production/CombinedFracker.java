@@ -49,7 +49,7 @@ import static mindustry.Vars.*;
  * FrackerBuild/SolidPumpBuild，不重复声明）。
  */
 public class CombinedFracker extends Fracker {
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
     public float baseLiquidCapacity = 10f;
     public float displayLiquid;
 

@@ -3287,11 +3287,10 @@ public class Driver extends Mod{
                     var e = probe.getCells().get(i).get();
                     names.append(i).append(':').append(e == null ? "-" : (e.name == null ? e.getClass().getSimpleName() : e.name)).append(' ');
                 }
-                Log.info("[drv] 手机放置 UI 结构: @（合体按钮下标=@，最后一位=@）", names, idx, n - 1);
-                // 按钮用正常 append 挂在放置 UI 那一行的最右（挪到"复制键右边"会把 Table 布局算歪，
-                // 见 ComboInputButton 注释）；这里只验它确实插进了这一行、且是最后一位。
-                if (idx == n - 1) Log.info("[drv] PASS 手机版：框选合体按钮挂在放置 UI 那一行里");
-                else Log.err("[drv] FAIL 手机版：合体按钮不在这一行末尾（下标=@ / 末位=@）", idx, n - 1);
+                Log.info("[drv] 手机放置 UI 结构: @（合体按钮下标=@，期望 0 = 拆除键左边）", names, idx);
+                // 用户 2026-09-28 要求：放到这一行最左（拆除键左边）。
+                if (idx == 0) Log.info("[drv] PASS 手机版：框选合体按钮在这一行最左（拆除键左边）");
+                else Log.err("[drv] FAIL 手机版：合体按钮下标=@（期望 0 = 拆除键左边）", idx);
             } catch (Throwable t) {
                 Log.err("[drv] 手机放置 UI 结构检查失败", t);
             }
