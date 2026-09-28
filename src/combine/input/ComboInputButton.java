@@ -46,7 +46,7 @@ public final class ComboInputButton {
       button.name = BUTTON_NAME;
       // 和"复制"键一样是**切换**键：正在框选就高亮，点第二下 = 取消
       cell.update(i -> i.setChecked(SuperTurretPlacer.selecting()));
-      cell.size(48f).tooltip("超级组合炮台：点一下框选炮台合体（再点一下取消；默认快捷键 G）");
+      cell.size(48f).tooltip("超级组合炮台：点一下框选炮台合体（再点一下 / 右键 / Esc 取消）");
 
       // 直接 append（正常 Table API）：布局一定对、按钮一定点得到。
       // 之前试过把格子挪到"复制键右边"（改 cells 顺序 + 反射改 Cell.row/column），

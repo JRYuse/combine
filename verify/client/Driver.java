@@ -3212,6 +3212,21 @@ public class Driver extends Mod{
 
     static void checkSuperTurretButton() {
         try {
+            // 【键位回归】用户 2026-09-28 要求删掉默认 G 键位（和其它功能冲突）——这里断言没注册。
+            try {
+                java.lang.reflect.Field fAll = Class.forName("arc.input.KeyBind").getField("all");
+                Object allObj = fAll.get(null);
+                int cnt = 0;
+                if (allObj instanceof arc.struct.Seq<?> sq)
+                    for (Object o : sq)
+                        if (o instanceof arc.input.KeyBind kb && "combine_super_turret".equals(kb.name)) cnt++;
+                if (cnt == 0)
+                    Log.info("[drv] PASS 超级组合炮台不再注册默认键位（入口只用按钮）");
+                else
+                    Log.err("[drv] FAIL 还注册着 @ 个 combine_super_turret 键位（应删掉）", cnt);
+            } catch (Throwable t) {
+                Log.info("[drv] 键位检查跳过: @", t.toString());
+            }
             Class<?> placer = placerCls();
             // 先把当前开着的对话框收掉：有对话框时它会盖住整个 HUD（任何 HUD 按钮都点不动），
             // 那不是按钮位置的问题。

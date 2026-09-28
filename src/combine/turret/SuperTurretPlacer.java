@@ -35,17 +35,17 @@ import static mindustry.Vars.*;
 /**
  * 超级组合炮台的选择/放置流程（纯客户端）。
  *
- * <p>交互：按快捷键（设置 → 按键里可改，默认 G），或者在建造菜单里点一下"超级组合炮台"
- * （那几个方块就是入口按钮，点了不会被摆下去）→ 进入框选模式
+ * <p>交互：点放置 UI 里的"框选合体"按钮（或 HUD 兜底按钮）→ 进入框选模式
  * （这时左键只用来画框，不会开枪/开面板/摆方块）→ 拖一个框松开 → 数出框里的炮台、
  * 按数量生成对应边长的超级组合炮台虚影跟着鼠标走 → 左键确定、右键/Q/Esc 取消。
- * 再按一次快捷键（或右键）可以在框选阶段取消。
+ * 再点一下按钮（或右键/Esc）可以在框选阶段取消。
+ * （用户 2026-09-28 要求删掉默认 G 键位：和其它功能冲突，入口只用按钮。）
  *
  * <p>放置走原版蓝图那套（{@code input.useSchematic}），所以虚影、合法性染色、
  * 建造队列/多线程建造、联机同步全都沿用原版。
  */
 public class SuperTurretPlacer {
-  /** 快捷键（设置 → 按键里可改；默认 G）。 */
+  /** 【已停用】不再注册任何键位（用户要求删掉 G）；恒为 null，入口只用按钮。 */
   public static @Nullable KeyBind selectKey;
 
   static boolean selecting = false;
@@ -84,11 +84,11 @@ public class SuperTurretPlacer {
     // 【停用中】见 SuperTurret.enabled：总开关关着就不挂任何入口
     if (headless || !SuperTurret.enabled)
       return;
-    try {
-      selectKey = KeyBind.add("combine_super_turret", KeyCode.g, "combine");
-    } catch (Throwable t) {
-      Log.err("[combine] 超级组合炮台快捷键注册失败（还能用建造菜单里的按钮）", t);
-    }
+    // 【不再注册键位】用户 2026-09-28：G 和其它功能冲突，要求删掉。
+    // 入口只保留"放置 UI 里的框选合体按钮（手机/桌面都在放）"和 HUD 兜底按钮；
+    // 取消框选还能用右键 / Esc（触摸端点按钮第二下 = 取消）。selectKey 恒为 null，
+    // 下面所有 `selectKey != null && ...` 的判定自然失效。
+    selectKey = null;
     Events.run(Trigger.update, SuperTurretPlacer::update);
     Events.run(Trigger.draw, SuperTurretPlacer::draw);
     Events.on(WorldLoadEvent.class, e -> {
@@ -394,7 +394,7 @@ public class SuperTurretPlacer {
       root.row();
       root.button(mindustry.gen.Icon.turret, mindustry.ui.Styles.clearNonei, SuperTurretPlacer::toggle)
           .size(48f).padRight(8f)
-          .tooltip("超级组合炮台：点一下框选炮台（默认快捷键 G，右键/Esc 取消）");
+          .tooltip("超级组合炮台：点一下框选炮台（再点一下 / 右键 / Esc 取消）");
       // 【挂在 scene root（hudGroup 之上）而不是 hudGroup 里】：
       // 客户端（MindustryX 实测）会在 hudGroup 里再叠一层铺满屏幕的可点容器 / 方块信息面板，
       // 排在 hudGroup 的按钮之上 —— 挂在 hudGroup 里的按钮就会"看得见、点不动"
