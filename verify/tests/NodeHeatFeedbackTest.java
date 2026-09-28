@@ -130,12 +130,13 @@ public class NodeHeatFeedbackTest implements arc.ApplicationListener {
         }
       run(5);
 
-      Block heater = null, conduit = null, nodeB = null, psrc = null;
+      Block heater = null, conduit = null, nodeB = null, connB = null, psrc = null;
       for (Block b : Vars.content.blocks()) {
         if (heater == null && b.name.equals("slag-heater")) heater = b;
         if (conduit == null && b.name.equals("heat-redirector")) conduit = b;
         if (conduit == null && b.name.equals("heat-router")) conduit = b;
         if (nodeB == null && b.getClass().getName().equals("combine.net.ComboNode")) nodeB = b;
+        if (connB == null && b.getClass().getName().equals("combine.net.ComboConnector")) connB = b;
         if (psrc == null && b.name.equals("power-source")) psrc = b;
       }
       System.out.println("[NHF] 制热=" + (heater == null ? "null" : heater.name)
@@ -151,7 +152,7 @@ public class NodeHeatFeedbackTest implements arc.ApplicationListener {
       for (int y = 50; y < 130; y++)
         for (int x = 50; x < 180; x++) {
           boolean ok = true;
-          for (int dy = -4; dy <= 8 && ok; dy++)
+          for (int dy = -4; dy <= 26 && ok; dy++)
             for (int dx = -2; dx <= 18; dx++) {
               Tile t = Vars.world.tile(x + dx, y + dy);
               if (t == null || t.floor() == null || t.floor().isLiquid || t.block() != Blocks.air) {
@@ -170,32 +171,69 @@ public class NodeHeatFeedbackTest implements arc.ApplicationListener {
         System.exit(3);
       }
 
-      // 布局：导热管(size3) 右边贴一个组合节点；制热机在节点 6 格连线范围内，用节点连线接进来。
-      Building cond = place(conduit, ox, oy);
-      Building node = place(nodeB, ox + 3, oy + 1);
-      Building heat = place(heater, ox + 8, oy);
+      // 用户报的线路：热源 — 组合节点/连接器 — HeatConductor。
+      // 场景A：HeatConductor 贴着节点，热源用节点连线接进来。
+      Building condA = place(conduit, ox, oy);
+      Building nodeA = place(nodeB, ox + 3, oy + 1);
+      Building heatA = place(heater, ox + 8, oy);
       run(5);
-      if (heat != null && heat.liquids != null)
-        heat.liquids.add(Liquids.slag, 5000f);
-      tapNode(node, heat);
+      if (heatA != null && heatA.liquids != null)
+        heatA.liquids.add(Liquids.slag, 5000f);
+      tapNode(nodeA, heatA);
       run(20);
 
-      float maxCond = 0f, maxNode = 0f, maxHeat = 0f;
+      // 场景B：热源贴着节点，HeatConductor 用**节点连线**接进来（不贴节点）—— 用户说的"线路是
+      // 热源 — 组合节点 — HeatConductor"正是这种，HeatConductor 靠节点拿热再输出。
+      Building nodeB2 = place(nodeB, ox + 3, oy + 10);
+      Building heatB = place(heater, ox, oy + 9);
+      Building condB = place(conduit, ox + 8, oy + 10);
+      run(5);
+      if (heatB != null && heatB.liquids != null)
+        heatB.liquids.add(Liquids.slag, 5000f);
+      tapNode(nodeB2, heatB);
+      tapNode(nodeB2, condB);
+      run(20);
+
+      // 场景C：把节点换成组合连接器（用户说"组合节点/组合连接器"都可能）
+      Building heatC = null, condC = null;
+      if (connB != null) {
+        // 连接器靠"贴着"桥接两端（不是节点那种激光连线）：热源 | 连接器 | 导热管 一字排开
+        Building connC = place(connB, ox + 3, oy + 22);
+        heatC = place(heater, ox, oy + 21);
+        condC = place(conduit, ox + 4, oy + 21);
+        run(5);
+        if (heatC != null && heatC.liquids != null) heatC.liquids.add(Liquids.slag, 5000f);
+        run(20);
+      }
+
+      float maxCond = 0f, maxNode = 0f, maxHeat = 0f, maxCondB = 0f;
+      float maxCondC = 0f;
       for (int i = 0; i < 300; i++) {
         arc.util.Time.delta = 1f;
         Vars.logic.update();
-        if (heat != null && heat.liquids != null)
-          heat.liquids.add(Liquids.slag, 5f);
-        float c = heatOf(cond), n = heatOf(node), h = heatOf(heat);
+        if (heatA != null && heatA.liquids != null) heatA.liquids.add(Liquids.slag, 5f);
+        if (heatB != null && heatB.liquids != null) heatB.liquids.add(Liquids.slag, 5f);
+        float c = heatOf(condA), n = heatOf(nodeA), h = heatOf(heatA);
         if (Float.isFinite(c)) maxCond = Math.max(maxCond, c);
         if (Float.isFinite(n)) maxNode = Math.max(maxNode, n);
         if (Float.isFinite(h)) maxHeat = Math.max(maxHeat, h);
+        float cB = heatOf(condB);
+        if (Float.isFinite(cB)) maxCondB = Math.max(maxCondB, cB);
+        if (heatC != null && heatC.liquids != null) heatC.liquids.add(Liquids.slag, 5f);
+        float cC = condC == null ? -1f : heatOf(condC);
+        if (Float.isFinite(cC)) maxCondC = Math.max(maxCondC, cC);
       }
-      System.out.println("[NHF] 峰值热量: 导热管=" + maxCond + " 节点=" + maxNode + " 制热机=" + maxHeat);
+      System.out.println("[NHF] 峰值热量: (A)导热管=" + maxCond + " 节点=" + maxNode + " 制热机=" + maxHeat
+          + " | (B)热源-节点-导热管: 导热管=" + maxCondB);
       check("导热管热量没有冲到浮点最大值/无穷（峰值 " + maxCond + "）",
           Float.isFinite(maxCond) && maxCond < 100f);
       check("导热管确实拿到了网络热量（峰值 " + maxCond + " > 0）", maxCond > 0.01f);
       check("制热机热量正常（峰值 " + maxHeat + "）", Float.isFinite(maxHeat) && maxHeat < 100f);
+      check("场景B：热源—节点—导热管 的导热管热量也没爆（峰值 " + maxCondB + "）",
+          Float.isFinite(maxCondB) && maxCondB > 0.01f && maxCondB < 100f);
+      if (connB != null)
+        check("场景C：热源—连接器—导热管 的导热管热量也没爆（峰值 " + maxCondC + "）",
+            Float.isFinite(maxCondC) && maxCondC > 0.01f && maxCondC < 100f);
 
       System.out.println("[NHF] RESULT " + (fail == 0 ? "ALL PASS" : (fail + " FAILED")) + " (pass=" + pass + ")");
       System.exit(fail == 0 ? 0 : 1);

@@ -2157,6 +2157,8 @@ public class ComboNet {
                 Building nb = nbs.get(i);
                 // 组合体/连接件本身走原来那套（池子+热量都在那边算），不在这里重复
                 if(isLinker(nb) || ComboReflect.isComboBuild(nb)) continue;
+                // 网络自己插的热探针不算"网络里的热建筑"：它是我们写进去的整网热量，顺着它接力=自馈。
+                if(nb instanceof combine.util.ComboHeatProbe.ComboHeatProbeBuild) continue;
                 if(!ComboReflect.isHeatBuild(nb)) continue;
                 if(seen.add(nb)){
                     out.add(nb);
@@ -2179,6 +2181,7 @@ public class ComboNet {
      */
     private static float heatSourceOf(Building b){
         try{
+            if(b instanceof combine.util.ComboHeatProbe.ComboHeatProbeBuild) return 0f;
             if(b instanceof HeatBlock hb && !(b instanceof HeatConsumer)) return Math.max(0f, hb.heat());
         }catch(Throwable ignored){
         }
@@ -2223,6 +2226,8 @@ public class ComboNet {
                 if(nb == null || !nb.isValid() || nb.team != l.team) continue;
                 if(!(nb instanceof HeatBlock hb)) continue;
                 if(memberSet.contains(nb) || isLinker(nb)) continue;
+                // 网络自己插的"热探针"绝不能算外来热源：它身上就是整张网络的热量，算回来就是自馈。
+                if(nb instanceof combine.util.ComboHeatProbe.ComboHeatProbeBuild) continue;
                 // 【只收"源头型"邻居】导热管/热熔炉这类 HeatConsumer 的 heat 很可能就是从
                 // 本网络（这个节点/连接器）读过去的 —— 再算成输入会自馈，几帧就涨到几百。
                 if(nb instanceof mindustry.world.blocks.heat.HeatConsumer) continue;
