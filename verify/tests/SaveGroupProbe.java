@@ -58,8 +58,69 @@ public class SaveGroupProbe implements ApplicationListener {
       if (Vars.state.isPaused()) Vars.state.set(GameState.State.playing);
       run(120);
 
+      // 先把所有组合节点打一遍：links 名单 + 每个目标在不在世界/在不在范围内
+      int nodeCount = 0;
+      for (Tile t : Vars.world.tiles) {
+        Building b = t == null ? null : t.build;
+        if (b == null || b.block == null) continue;
+        if (!b.getClass().getName().equals("combine.net.ComboNode$ComboNodeBuild")) continue;
+        nodeCount++;
+        Object linksObj = field(b, "links");
+        StringBuilder sb = new StringBuilder();
+        if (linksObj instanceof arc.struct.IntSeq is) {
+          for (int i = 0; i < is.size; i++) {
+            int pos = is.get(i);
+            int x = arc.math.geom.Point2.x(pos), y = arc.math.geom.Point2.y(pos);
+            Building tb = Vars.world.build(pos);
+            float dist = tb == null ? -1f : b.dst(tb) / Vars.tilesize;
+            sb.append("(").append(x).append(",").append(y).append(")=")
+              .append(tb == null ? "空" : (tb.block == null ? "?" : tb.block.name))
+              .append(String.format("[%.1f格]", dist)).append(' ');
+          }
+        }
+        Object maxNodes = field(b.block, "maxNodes");
+        Object range = field(b.block, "laserRange");
+        System.out.println("[SGP] 节点@" + b.tileX() + "," + b.tileY() + " links="
+            + (linksObj instanceof arc.struct.IntSeq is2 ? is2.size : -1) + "/" + maxNodes
+            + " laserRange=" + range + " -> " + sb);
+      }
+      System.out.println("[SGP] 组合节点共 " + nodeCount + " 台");
+
       Class<?> net = Class.forName("combine.net.ComboNet", true, ml);
+      // 每个节点自己所在的连通分量多大（看链子从哪断）
+      for (Tile t : Vars.world.tiles) {
+        Building b = t == null ? null : t.build;
+        if (b == null || b.block == null) continue;
+        if (!b.getClass().getName().equals("combine.net.ComboNode$ComboNodeBuild")) continue;
+        Object mem = callStatic(net, "componentMembers", new Class<?>[] { Building.class }, b);
+        int sz = mem instanceof Seq<?> s3 ? s3.size : -1;
+        StringBuilder ms = new StringBuilder();
+        if (mem instanceof Seq<?> s3) {
+          java.util.TreeMap<String, Integer> cnt = new java.util.TreeMap<>();
+          for (Object o : s3) if (o instanceof Building mb) cnt.merge(mb.block.name, 1, Integer::sum);
+          ms.append(cnt);
+        }
+        System.out.println("[SGP] 节点@" + b.tileX() + "," + b.tileY() + " 所在分量成员=" + sz + " " + ms);
+      }
       Class<?> reflect = Class.forName("combine.util.ComboReflect", true, ml);
+      // 【关键检查】读档后的缓存索引 vs 强制重建一次之后
+      callStatic(net, "markDirty", null);
+      run(3);
+      System.out.println("[SGP] === 强制 ComboNet.markDirty + 3 tick 之后重查 ===");
+      for (String nm : new String[] { "kiln", "pneumatic-drill" }) {
+        for (Tile t : Vars.world.tiles) {
+          Building b = t == null ? null : t.build;
+          if (b == null || b.block == null || !b.block.name.equals(nm) || b.tile != t) continue;
+          Object mem = callStatic(net, "componentMembers", new Class<?>[] { Building.class }, b);
+          java.util.TreeMap<String, Integer> cnt = new java.util.TreeMap<>();
+          if (mem instanceof Seq<?> sq)
+            for (Object o : sq) if (o instanceof Building mb) cnt.merge(mb.block.name, 1, Integer::sum);
+          System.out.println("[SGP] @" + nm + "@" + b.tileX() + "," + b.tileY()
+              + " 分量=" + (mem instanceof Seq<?> sq2 ? sq2.size : -1) + " " + cnt
+              + " 模块=" + (b.items == null ? -1 : System.identityHashCode(b.items)));
+        }
+      }
+
       String[] names = want.split(",");
       for (String name : names) {
         for (Tile t : Vars.world.tiles) {
