@@ -26,7 +26,8 @@ import static mindustry.Vars.*;
  */
 public class CombinedConstructor extends Constructor implements IUnitCombo.IUnitComboBlock {
     /** 是否允许跨方块类型成组 */
-    public boolean allowCrossTypeCombo = false;
+    // 见 CombinedUnitFactory：单位生产族内部允许跨类型成组（构筑器 ↔ 工厂 ↔ 重构厂）。
+    public boolean allowCrossTypeCombo = true;
 
     public CombinedConstructor(String name) {
         super(name);
@@ -170,6 +171,7 @@ public IUnitCombo comboLeader;
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          if (!ComboUi.detail()) { super.display(table); return; }
           // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
           ComboUi.safe("combinedconstructor:display", () -> displayInner(table));
         }

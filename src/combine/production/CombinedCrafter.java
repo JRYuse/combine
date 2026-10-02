@@ -692,7 +692,7 @@ public class CombinedCrafter extends GenericCrafter {
             // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkedWall 语义）
             for (Building b : ComboReflect.linkedReachable(this,
                     o -> o instanceof CombinedCrafterBuild other && other.team == team && other.isValid(),
-                    (cur, o) -> cur.block == o.block
+                    (cur, o) -> cur.block.getClass() == o.block.getClass()
                             || ((CombinedCrafter) cur.block).allowCrossTypeCombo
                             || ((CombinedCrafter) o.block).allowCrossTypeCombo)) {
                 if (b != this)
@@ -739,8 +739,12 @@ public class CombinedCrafter extends GenericCrafter {
             }
             for (CombinedCrafterBuild b : newGroup) {
                 if (b.isValid()) {
-                    b.comboTotalLiquidCap = totalLiqCap;
-                    b.comboTotalItemCap = totalItemCap;
+                    // 【不共享液体】每台只算自己的液容量（和物品同一口径）
+                    b.comboTotalLiquidCap = combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.LIQUIDS)
+                            ? totalLiqCap : Math.max(ComboReflect.baseLiquidCap(b), 1f);
+                    // 【不共享物品】面板上"物品"没勾 = 每台各留各的模块，容量也只算自己那份
+                    b.comboTotalItemCap = combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.ITEMS)
+                            ? totalItemCap : Math.max(ComboReflect.baseItemCap(b), 1);
                     // Attribute 模式：重建时重新计算 attrsum
                     CombinedCrafter bBlock = (CombinedCrafter) b.block;
                     if (bBlock.mode == Mode.attribute) {
@@ -826,8 +830,12 @@ public class CombinedCrafter extends GenericCrafter {
             // 【池子可能不只本组在用】核心库存 / 组合节点接过来的别的组合体也在引用它时，
             // 本地拆分一律不动这口池子（退出成员拿空模块，由 ComboNet 按网络重新分配）。
             // 否则就是从核心库存里搬东西给退出的工厂 —— 用户报的"拆工厂时核心里的东西全没了"。
-            boolean poolOurs = !ComboReflect.itemPoolSharedOutside(poolItems, oldGroup);
-            boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(poolLiquids, oldGroup);
+            // 【不共享物品】没有"公共池"：谁也别并进来、退出成员也别被换成空模块（否则等于丢物品）
+            boolean localShareItems = combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.ITEMS);
+            boolean poolOurs = localShareItems && !ComboReflect.itemPoolSharedOutside(poolItems, oldGroup);
+            // 【不共享液体】没有"公共液池"：退出成员各留各的（否则会被换成空模块 = 丢液体）
+            boolean localShareLiquids = combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.LIQUIDS);
+            boolean liquidPoolOurs = localShareLiquids && !ComboReflect.liquidPoolSharedOutside(poolLiquids, oldGroup);
             for (CombinedCrafterBuild b : oldGroup) {
                 if (!b.isValid())
                     continue;
@@ -1028,8 +1036,8 @@ public class CombinedCrafter extends GenericCrafter {
 
             for (int i = 0; i < kicked.size; i++) {
                 CombinedCrafterBuild b = kicked.get(i);
-                b.items = newItemMods[i];
-                b.liquids = newLiquidMods[i];
+                if (poolOurs) b.items = newItemMods[i];
+                if (liquidPoolOurs) b.liquids = newLiquidMods[i];
                 // 离组成员本来就各自持有电力模块（见 shareModules），这里不用动电网
             }
         }
@@ -1060,14 +1068,17 @@ public class CombinedCrafter extends GenericCrafter {
             ObjectSet<ItemModule> sharedItemPools = ComboReflect.itemPoolsSharedOutside(group());
             ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(group());
             ItemModule sharedItems = sharedItemPools.isEmpty() ? null : sharedItemPools.first();
-            if (sharedItems != null) leader.items = sharedItems;
+            // 【不共享物品】没勾"物品"时谁也别并谁（拆开由 ComboNet 按单台粒度做，见 perMemberGroups）
+            boolean localShareItems = combine.net.ComboShare.shares(leader, combine.net.ComboShare.ITEMS);
+            if (localShareItems && sharedItems != null) leader.items = sharedItems;
             LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
-            if (sharedLiquids != null) leader.liquids = sharedLiquids;
+            boolean localShareLiquids = combine.net.ComboShare.shares(leader, combine.net.ComboShare.LIQUIDS);
+            if (localShareLiquids && sharedLiquids != null) leader.liquids = sharedLiquids;
 
             ObjectSet<ItemModule> processedItems = new ObjectSet<>();
             ObjectSet<LiquidModule> processedLiquids = new ObjectSet<>();
 
-            if (leader.items != null) {
+            if (localShareItems && leader.items != null) {
                 processedItems.add(leader.items);
                 for (CombinedCrafterBuild member : group()) {
                     if (member != leader && member.isValid() && member.items != null
@@ -1095,7 +1106,7 @@ public class CombinedCrafter extends GenericCrafter {
                 }
             }
 
-            if (leader.liquids != null) {
+            if (localShareLiquids && leader.liquids != null) {
                 processedLiquids.add(leader.liquids);
                 for (CombinedCrafterBuild member : group()) {
                     if (member != leader && member.isValid() && member.liquids != null
@@ -2000,6 +2011,7 @@ public class CombinedCrafter extends GenericCrafter {
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          if (!ComboUi.detail()) { super.display(table); return; }
           // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
           ComboUi.safe("combinedcrafter:display", () -> displayInner(table));
         }
@@ -2351,7 +2363,11 @@ public class CombinedCrafter extends GenericCrafter {
             if (cb.mode == Mode.separator) {
                 progress = read.f();
                 warmup = read.f();
-                seed = read.i();
+                // 【和原版 Separator.read 同口径】progress/warmup 无条件读，seed 只有 revision==1 才读。
+                // 老地图里这一格 revision=0（那一版 Separator.version() 还是 0）→ 原版没写 seed，
+                // 无条件读会多读 4 字节 → 地图区错位（同 CombinedDrill 那次的老地图加载失败）。
+                if (revision == 1)
+                    seed = read.i();
             } else {
                 super.read(read, revision);
                 if (cb.mode == Mode.heatproducer)

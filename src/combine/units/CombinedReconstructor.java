@@ -58,7 +58,8 @@ import static mindustry.Vars.*;
  */
 public class CombinedReconstructor extends Reconstructor implements IUnitCombo.IUnitComboBlock {
     /** 是否允许跨方块类型成组（true = 重构厂可与工厂互通成组） */
-    public boolean allowCrossTypeCombo = false;
+    // 见 CombinedUnitFactory：单位生产族内部允许跨类型成组（重构厂 ↔ 工厂 ↔ 构筑器）。
+    public boolean allowCrossTypeCombo = true;
 
     @Override
     public boolean allowCrossTypeCombo() {
@@ -344,6 +345,7 @@ public class CombinedReconstructor extends Reconstructor implements IUnitCombo.I
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          if (!ComboUi.detail()) { super.display(table); return; }
           // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
           ComboUi.safe("combinedreconstructor:display", () -> displayInner(table));
         }

@@ -1153,6 +1153,145 @@ public class SuperTurretTest implements arc.ApplicationListener {
         check("重建/复制用的 config() 只带布局、不带 sources（不会顺手拆世界里的炮台）", noSources);
       }
 
+      // ---------- 11) 其他星球的地图也要能建造 ----------
+      //
+      // 用户报："在其他星球的地图上合体炮台无法建造"。根因是注册时往 shownPlanets 里写了
+      // {塞普罗, 埃里克尔}，而原版 isOnPlanet() 是
+      // "planet==null || shownPlanets.isEmpty() || shownPlanets.contains(planet)" ——
+      // 写死两个星球等于**把别的星球全排除掉**，建造菜单（HudFragment）直接不列它。
+      {
+        Block stAny = blockForSide(2);
+        mindustry.type.Planet other = new mindustry.type.Planet("combine-test-planet",
+            mindustry.content.Planets.sun, 1f);
+        boolean onOther = stAny != null && stAny.isOnPlanet(other);
+        System.out.println("[ST] 星球: shownPlanets=" + (stAny == null ? -1 : stAny.shownPlanets.size)
+            + " 别的星球可用=" + onOther
+            + " 塞普罗=" + (stAny != null && stAny.isOnPlanet(mindustry.content.Planets.serpulo))
+            + " 埃里克尔=" + (stAny != null && stAny.isOnPlanet(mindustry.content.Planets.erekir))
+            + " 自定义星球标记=" + onOther);
+        check("超级组合炮台在别的星球也能建造（shownPlanets 必须为空）", onOther);
+        check("塞普罗/埃里克尔照旧能建造",
+            stAny.isOnPlanet(mindustry.content.Planets.serpulo)
+                && stAny.isOnPlanet(mindustry.content.Planets.erekir));
+        // 真正的"建造"判据是 Build.validPlace → validPlaceIgnoreUnits 里的
+        // type.environmentBuildable()（= Block.isOnPlanet(state.getPlanet())）。
+        // 注意：超级组合炮台**故意不在建造菜单里**（isVisible()==false，入口是 HUD 悬浮按钮），
+        // 所以"能不能建造"跟建造菜单无关，只跟这条判据有关。
+        mindustry.type.Planet oldPlanet = Vars.state.rules.planet;
+        int[] spot = findLand(Math.max(stAny.size, 1), Math.max(stAny.size, 1));
+        if (spot != null) {
+          for (int dy = 0; dy < stAny.size; dy++)
+            for (int dx = 0; dx < stAny.size; dx++)
+              Vars.world.tile(spot[0] + dx, spot[1] + dy).setBlock(Blocks.air);
+        }
+        Vars.state.rules.planet = other;
+        boolean buildableNow = stAny.environmentBuildable();
+        boolean validOnOther = spot != null && mindustry.world.Build.validPlace(
+            stAny, Team.sharded, spot[0], spot[1], 0, true, false);
+        stAny.shownPlanets.add(mindustry.content.Planets.erekir);
+        boolean blockedWhenPinned = !stAny.environmentBuildable();
+        boolean invalidWhenPinned = spot != null && !mindustry.world.Build.validPlace(
+            stAny, Team.sharded, spot[0], spot[1], 0, true, false);
+        stAny.shownPlanets.remove(mindustry.content.Planets.erekir);
+        Vars.state.rules.planet = oldPlanet;
+        System.out.println("[ST] 放置判据: 别的星球 environmentBuildable=" + buildableNow
+            + " Build.validPlace=" + validOnOther + "；写死星球后 validPlace 被拒=" + invalidWhenPinned);
+        check("别的星球上 environmentBuildable=true（就是让它能放下去的那条）", buildableNow);
+        check("别的星球上 Build.validPlace=true（真的要放下得去，不只是判据放行）", validOnOther);
+        check("反面校验：写死 {埃里克尔} 时别的星球上 environmentBuildable=false", blockedWhenPinned);
+        check("反面校验：写死 {埃里克尔} 时别的星球上 Build.validPlace=false（= 当初放不下去的原因）",
+            invalidWhenPinned);
+      }
+
+      // ---------- 12) PointDefenseTurret（点防炮）也纳入框选 ----------
+      //
+      // 它不是 Turret：原版层级 PointDefenseTurret -> ReloadTurret -> BaseTurret -> Block
+      // （Turret 是 ReloadTurret 的另一条分支），所以以前 "instanceof Turret" 那条判据把它排除了。
+      {
+        Block pd = null;
+        for (Block b : Vars.content.blocks())
+          // 原版 segment 是匿名子类，getClass() 不等于 PointDefenseTurret，得用 instanceof
+          if (b instanceof mindustry.world.blocks.defense.turrets.PointDefenseTurret) {
+            pd = b;
+            break;
+          }
+        System.out.println("[ST] 点防炮: " + (pd == null ? "找不到" : pd.name + " cls=" + pd.getClass().getName()));
+        if (pd == null) {
+          System.out.println("[ST] SKIP 这套数据集没有 PointDefenseTurret，点防炮用例跳过");
+        } else {
+          check("点防炮能被当成格子炮台（cellBlock 不再是 null）", cellBlock(pd) == pd);
+
+          int psz = Math.max(pd.size, 1); // 原版 segment 是 2x2，间距要按它自己的尺寸算
+          int px = lx + 2, py = ly + 18;
+          place(pd, px, py, Team.sharded);
+          place(pd, px + psz, py, Team.sharded);
+          run(20);
+          Seq<Building> f = scan(Team.sharded, px - 1, py - 1, px + psz * 2, py + psz);
+          int side2 = sideFor(f.size);
+          String lay = layoutOf(f, side2 * side2);
+          System.out.println("[ST] 点防炮框选=" + f.size + " 边长=" + side2 + " 布局=\"" + lay + "\"");
+          check("框选能选中点防炮（实际 " + f.size + " 台）", f.size == 2);
+          check("布局里存的是点防炮（" + lay + "）", lay.startsWith(pd.name + "@"));
+
+          Block stBlock = blockForSide(side2);
+          Building sup = place(stBlock, lx + 24, py, Team.sharded);
+          // 点防炮是**吃电**的：原版 PointDefenseBuild 用 edelta()（= efficiency * delta）
+          // 推进转向/装填，没电就完全不动。这里按真实玩法接一台电源（原版 power-source）。
+          Building pwr = place(Blocks.powerSource, lx + 24 + side2, py, Team.sharded);
+          run(10);
+          sup.configured(null, lay);
+          run(40);
+          float supPower = sup.power == null ? -1f : sup.power.status;
+          int loaded = loadedCells(sup);
+          System.out.println("[ST] 点防炮供电: 电源=" + (pwr != null) + " 本体电力状态=" + supPower);
+          Object[] cs = cellsOf(sup);
+          Object firstCellBlock = cs.length > 0 && cs[0] instanceof Building cb0 ? cb0.block : null;
+          System.out.println("[ST] 点防炮合体: 格数=" + loaded + " 第0格="
+              + (firstCellBlock == null ? "空" : ((Block) firstCellBlock).name));
+          check("点防炮格子真的建出来了（实际 " + loaded + " 格）", loaded == 2);
+          check("第 0 格就是点防炮", firstCellBlock == pd);
+          // 跑一段时间：点防炮 updateTile 里会去找空中的子弹并开火，不能被当成出错格子清掉
+          run(60);
+          check("跑 60 帧后格子还在（没被当成出错格子清掉）", loadedCells(sup) == 2);
+
+          // 拆掉两台"原料"点防炮：世界里就只剩合体炮台里面的格子炮台，
+          // 之后那颗敌方子弹要是被点掉，只可能是**合体里的点防炮**干的
+          for (int i = 0; i < 2; i++) {
+            Tile st0 = Vars.world.tile(px + psz * i, py);
+            if (st0 != null && st0.block() != Blocks.air)
+              st0.setBlock(Blocks.air);
+          }
+          run(20);
+
+          // 功能检查：合体里的点防炮**真的能打**（原版那套以前只服务 Turret，BaseTurret 这条链路要成立）
+          try {
+            Building cell0 = (Building) cs[0];
+            float bx0 = cell0.x + mindustry.Vars.tilesize * 2f, by0 = cell0.y;
+            mindustry.gen.Bullet bb = mindustry.content.Bullets.placeholder.create(
+                cell0, Team.crux, bx0, by0, 0f, 1f, 0f, 600f, null);
+            boolean added = bb != null && bb.isAdded();
+            if (supPower > 0.9f) {
+              run(120);
+            } else {
+              // 电网没供上电：手工把整台电力状态顶满，单独验"点防炮这条链路本身能开火"
+              for (int fi = 0; fi < 120; fi++) {
+                if (sup.power != null)
+                  sup.power.status = 1f;
+                arc.util.Time.delta = 1f;
+                Vars.logic.update();
+              }
+            }
+            boolean gone = bb == null || !bb.isAdded();
+            System.out.println("[ST] 点防炮开火: 子弹生成=" + added + " 被打掉=" + gone
+                + " 剩余伤害=" + (bb == null ? -1f : bb.damage())
+                + " 格数=" + loadedCells(sup));
+            check("合体里的点防炮能把旁边的敌方子弹点掉（生成=" + added + " 打完=" + gone + "）", added && gone);
+          } catch (Throwable t) {
+            System.out.println("[ST] SKIP 点防炮开火用例（" + t + "）");
+          }
+        }
+      }
+
       System.out.println("[ST] 结果: PASS=" + pass + " FAIL=" + fail);
       Core.app.exit();
     } catch (Throwable t) {

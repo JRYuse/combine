@@ -12,6 +12,7 @@ import arc.scene.ui.Image;
 import arc.scene.ui.layout.Table;
 import arc.struct.IntSet;
 import arc.struct.ObjectIntMap;
+import arc.struct.ObjectMap;
 import arc.struct.ObjectSet;
 import arc.struct.Queue;
 import arc.struct.Seq;
@@ -141,6 +142,16 @@ public class CombinedTurret extends Turret {
     super.setStats();
     stats.remove(Stat.liquidCapacity);
     stats.add(Stat.liquidCapacity, displayLiquid, StatUnit.liquidUnits);
+    // 【子弹信息】原版 PowerTurret.setStats 会把 shootType 作为"弹药"列出来
+    // （BulletType 的伤害/射速/穿透/溅射…），LaserTurret 继承它也一样有。
+    // 本类直接 extends Turret（单继承方案，见类注释），super.setStats() 走的是
+    // Turret.setStats —— 里面**没有**这一项，于是组合炮塔的信息面板缺了子弹那一段
+    // （用户报的"CombineTurret 的 setStat 里没有子弹的信息"）。这里按原版口径补回来。
+    if (shootType != null) {
+      ObjectMap<Block, BulletType> ammo = new ObjectMap<>();
+      ammo.put(this, shootType);
+      stats.add(Stat.ammo, StatValues.ammo(ammo));
+    }
     // LaserTurret.setStats：冷却液显示为输入而非 booster
     if (mode == Mode.laser) {
       stats.remove(Stat.booster);
@@ -311,7 +322,7 @@ public class CombinedTurret extends Turret {
             // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
             for (Building b : ComboReflect.linkedReachable(this,
                     o -> o instanceof CombinedTurretBuild other && other.team == team && other.isValid(),
-                    (cur, o) -> cur.block == o.block
+                    (cur, o) -> cur.block.getClass() == o.block.getClass()
                     || ((CombinedTurret) cur.block).allowCrossTypeCombo
                     || ((CombinedTurret) o.block).allowCrossTypeCombo)) {
                 if (b != this)
@@ -886,6 +897,7 @@ public class CombinedTurret extends Turret {
 
     @Override
     public void display(Table table) {
+      if (!ComboUi.detail()) { super.display(table); return; }
       // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
       ComboUi.safe("combinedturret:display", () -> displayInner(table));
     }

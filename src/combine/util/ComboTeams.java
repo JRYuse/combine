@@ -30,6 +30,12 @@ public class ComboTeams {
 
   public static void set(boolean value) {
     playersOnly = value;
+    // 【性能】"组合相关建筑"登记表是按这个开关过滤过后存的，开关一变就得重扫
+    //（否则打开"只和玩家队友组合"之后，名单里还留着敌人的建筑）。
+    try {
+      combine.net.ComboNet.invalidateTracked();
+    } catch (Throwable ignored) {
+    }
     try {
       Core.settings.put(KEY, value);
     } catch (Throwable ignored) {

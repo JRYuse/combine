@@ -1,4 +1,5 @@
 package combine.coop;
+
 import combine.net.ComboNet;
 import combine.util.ComboUi;
 import arc.Core;
@@ -32,10 +33,10 @@ import arc.Events;
  * 原版那个点击方块弹出的小库存面板又只在"没被配置面板吃掉点击"时才出现
  * （多配方工厂这类 configurable 方块点了先弹配方面板），所以这里自己做一个：
  *
- *   点击组合体 → 在方块旁边浮出一个小面板，显示
- *     · 组合构成（每种方块各几台、共几台）
- *     · 整组共享的物品池（物品 / 每种上限）
- *     · 整组共享的液体池（液体 / 每种上限）
+ * 点击组合体 → 在方块旁边浮出一个小面板，显示
+ * · 组合构成（每种方块各几台、共几台）
+ * · 整组共享的物品池（物品 / 每种上限）
+ * · 整组共享的液体池（液体 / 每种上限）
  *
  * 只管显示，不做取货（取货走原版容器/装卸器那套，避免和组合体的池子语义打架）。
  * 只在客户端构建（专用服务器 ui 为 null，直接跳过），并且所有绘制都包在 try/catch 里，
@@ -49,7 +50,8 @@ public class CoopPanel {
   /**
    * "点击非自己队伍的建筑时也弹悬浮面板"（设置里可关）。
    *
-   * <p>关掉之后只对自己队伍的方块弹面板 —— 玩家看敌人家门口的建筑时，
+   * <p>
+   * 关掉之后只对自己队伍的方块弹面板 —— 玩家看敌人家门口的建筑时，
    * 那块面板老是糊在屏幕上、还会挡住点击。
    */
   public static final String FOREIGN_KEY = "combine-panel-foreign";
@@ -84,8 +86,10 @@ public class CoopPanel {
   }
 
   private static final Table table = new Table();
-  /** 面板**内容**那一张表——rebuild 里所有行都加在它上面，再由 ScrollPane 包起来（见 rebuild 收尾）。
-   *  注意别叫 content：本文件静态导入了 {@code Vars.content}（内容表），重名会把它遮住。 */
+  /**
+   * 面板**内容**那一张表——rebuild 里所有行都加在它上面，再由 ScrollPane 包起来（见 rebuild 收尾）。
+   * 注意别叫 content：本文件静态导入了 {@code Vars.content}（内容表），重名会把它遮住。
+   */
   private static final Table contentRows = new Table();
   /** 内容的滚动容器（内容太长时只滚它，面板本身不再被撑到屏幕外）。 */
   private static arc.scene.ui.ScrollPane scroll;
@@ -94,7 +98,8 @@ public class CoopPanel {
 
   /** 客户端加载完成后调用：把面板挂到 HUD 上。 */
   public static void init() {
-    if (!enabled || built || Vars.headless || Vars.ui == null) return;
+    if (!enabled || built || Vars.headless || Vars.ui == null)
+      return;
     try {
       table.name = "coopinventory";
       table.setTransform(true);
@@ -116,13 +121,23 @@ public class CoopPanel {
 
   /** 玩家点击了某个格子：是协作组合方块就弹面板，否则收起。 */
   public static void tapped(mindustry.world.Tile tile) {
-    if (!enabled || Vars.headless || !built) return;
+    if (!enabled || Vars.headless || !built)
+      return;
     try {
       Building b = tile == null ? null : tile.build;
       // 同一次点击可能触发两回 TapEvent（手机端点按、别的模组转发、原版再派发一次…），
       // 而 showFor 对"同一台建筑"是切换语义 —— 于是面板会"闪一下就没了"。
       // 这里做一次去抖：短时间内对同一台的重复点击直接忽略。
-      if (!acceptTap(b)) return;
+      if (!acceptTap(b))
+        return;
+      // 组合体共享面板（新）：和详情面板共用同一次点击 / 同一套去抖 ——
+      // 两张面板要么一起弹、要么一起收，位置也好互相避让（用户要求"不要和详情面板重叠"）。
+      combine.net.ComboSharePanel.tapped(b);
+      // 设置里关掉"显示悬浮信息面板"：点了也不弹（用户要求做成开关）
+      if (!combine.util.ComboUi.panel()) {
+        hide();
+        return;
+      }
       if (showable(b) && teamAllowed(b)) {
         showFor(b);
       } else {
@@ -157,30 +172,42 @@ public class CoopPanel {
   /**
    * 这个方块要不要给面板？
    *
-   * <p>两类：
+   * <p>
+   * 两类：
    * <ul>
-   *   <li>协作组合接管的 JS/子类方块（改不了它们的 display()，只能靠这个悬浮面板看整组池子）；</li>
-   *   <li><b>本模组自己替换出来的组合方块</b>（{@link combine.BlockCloner#comboToOriginal} 里的那些）。
-   *       用户的诉求原话："还是搞一个大的悬浮面板，跟 js/java 扩展建筑的一样" ——
-   *       组合体一大，原版那个贴在屏幕右侧的信息面板要么顶穿屏幕、要么一改显示方式就出问题，
-   *       所以组合方块也走这个**独立悬浮面板**：点一下方块就浮出来、内容实时刷新、
-   *       点别的地方才收起（不依赖原版信息面板的重画时机）。</li>
+   * <li>协作组合接管的 JS/子类方块（改不了它们的 display()，只能靠这个悬浮面板看整组池子）；</li>
+   * <li><b>本模组自己替换出来的组合方块</b>（{@link combine.BlockCloner#comboToOriginal} 里的那些）。
+   * 用户的诉求原话："还是搞一个大的悬浮面板，跟 js/java 扩展建筑的一样" ——
+   * 组合体一大，原版那个贴在屏幕右侧的信息面板要么顶穿屏幕、要么一改显示方式就出问题，
+   * 所以组合方块也走这个**独立悬浮面板**：点一下方块就浮出来、内容实时刷新、
+   * 点别的地方才收起（不依赖原版信息面板的重画时机）。</li>
    * </ul>
    */
   public static boolean showable(Building b) {
-    if (b == null || !b.isValid() || b.block == null) return false;
+    if (b == null || !b.isValid() || b.block == null)
+      return false;
     // 超级组合炮台：用户要求"给合体炮台加上悬浮面板看物品和液体数量"。
     // 它不是组合方块（不替换原版），也不走协作组合，所以这里单独放行。
-    if (b instanceof combine.turret.SuperTurret.SuperTurretBuild) return b.items != null || b.liquids != null;
-    if (!CoopCombo.eligible(b.block) && !isCombined(b.block)) return false;
+    if (b instanceof combine.turret.SuperTurret.SuperTurretBuild)
+      return b.items != null || b.liquids != null;
+    boolean combined = isCombined(b.block);
+    if (!CoopCombo.eligible(b.block) && !combined)
+      return false;
+    // 【用户报的"有时候点组合体不弹面板"】以前这里还要求"这一台自己的 items/liquids 非空"，
+    // 但组合体的池子可能整份挂在别的成员身上（这台自己的模块被并走/换成空壳），
+    // 于是点了没反应。本模组自己替换出来的组合方块一律可弹（池子按整网那一份取，见 rebuild）。
+    if (combined)
+      return true;
     return b.items != null || b.liquids != null;
   }
 
   /** 是不是"本模组替换出来的组合方块"（同 id 同名字接管的那些）。 */
   public static boolean isCombined(Block block) {
-    if (block == null) return false;
+    if (block == null)
+      return false;
     try {
-      if (combine.BlockCloner.comboToOriginal.containsKey(block)) return true;
+      if (combine.BlockCloner.comboToOriginal.containsKey(block))
+        return true;
       return combine.Replacer.replaced.containsValue(block, true);
     } catch (Throwable ignored) {
       return false;
@@ -193,9 +220,9 @@ public class CoopPanel {
       return;
     }
     build = t;
-    lastSignature = null;   // 换目标：下一帧立刻重画一次
-    side = 0;               // 换目标：上下位置重新判一次（之后保持不动，见 updatePosition）
-    itemSeenAt.clear();     // 换目标：迟滞集合也重来，别把上一台的物品带过来
+    lastSignature = null; // 换目标：下一帧立刻重画一次
+    side = 0; // 换目标：上下位置重新判一次（之后保持不动，见 updatePosition）
+    itemSeenAt.clear(); // 换目标：迟滞集合也重来，别把上一台的物品带过来
     liquidSeenAt.clear();
     rebuild(true);
   }
@@ -209,7 +236,8 @@ public class CoopPanel {
   /**
    * 面板相对屏幕的等比缩放（只在内容超宽/超高时缩小，从不放大）。
    *
-   * <p>用户要求："点击组合工厂时他们上面会显示那个材料之类的，加个自适应缩放，不然有一些会很长" ——
+   * <p>
+   * 用户要求："点击组合工厂时他们上面会显示那个材料之类的，加个自适应缩放，不然有一些会很长" ——
    * 超长的方块名 / 一大堆构成 / 多种物品·液体·弹仓会把面板撑得比屏幕还宽（两侧被裁掉、
    * 面板也跟着上下翻面乱跳）。这里量一次面板尺寸，超出屏幕就整体缩小到塞得下。
    */
@@ -218,13 +246,15 @@ public class CoopPanel {
   /**
    * 面板上"刚显示过"的物品/液体 + 最后一次有货的时刻（游戏秒）。
    *
-   * <p>用户报："有的物品和液体在 0 和 1 的边缘跳，会导致面板也一直跳"。数量在 0/1 之间抖时，
+   * <p>
+   * 用户报："有的物品和液体在 0 和 1 的边缘跳，会导致面板也一直跳"。数量在 0/1 之间抖时，
    * 这一行一会儿有一会儿没有 → 面板高度变 → 位置跟着上下跳。这里给行集合加 3 秒迟滞：
    * 一旦显示过，数量归零后还保留 3 秒才撤掉（面板就不会因 0/1 抖动而"抖"了）。
    */
   private static final arc.struct.ObjectMap<Item, Float> itemSeenAt = new arc.struct.ObjectMap<>();
   private static final arc.struct.ObjectMap<Liquid, Float> liquidSeenAt = new arc.struct.ObjectMap<>();
   private static final float KEEP_EMPTY_ROW_SECONDS = 3f;
+
   /** 面板这一帧要显示哪些物品行：池里有货的 + 最近 3 秒内有过货的（防 0/1 抖动导致行进出）。 */
   public static Seq<Item> itemRows(mindustry.world.modules.ItemModule pool) {
     Seq<Item> out = new Seq<>();
@@ -236,12 +266,15 @@ public class CoopPanel {
           out.add(item);
         }
     for (Item item : itemSeenAt.keys()) {
-      if (out.contains(item, true)) continue;
-      if (now - itemSeenAt.get(item, 0f) <= KEEP_EMPTY_ROW_SECONDS) out.add(item);
+      if (out.contains(item, true))
+        continue;
+      if (now - itemSeenAt.get(item, 0f) <= KEEP_EMPTY_ROW_SECONDS)
+        out.add(item);
     }
     for (var it = itemSeenAt.iterator(); it.hasNext();) {
       var e = it.next();
-      if (now - e.value > KEEP_EMPTY_ROW_SECONDS) it.remove();
+      if (now - e.value > KEEP_EMPTY_ROW_SECONDS)
+        it.remove();
     }
     return out;
   }
@@ -257,19 +290,23 @@ public class CoopPanel {
           out.add(liquid);
         }
     for (Liquid liquid : liquidSeenAt.keys()) {
-      if (out.contains(liquid, true)) continue;
-      if (now - liquidSeenAt.get(liquid, 0f) <= KEEP_EMPTY_ROW_SECONDS) out.add(liquid);
+      if (out.contains(liquid, true))
+        continue;
+      if (now - liquidSeenAt.get(liquid, 0f) <= KEEP_EMPTY_ROW_SECONDS)
+        out.add(liquid);
     }
     for (var it = liquidSeenAt.iterator(); it.hasNext();) {
       var e = it.next();
-      if (now - e.value > KEEP_EMPTY_ROW_SECONDS) it.remove();
+      if (now - e.value > KEEP_EMPTY_ROW_SECONDS)
+        it.remove();
     }
     return out;
   }
 
   public static void hide() {
     build = null;
-    if (table == null) return;
+    if (table == null)
+      return;
     try {
       table.actions(Actions.scaleTo(0f, 1f, 0.06f), Actions.run(() -> {
         table.clearChildren();
@@ -293,7 +330,8 @@ public class CoopPanel {
     Table rows = CoopPanel.contentRows;
     rows.clearChildren();
     // 只有"显示动画"那次才清动作：实时重画内容时清掉会把正在跑的缩放动画打断（面板卡在半截大小）
-    if (actions) table.clearActions();
+    if (actions)
+      table.clearActions();
     table.background(mindustry.gen.Tex.inventory);
     try {
       rows.margin(4f);
@@ -302,7 +340,9 @@ public class CoopPanel {
       Seq<Building> members = members(build);
       // 标题 + 构成
       // 组合方块（本模组替换出来的）叫"组合体"，协作组合接管的那些仍叫"协作组合"
-      combine.turret.SuperTurret.SuperTurretBuild st = build instanceof combine.turret.SuperTurret.SuperTurretBuild s ? s : null;
+      combine.turret.SuperTurret.SuperTurretBuild st = build instanceof combine.turret.SuperTurret.SuperTurretBuild s
+          ? s
+          : null;
       String kind = st != null ? "超级组合炮台" : (isCombined(build.block) ? "组合体" : "协作组合");
       // 【换行宽度封顶】以前取"逻辑屏幕宽的一半"当换行宽：设备逻辑宽很大时（平板/桌面放大 UI），
       // 这个宽度能到上千，面板照样顶穿屏幕（用户报的"容器的组合体成员显示还是没换行"）。
@@ -316,30 +356,39 @@ public class CoopPanel {
       // 超级炮台再单列一行"里面装了哪些炮台"（每格一台，看池子的时候知道里面是什么）
       if (st != null) {
         String inner = st.innerSummary();
-        if (inner.isEmpty()) inner = "（空）";
+        if (inner.isEmpty())
+          inner = "（空）";
         table.add("[lightgray]里面: " + inner + "[]").left().width(compWidth).wrap().row();
       }
       ObjectIntMap<Block> counts = new ObjectIntMap<>();
-      for (Building m : members) counts.increment(m.block, 1);
+      for (Building m : members)
+        counts.increment(m.block, 1);
       StringBuilder comp = new StringBuilder();
       for (Block b : counts.keys()) {
-        if (comp.length() > 0) comp.append("  ");
+        if (comp.length() > 0)
+          comp.append("  ");
         comp.append(b.localizedName).append(" x").append(counts.get(b, 0));
       }
-      if (comp.length() == 0) comp.append(build.block.localizedName).append(" x1");
+      if (comp.length() == 0)
+        comp.append(build.block.localizedName).append(" x1");
       // 构成可能有十几种方块：不换行的话面板会宽到屏幕外（标题被裁掉、还没法看全）。
       table.add("[lightgray]构成: " + comp + "[]").left().width(compWidth).wrap().row();
 
       // 共享物品池（每行 3 个）
       // 【分母必须和池子同源】池子可能是**整张网络**共用的那一份（组合节点/连接器接起来的），
       // 这时用"这台方块自己的容量"当分母就会出现"1482273/60"这种数字
-      //（用户视频现场：组合钻机 x6 的面板显示 铜 1482273/60、硅 5555520/60，还在每帧乱跳）。
+      // （用户视频现场：组合钻机 x6 的面板显示 铜 1482273/60、硅 5555520/60，还在每帧乱跳）。
       int itemCap = Math.max(combine.net.ComboNet.panelItemCap(build), Math.max(build.block.itemCapacity, 1));
       // 超级炮台：容量就是"里面每一格累加"（用户要求），别用 block 上那个静态估算
-      if (st != null) itemCap = Math.max(st.realItemCap, 1);
+      if (st != null)
+        itemCap = Math.max(st.realItemCap, 1);
       // 【池子也要取"网络实际共用的那一份"】并池之后池子可能躺在网络里别的成员手上，
       // 直接读 build.items 会显示"（空）"或在不同模块之间乱跳（视频里 1482273 → 487 → 8）。
       mindustry.world.modules.ItemModule pool = combine.net.ComboNet.panelItemPool(build);
+      // 兜底：取不到整网那份池子时退回这台自己的模块 —— 别因为取不到就整段空着不显示
+      // （用户报的"有时候看不到组合体的物品和容量"）。
+      if (pool == null)
+        pool = build.items;
       // 【行集合要稳】池里有货的 + 最近 3 秒有过货的（0/1 抖动不让行进出，见 itemRows）
       Seq<Item> items = itemRows(pool);
       table.add("[lightgray]物品池[]").left().row();
@@ -369,8 +418,11 @@ public class CoopPanel {
       // 组合方块取 baseLiquidCapacity —— 全在 ComboReflect.baseLiquidCap() 里。
       float liquidCap = Math.max(combine.net.ComboNet.panelLiquidCap(build),
           Math.max(combine.util.ComboReflect.baseLiquidCap(build), 1f));
-      if (st != null) liquidCap = Math.max(st.realLiquidCap, 1f);
+      if (st != null)
+        liquidCap = Math.max(st.realLiquidCap, 1f);
       mindustry.world.modules.LiquidModule lpool = combine.net.ComboNet.panelLiquidPool(build);
+      if (lpool == null)
+        lpool = build.liquids;
       Seq<Liquid> liquids = liquidRows(lpool);
       table.add("[lightgray]液体池[]").left().row();
       if (liquids.isEmpty()) {
@@ -433,7 +485,8 @@ public class CoopPanel {
           anyHeat = true;
         } else {
           for (Building m : members) {
-            if (m == null || !m.isValid()) continue;
+            if (m == null || !m.isValid())
+              continue;
             if (m instanceof mindustry.world.blocks.heat.HeatBlock hb) {
               heatSum += Math.max(0f, hb.heat());
               anyHeat = true;
@@ -448,7 +501,7 @@ public class CoopPanel {
         // 【自己实际吃到的热】那些"没被本模组替换"的需热方块（mod 炮台等）不是 HeatBlock，
         // 按 HeatBlock.heat() 求和永远是 0 —— 但它们自己的 heatReq（原版热条读的就是它）
         // 就是"这一台实际拿到的热"。取两者较大的那个，面板就不会显示成 0
-        //（用户报："afflict 的悬浮面板显示热量是 0"）。
+        // （用户报："afflict 的悬浮面板显示热量是 0"）。
         heatSum = Math.max(heatSum, ownReceivedHeat(build));
         if (anyHeat) {
           String line = (int) heatSum
@@ -472,15 +525,18 @@ public class CoopPanel {
     rows.pack();
     if (scroll == null) {
       scroll = new arc.scene.ui.ScrollPane(rows, mindustry.ui.Styles.smallPane);
-      scroll.setScrollingDisabled(true, false);   // 只纵向滚，横向不滚
+      scroll.setScrollingDisabled(true, false); // 只纵向滚，横向不滚
       scroll.setFadeScrollBars(false);
       scroll.setOverscroll(false, false);
     }
     float sceneW = Core.scene == null ? 400f : Core.scene.getWidth();
     float sceneH = Core.scene == null ? 400f : Core.scene.getHeight();
     // 【用户要求"长和宽改成原来一半"】封顶再减半：宽 92%→46%、高 70%→35%
-    float capW = Math.max(160f, sceneW * 0.46f);
-    float capH = Math.max(120f, sceneH * 0.35f);
+    // float capW = Math.max(160f, sceneW * 0.46f);
+    // float capH = Math.max(120f, sceneH * 0.35f);
+    float q = 4;
+    float capW = 100f * q;
+    float capH = 60f * q;
     CoopPanel.table.clearChildren();
     CoopPanel.table.background(mindustry.gen.Tex.inventory);
     CoopPanel.table.margin(4f);
@@ -512,7 +568,7 @@ public class CoopPanel {
 
     // 【不自动收起】面板打开后就一直留着，只在"点了其他位置 / 读档 / 目标失效"时关闭。
     // （以前有个"池子空置 30 秒自动收起"，但计时器不清零，重开后会瞬间到期，
-    //   表现成"闪一下就没了"；按需求直接去掉这类定时收起。）
+    // 表现成"闪一下就没了"；按需求直接去掉这类定时收起。）
     // 同理：实时刷新挂在**外层面板**上（局部 table 现在是内容表）
     CoopPanel.table.update(() -> {
       if (state.isMenu() || build == null || !build.isValid()) {
@@ -580,7 +636,8 @@ public class CoopPanel {
    */
   private static void updatePosition() {
     try {
-      if (build == null || Core.input == null || Core.scene == null) return;
+      if (build == null || Core.input == null || Core.scene == null)
+        return;
       table.pack();
 
       float[] a = anchor(build);
@@ -624,6 +681,29 @@ public class CoopPanel {
     float minY = h / 2f + 4f, maxY = Math.max(minY, sceneH - h / 2f - 4f);
     cy = Mathf.clamp(cy, minY, maxY);
     table.setPosition(cx, cy, Align.center);
+    // 记下这次的矩形（屏幕坐标，缩放过），给"组合体共享面板"让位用（见 rect()）
+    lastCx = cx;
+    lastCy = cy;
+    lastHalfW = halfW;
+    lastHalfH = h / 2f;
+  }
+
+  /** 上一次摆好的矩形（中心 + 半宽/半高，屏幕坐标；没摆过时是 0）。 */
+  private static float lastCx = 0f, lastCy = 0f, lastHalfW = 0f, lastHalfH = 0f;
+
+  /**
+   * 详情面板当前占的矩形 {@code [left, bottom, right, top]}（屏幕坐标）；没显示时返回 null。
+   * 给组合体共享面板避让用（用户要求"新面板不要和显示详细信息的悬浮面板重叠"）。
+   */
+  public static float[] rect() {
+    if (!built || build == null || table == null || !table.visible)
+      return null;
+    return new float[] { lastCx - lastHalfW, lastCy - lastHalfH, lastCx + lastHalfW, lastCy + lastHalfH };
+  }
+
+  /** 详情面板显示中吗（共享面板据此决定避让 / 单独摆放）。 */
+  public static boolean showing() {
+    return built && build != null && table != null && table.visible;
   }
 
   /** 面板相对屏幕的等比缩放：只在超出可用范围时缩小，从不放大。 */
@@ -645,9 +725,10 @@ public class CoopPanel {
    * 独立成方法是为了能被 headless 测试直接验算。
    */
   public static float[] anchor(Building b) {
-    if (b == null || b.block == null) return new float[]{0f, 0f, Align.bottom};
+    if (b == null || b.block == null)
+      return new float[] { 0f, 0f, Align.bottom };
     float half = b.block.size * mindustry.Vars.tilesize / 2f;
-    return new float[]{b.x, b.y + half, Align.bottom};
+    return new float[] { b.x, b.y + half, Align.bottom };
   }
 
   // ==================== 供面板 / 测试共用的数据 ====================
@@ -657,14 +738,17 @@ public class CoopPanel {
    */
   public static Seq<Building> turretMembers(Building b) {
     Seq<Building> out = new Seq<>();
-    if (b == null) return out;
+    if (b == null)
+      return out;
     if (b instanceof combine.turret.SuperTurret.SuperTurretBuild st) {
       for (Object c : st.cells)
-        if (c instanceof Building cb) out.add(cb);
+        if (c instanceof Building cb)
+          out.add(cb);
       return out;
     }
     for (Building m : members(b))
-      if (m instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild) out.add(m);
+      if (m instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild)
+        out.add(m);
     return out;
   }
 
@@ -675,8 +759,10 @@ public class CoopPanel {
       if (!(m instanceof mindustry.world.blocks.defense.turrets.ItemTurret.ItemTurretBuild itb) || itb.ammo == null)
         continue;
       for (mindustry.world.blocks.defense.turrets.Turret.AmmoEntry e : itb.ammo) {
-        if (!(e instanceof mindustry.world.blocks.defense.turrets.ItemTurret.ItemEntry ie)) continue;
-        if (ie.item == null || ie.amount <= 0) continue;
+        if (!(e instanceof mindustry.world.blocks.defense.turrets.ItemTurret.ItemEntry ie))
+          continue;
+        if (ie.item == null || ie.amount <= 0)
+          continue;
         out.increment(ie.item, ie.amount);
       }
     }
@@ -689,7 +775,8 @@ public class CoopPanel {
     for (Building m : turretMembers(b)) {
       if (!(m.block instanceof mindustry.world.blocks.defense.turrets.ItemTurret it) || it.ammoTypes == null)
         continue;
-      for (Item item : it.ammoTypes.keys()) out.addUnique(item);
+      for (Item item : it.ammoTypes.keys())
+        out.addUnique(item);
     }
     return out;
   }
@@ -698,7 +785,8 @@ public class CoopPanel {
   public static int ammoCap(Building b) {
     int cap = 0;
     for (Building m : turretMembers(b))
-      if (m.block instanceof mindustry.world.blocks.defense.turrets.Turret t) cap += Math.max(t.maxAmmo, 1);
+      if (m.block instanceof mindustry.world.blocks.defense.turrets.Turret t)
+        cap += Math.max(t.maxAmmo, 1);
     return Math.max(cap, 1);
   }
 
@@ -708,14 +796,16 @@ public class CoopPanel {
     // 用 panelMembers（= 网络分量 + 连线接进来的"纯热"建筑）：那些没被本模组替换的 mod
     // 制热机/需热炮台不并池，但用户点开面板时要能看到"连在一起了"以及整组热量。
     Seq<Building> net = ComboNet.panelMembers(start);
-    if (net != null && net.size > 0) return net;
+    if (net != null && net.size > 0)
+      return net;
     return CoopCombo.coopGroup(start);
   }
 
   /**
    * 这台建筑**自己实际吃到的热**（面板"热量"那一行的分子兜底）。
    *
-   * <p>没被本模组替换的需热方块（mod 炮台、原版 afflict 这类）不是 {@code HeatBlock}，
+   * <p>
+   * 没被本模组替换的需热方块（mod 炮台、原版 afflict 这类）不是 {@code HeatBlock}，
    * 按"Σ 成员的 heat()"永远算成 0；可它们自己的 {@code heatReq}（原版热条读的就是它）
    * 就是这一台实际拿到的热。热熔炉那类用字段名 {@code heat}。
    */
@@ -723,7 +813,8 @@ public class CoopPanel {
     for (String field : new String[] { "heatReq", "heat" }) {
       try {
         Float v = combine.util.ComboReflect.getFloat(b, field);
-        if (v != null && v > 0f) return v;
+        if (v != null && v > 0f)
+          return v;
       } catch (Throwable ignored) {
       }
     }
@@ -732,24 +823,30 @@ public class CoopPanel {
 
   /** 面板文字版摘要（测试用；也是排查时的现成工具）。 */
   public static String describe(Building b) {
-    if (b == null || !b.isValid()) return "无效";
+    if (b == null || !b.isValid())
+      return "无效";
     Seq<Building> members = members(b);
     ObjectIntMap<Block> counts = new ObjectIntMap<>();
-    for (Building m : members) counts.increment(m.block, 1);
+    for (Building m : members)
+      counts.increment(m.block, 1);
     StringBuilder sb = new StringBuilder();
-    combine.turret.SuperTurret.SuperTurretBuild st = b instanceof combine.turret.SuperTurret.SuperTurretBuild s ? s : null;
+    combine.turret.SuperTurret.SuperTurretBuild st = b instanceof combine.turret.SuperTurret.SuperTurretBuild s ? s
+        : null;
     sb.append(st != null ? "超级组合炮台" : "协作组合")
         .append(" x").append(Math.max(members.size, 1)).append(' ').append(b.block.localizedName);
-    if (st != null) sb.append(" | 里面: ").append(st.innerSummary());
+    if (st != null)
+      sb.append(" | 里面: ").append(st.innerSummary());
     sb.append(" | 构成: ");
-    for (Block bl : counts.keys()) sb.append(bl.localizedName).append('x').append(counts.get(bl, 0)).append(' ');
+    for (Block bl : counts.keys())
+      sb.append(bl.localizedName).append('x').append(counts.get(bl, 0)).append(' ');
     sb.append("| 物品: ");
     if (b.items != null) {
       for (Item item : content.items()) {
         int amount = b.items.get(item);
         // 分母同样用"组上限"（核心的 getMaximumAccepted 是无限值，别用它）
-        if (amount > 0) sb.append(item.localizedName).append('=').append(amount).append('/')
-            .append(Math.max(combine.net.ComboNet.panelItemCap(b), 1)).append(' ');
+        if (amount > 0)
+          sb.append(item.localizedName).append('=').append(amount).append('/')
+              .append(Math.max(combine.net.ComboNet.panelItemCap(b), 1)).append(' ');
       }
     }
     // 弹仓（组合/合体炮台看的是这个 —— 弹药存在各自弹仓里）
@@ -768,7 +865,9 @@ public class CoopPanel {
     if (b.liquids != null) {
       for (Liquid liquid : content.liquids()) {
         float amount = b.liquids.get(liquid);
-        if (amount > 0.001f) sb.append(liquid.localizedName).append('=').append(Math.round(amount)).append('/').append((int) b.block.liquidCapacity).append(' ');
+        if (amount > 0.001f)
+          sb.append(liquid.localizedName).append('=').append(Math.round(amount)).append('/')
+              .append((int) b.block.liquidCapacity).append(' ');
       }
     }
     return sb.toString();
@@ -776,9 +875,16 @@ public class CoopPanel {
 
   /** 注册点击钩子 + 客户端加载时建面板（由 CoopCombo.register 调用）。 */
   public static void register() {
-    if (Vars.headless) return;
-    Events.on(EventType.ClientLoadEvent.class, e -> init());
+    if (Vars.headless)
+      return;
+    Events.on(EventType.ClientLoadEvent.class, e -> {
+      init();
+      combine.net.ComboSharePanel.init();
+    });
     Events.on(EventType.TapEvent.class, e -> tapped(e.tile));
-    Events.on(EventType.WorldLoadEvent.class, e -> hide());
+    Events.on(EventType.WorldLoadEvent.class, e -> {
+      hide();
+      combine.net.ComboSharePanel.hide();
+    });
   }
 }

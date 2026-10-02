@@ -148,7 +148,7 @@ public class CombinedWallCrafter extends WallCrafter {
             // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
             for (Building b : ComboReflect.linkedReachable(this,
                     o -> o instanceof CombinedWallCrafterBuild other && other.team == team && other.isValid(),
-                    (cur, o) -> cur.block == o.block
+                    (cur, o) -> cur.block.getClass() == o.block.getClass()
                     || ((CombinedWallCrafter) cur.block).allowCrossTypeCombo
                     || ((CombinedWallCrafter) o.block).allowCrossTypeCombo)) {
                 if (b != this)
@@ -179,7 +179,9 @@ public class CombinedWallCrafter extends WallCrafter {
                     totalLiquidCap += b.liquidCapacityForCombo();
             for (CombinedWallCrafterBuild b : newGroup)
                 if (b.isValid()) {
-                    b.comboTotalItemCap = totalItemCap;
+                    // 【不共享物品】面板上"物品"没勾 = 每台各留各的模块，容量也只算自己那份
+                    b.comboTotalItemCap = combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.ITEMS)
+                            ? totalItemCap : Math.max(ComboReflect.baseItemCap(b), 1);
                     b.comboTotalLiquidCap = totalLiquidCap;
                 }
 
@@ -218,7 +220,9 @@ public class CombinedWallCrafter extends WallCrafter {
             // 【池子可能不只本组在用】核心库存 / 组合节点接过来的别的组合体也在引用它时，
             // 本地拆分一律不动这口池子（退出成员拿空模块，由 ComboNet 按网络重新分配）。
             // 否则就是从核心库存里搬东西给退出的工厂 —— 用户报的"拆工厂时核心里的东西全没了"。
-            boolean poolOurs = !ComboReflect.itemPoolSharedOutside(poolItems, oldGroup);
+            // 【不共享物品】没有"公共池"：谁也别并进来、退出成员也别被换成空模块（否则等于丢物品）
+            boolean localShareItems = combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.ITEMS);
+            boolean poolOurs = localShareItems && !ComboReflect.itemPoolSharedOutside(poolItems, oldGroup);
             for (CombinedWallCrafterBuild b : oldGroup) {
                 if (!b.isValid())
                     continue;
@@ -282,10 +286,12 @@ public class CombinedWallCrafter extends WallCrafter {
                     if (b.isValid())
                         b.items = oldItems;
             for (int i = 0; i < kicked.size; i++) {
-                kicked.get(i).items = newItemMods[i];
+                if (poolOurs) kicked.get(i).items = newItemMods[i];
                 // 拆出去的成员拿一口空液池：液体留在组池里（和物品"留在组里"同一口径），
                 // 避免它继续 alias 组池后被后续独立运行搬空/重复写档。
-                kicked.get(i).liquids = new LiquidModule();
+                // 【不共享液体】没有"组池"这回事：它自己那份液池留着，别换成空的（等于丢液体）。
+                if (combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.LIQUIDS))
+                    kicked.get(i).liquids = new LiquidModule();
             }
         }
 
@@ -303,9 +309,11 @@ public class CombinedWallCrafter extends WallCrafter {
             //（核心没动、工厂也多一份同样的物品），网络层随后把这多出来的一份并回核心 —— 库存凭空翻倍。
             ObjectSet<ItemModule> sharedItemPools = ComboReflect.itemPoolsSharedOutside(group());
             ItemModule sharedItems = sharedItemPools.isEmpty() ? null : sharedItemPools.first();
-            if (sharedItems != null) leader.items = sharedItems;
+            // 【不共享物品】没勾"物品"时谁也别并谁（拆开由 ComboNet 按单台粒度做，见 perMemberGroups）
+            boolean localShareItems = combine.net.ComboShare.shares(leader, combine.net.ComboShare.ITEMS);
+            if (localShareItems && sharedItems != null) leader.items = sharedItems;
             ObjectSet<ItemModule> processedItems = new ObjectSet<>();
-            if (leader.items != null) {
+            if (localShareItems && leader.items != null) {
                 processedItems.add(leader.items);
                 for (CombinedWallCrafterBuild m : group()) {
                     if (m != leader && m.isValid() && m.items != null && !processedItems.contains(m.items)
@@ -335,9 +343,10 @@ public class CombinedWallCrafter extends WallCrafter {
             }
             ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(group());
             LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
-            if (sharedLiquids != null) leader.liquids = sharedLiquids;
+            boolean localShareLiquids = combine.net.ComboShare.shares(leader, combine.net.ComboShare.LIQUIDS);
+            if (localShareLiquids && sharedLiquids != null) leader.liquids = sharedLiquids;
             ObjectSet<LiquidModule> processedLiquids = new ObjectSet<>();
-            if (leader.liquids != null) {
+            if (localShareLiquids && leader.liquids != null) {
                 processedLiquids.add(leader.liquids);
                 for (CombinedWallCrafterBuild m : group()) {
                     if (m != leader && m.isValid() && m.liquids != null && !processedLiquids.contains(m.liquids)
@@ -571,6 +580,7 @@ public class CombinedWallCrafter extends WallCrafter {
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          if (!ComboUi.detail()) { super.display(table); return; }
           // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
           ComboUi.safe("combinedwallcrafter:display", () -> displayInner(table));
         }

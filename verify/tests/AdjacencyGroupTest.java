@@ -21,8 +21,9 @@ import mindustry.world.Tile;
 
 /**
  * 用户 2026-09-28 要求：
- * 1) 不同的组合建筑**相邻**不再自动并成一台；只有**同种**组合建筑相邻才并，
- *    不同种的要靠组合节点/组合连接器才并。
+ * 1) 相邻并池按**同类**（同一个组合方块类，例如两台不同配方的"组合工厂"）判定，
+ *    不是按"同一个方块对象"；不同**类**（组合工厂 vs 组合钻头）相邻不并，
+ *    要靠组合节点/组合连接器才并。
  * 2) 合体炮台（SuperTurret）应该能和组合炮台（CombinedTurret 族）组合。
  */
 public class AdjacencyGroupTest implements arc.ApplicationListener {
@@ -81,6 +82,18 @@ public class AdjacencyGroupTest implements arc.ApplicationListener {
     }
   }
 
+  /** 这台建筑所在组合网络的成员数（读不到就 -1）。 */
+  static int members(Building b) {
+    try {
+      Class<?> net = Class.forName("combine.net.ComboNet", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+      var m = net.getMethod("componentMembers", Building.class);
+      arc.struct.Seq<?> cm = (arc.struct.Seq<?>) m.invoke(null, b);
+      return cm.size;
+    } catch (Throwable t) {
+      return -1;
+    }
+  }
+
   static Block find(String name) {
     for (Block b : Vars.content.blocks())
       if (b.name.equals(name))
@@ -122,6 +135,7 @@ public class AdjacencyGroupTest implements arc.ApplicationListener {
       run(5);
 
       Block gpress = find("graphite-press"), smelter = find("silicon-smelter");
+      Block drill = find("mechanical-drill");
       Block nodeB = null, duo = find("duo"), super2 = find("super-turret-2");
       for (Block b : Vars.content.blocks())
         if (b.getClass().getName().equals("combine.net.ComboNode")) {
@@ -130,33 +144,42 @@ public class AdjacencyGroupTest implements arc.ApplicationListener {
         }
       System.out.println("[AG] graphite-press=" + (gpress == null ? "null" : gpress.getClass().getSimpleName())
           + " silicon-smelter=" + (smelter == null ? "null" : smelter.getClass().getSimpleName())
+          + " mechanical-drill=" + (drill == null ? "null" : drill.getClass().getSimpleName())
           + " duo=" + (duo == null ? "null" : duo.getClass().getSimpleName())
           + " node=" + (nodeB == null ? "null" : nodeB.getClass().getSimpleName())
           + " super-turret-2=" + (super2 == null ? "null" : super2.getClass().getSimpleName()));
-      if (gpress == null || smelter == null || nodeB == null || duo == null || super2 == null) {
+      if (gpress == null || smelter == null || drill == null || nodeB == null || duo == null || super2 == null) {
         System.out.println("[AG] 数据集缺方块，跳过（exit 0）");
         System.exit(0);
       }
 
-      // 1) 同种组合建筑相邻 → 并池
+      // 1) 同种（同一个方块）组合建筑相邻 → 并池
       Building g1 = place(gpress, 40, 40), g2 = place(gpress, 42, 40);
       run(20);
       check("同种组合建筑相邻：共用一份物品池", g1 != null && g2 != null && g1.items == g2.items);
 
-      // 2) 不同种组合建筑相邻 → 不并池
+      // 2) **同类**（同一个组合方块类、不同配方）相邻 → 并池（用户 2026-09-28 要求：
+      //    判定按"同类"而不是"同一个方块对象"）。graphite-press / silicon-smelter 都是 CombinedCrafter。
       Building gp = place(gpress, 50, 40), sm = place(smelter, 52, 40);
       run(20);
-      System.out.println("[AG] 不同种相邻: items 同模块=" + (gp != null && sm != null && gp.items == sm.items));
-      check("不同种组合建筑相邻：不并池（要节点/连接器才并）", gp != null && sm != null && gp.items != sm.items);
+      System.out.println("[AG] 同类相邻(" + gpress.name + "+" + smelter.name + "): items 同模块="
+          + (gp != null && sm != null && gp.items == sm.items));
+      check("同类组合建筑相邻（不同方块、同一个组合类）：并池", gp != null && sm != null && gp.items == sm.items);
 
-      // 3) 不同种组合建筑用组合节点连起来 → 并池
-      Building node = place(nodeB, 49, 44);
+      // 3) 不同**类**（组合工厂 vs 组合钻头）相邻 → 不并池；用组合节点连起来 → 并池
+      Building gp2 = place(gpress, 60, 40), dr = place(drill, 62, 40);
+      run(20);
+      System.out.println("[AG] 不同类相邻(" + gpress.name + "+" + drill.name + "): items 同模块="
+          + (gp2 != null && dr != null && gp2.items == dr.items));
+      check("不同类组合建筑相邻：不并池（要节点/连接器才并）", gp2 != null && dr != null && gp2.items != dr.items);
+
+      Building node2 = place(nodeB, 59, 44);
       run(5);
-      tapNode(node, gp);
-      tapNode(node, sm);
+      tapNode(node2, gp2);
+      tapNode(node2, dr);
       run(30);
-      System.out.println("[AG] 不同种+节点: items 同模块=" + (gp.items == sm.items));
-      check("不同种组合建筑用节点连上：并池", gp.items == sm.items);
+      System.out.println("[AG] 不同类+节点: items 同模块=" + (gp2.items == dr.items));
+      check("不同类组合建筑用节点连上：并池", gp2.items == dr.items);
 
       // 4) 合体炮台 + 组合炮台相邻 → 并池（用户要的例外）
       Building sup = place(super2, 70, 40);      // size2 → 占 70..71
@@ -187,6 +210,73 @@ public class AdjacencyGroupTest implements arc.ApplicationListener {
         System.out.println("[AG] 读网络成员失败: " + t);
       }
       check("合体炮台和组合炮台相邻：并成一台（共用液池）", sup != null && dt != null && sup.liquids == dt.liquids);
+
+      // 5) 单位生产族（组装厂 ↔ 重构厂）相邻 → 并成一台（用户报的"Reconstructor 和 UnitFactory
+      //    的组合没了"）。这两个是**不同的组合类**，靠 allowCrossTypeCombo（单位族例外）并。
+      {
+        Block fac = find("ground-factory"), rec = find("additive-reconstructor");
+        System.out.println("[AG] 单位族: unit-factory=" + (fac == null ? "null" : fac.getClass().getSimpleName())
+            + " reconstructor=" + (rec == null ? "null" : rec.getClass().getSimpleName()));
+        if (fac == null || rec == null) {
+          System.out.println("[AG] 数据集缺单位工厂/重构厂，跳过一个用例");
+        } else {
+          int fx = 90, fy = 40;
+          Building f1 = place(fac, fx, fy);
+          Building r1 = place(rec, fx + fac.size, fy); // 紧贴（各 3x3）
+          run(40);
+          System.out.println("[AG] 组装厂+重构厂相邻: items 同模块="
+              + (f1 != null && r1 != null && f1.items == r1.items)
+              + " 组装厂成员数=" + (f1 == null ? -1 : members(f1))
+              + " 重构厂成员数=" + (r1 == null ? -1 : members(r1)));
+          check("组装厂 + 重构厂相邻：并成一台（共用物品池）", f1 != null && r1 != null && f1.items == r1.items);
+        }
+      }
+
+      // 6) 协作组合（JS/Java 扩展建筑）：**同一个 Java 类**但不同建筑不该并成一组 ——
+      //    JS 模组的方块常常一批共享同一个 Rhino adapter 类（废土科技里 28 个建筑共用一个类），
+      //    按"类"分组会把这 28 个毫不相干的建筑在基地里并成一个巨型协作组，
+      //    每次放置/每帧搬运都按组大小走 = 用户报的"加一个新建筑就卡一下"。
+      try {
+        Class<?> coop = Class.forName("combine.coop.CoopCombo", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
+        java.lang.reflect.Method eligible = coop.getMethod("eligible", Block.class);
+        java.lang.reflect.Method leader = coop.getMethod("coopLeader", Building.class);
+        // 按类聚合可组合方块，挑一个"一个类里 >= 2 个不同方块"的类
+        arc.struct.ObjectMap<String, arc.struct.Seq<Block>> byClass = new arc.struct.ObjectMap<>();
+        for (Block x : Vars.content.blocks()) {
+          if (x == null || x.size != 1 || !(Boolean) eligible.invoke(null, x)) continue;
+          byClass.get(x.getClass().getName(), arc.struct.Seq::new).add(x);
+        }
+        Block a = null, b = null;
+        for (var e : byClass.entries())
+          if (e.value.size >= 2) {
+            a = e.value.get(0);
+            b = e.value.get(1);
+            break;
+          }
+        System.out.println("[AG] 协作组合同类不同建筑: a=" + (a == null ? "null" : a.name)
+            + "(" + (a == null ? "" : a.getClass().getSimpleName()) + ") b="
+            + (b == null ? "null" : b.name) + "(" + (b == null ? "" : b.getClass().getSimpleName()) + ")");
+        if (a == null || b == null) {
+          System.out.println("[AG] 找不到同一个类里的两个不同方块，跳过一个用例");
+        } else {
+          Building ca = null, cb = null;
+          try {
+            ca = place(a, 40, 70);
+            cb = place(b, 41, 70);
+          } catch (Throwable t) {
+            System.out.println("[AG] 这两个方块在本数据集里放不下（JS 初始化依赖），跳过: " + t);
+          }
+          if (ca != null && cb != null) {
+            run(30);
+            Object la = leader.invoke(null, ca);
+            Object lb = leader.invoke(null, cb);
+            System.out.println("[AG] 协作组合: 同一组=" + (la != null && la == lb));
+            check("协作组合：同类的两个**不同**建筑相邻不并组（按方块而不是按类）", la != null && la != lb);
+          }
+        }
+      } catch (Throwable t) {
+        System.out.println("[AG] 协作组合用例跳过: " + t);
+      }
 
       System.out.println("[AG] RESULT " + (fail == 0 ? "ALL PASS" : (fail + " FAILED")) + " (pass=" + pass + ")");
       System.exit(fail == 0 ? 0 : 1);

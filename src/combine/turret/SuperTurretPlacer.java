@@ -9,6 +9,13 @@ import arc.graphics.g2d.Lines;
 import arc.input.InputProcessor;
 import arc.input.KeyBind;
 import arc.input.KeyCode;
+import arc.math.Mathf;
+import arc.scene.Element;
+import arc.scene.event.InputEvent;
+import arc.scene.event.InputListener;
+import arc.scene.ui.ImageButton;
+import arc.scene.ui.Tooltip;
+import arc.scene.ui.layout.Scl;
 import arc.struct.Seq;
 import arc.struct.StringMap;
 import arc.util.Log;
@@ -28,18 +35,17 @@ import mindustry.input.PlaceMode;
 import mindustry.ui.Fonts;
 import mindustry.world.Block;
 import mindustry.world.Tile;
-import mindustry.world.blocks.defense.turrets.Turret;
 
 import static mindustry.Vars.*;
 
 /**
  * 超级组合炮台的选择/放置流程（纯客户端）。
  *
- * <p>交互：点放置 UI 里的"框选合体"按钮（或 HUD 兜底按钮）→ 进入框选模式
+ * <p>交互：点屏幕上的"框选合体"悬浮按钮 → 进入框选模式
  * （这时左键只用来画框，不会开枪/开面板/摆方块）→ 拖一个框松开 → 数出框里的炮台、
  * 按数量生成对应边长的超级组合炮台虚影跟着鼠标走 → 左键确定、右键/Q/Esc 取消。
  * 再点一下按钮（或右键/Esc）可以在框选阶段取消。
- * （用户 2026-09-28 要求删掉默认 G 键位：和其它功能冲突，入口只用按钮。）
+ * （用户 2026-09-28 要求删掉默认 G 键位、入口改成悬浮按钮、并且不要再改 input。）
  *
  * <p>放置走原版蓝图那套（{@code input.useSchematic}），所以虚影、合法性染色、
  * 建造队列/多线程建造、联机同步全都沿用原版。
@@ -61,10 +67,19 @@ public class SuperTurretPlacer {
   /** 联机时客户端自己那份建筑拿不到 plan 里的布局，这里按"最近这次框选"补一次 config。 */
   static final Seq<Pending> pending = new Seq<>();
   static final InputProcessor processor = new Processor();
-  /** HUD 上的入口按钮（用户要求"点击 ui 按钮触发框选，而不是建造界面的建筑"）。 */
-  static @Nullable arc.scene.Element button;
-  /** HUD 按钮距屏幕顶部的留白（场景单位）：贴右上角会盖住小地图，往下让一点落在它正下方。 */
+  /** HUD 上的悬浮入口按钮（用户要求：手机/桌面都用悬浮式按钮触发框选，别再改 input）。 */
+  static @Nullable Element button;
+  /** 悬浮按钮边长（像素，乘 Scl）。 */
+  static final float BUTTON_SIDE = 48f;
+  /** 默认落点距屏幕右边缘的留白（像素，乘 Scl）。 */
+  static final float BUTTON_EDGE_PAD = 8f;
+  /** 默认落点距屏幕顶部的留白（像素，乘 Scl）：贴右上角会盖住小地图，往下让一点落在它正下方。 */
   static final float BUTTON_TOP_PAD = 225f;
+  /** 拖动判定阈值（像素，乘 Scl）：位移超过这么多才算"拖动"，否则算"点一下"。 */
+  static final float DRAG_THRESHOLD = 6f;
+  /** 悬浮按钮位置记在本机设置里的键（按屏幕比例存，换设备/换分辨率不会跑到屏幕外）。 */
+  static final String ICON_POS_X = "combine-turret-button-nx";
+  static final String ICON_POS_Y = "combine-turret-button-ny";
   static int buttonRetry = 0;
 
   static class Pending {
@@ -85,7 +100,7 @@ public class SuperTurretPlacer {
     if (headless || !SuperTurret.enabled)
       return;
     // 【不再注册键位】用户 2026-09-28：G 和其它功能冲突，要求删掉。
-    // 入口只保留"放置 UI 里的框选合体按钮（手机/桌面都在放）"和 HUD 兜底按钮；
+    // 入口只保留屏幕上的"框选合体"悬浮按钮（手机/桌面同一个，见 ensureButton）；
     // 取消框选还能用右键 / Esc（触摸端点按钮第二下 = 取消）。selectKey 恒为 null，
     // 下面所有 `selectKey != null && ...` 的判定自然失效。
     selectKey = null;
@@ -96,7 +111,7 @@ public class SuperTurretPlacer {
       dragging = false;
       sx = sy = ex = ey = -1;
       pending.clear();
-      button = null; // HUD 重建了，下一帧补挂
+      button = null; // 场景重建了，下一帧补挂
       buttonRetry = 0;
     });
     Events.on(mindustry.game.EventType.TileChangeEvent.class, e -> {
@@ -203,7 +218,9 @@ public class SuperTurretPlacer {
       Block cb = SuperTurret.cellBlock(b.block);
       if (cb == null)
         continue;
-      float rot = b instanceof Turret.TurretBuild tb ? tb.rotation : 90f;
+      // 点防炮的 build 是 BaseTurret.BaseTurretBuild（不是 TurretBuild），rotation 字段同样有
+      float rot = b instanceof mindustry.world.blocks.defense.turrets.BaseTurret.BaseTurretBuild tb
+          ? tb.rotation : 90f;
       sb.append(SuperTurret.encodeCell(cb, rot));
     }
     return sb.toString();
@@ -245,8 +262,7 @@ public class SuperTurretPlacer {
         // （用户要求："一个 4*4 的炮台合体后只占一格"）。
         if (b.tile != null && b.tile != t)
           continue;
-        if (!(b.block instanceof Turret))
-          continue;
+        // 框选范围 = Turret（含组合炮塔）+ 点防炮（PointDefenseTurret，见 SuperTurret.cellCapable）
         if (SuperTurret.cellBlock(b.block) == null)
           continue;
         out.add(b);
@@ -305,7 +321,8 @@ public class SuperTurretPlacer {
     ensureProcessor();
     if (state == null || ui == null)
       return;
-    ensureButton();
+    // 悬浮按钮只在游戏里出现（回主菜单就收掉，别糊在菜单上挡点击）
+    ensureButton(state.isGame());
     flushPending();
     if (!state.isGame() || player == null) {
       if (selecting)
@@ -346,18 +363,24 @@ public class SuperTurretPlacer {
   }
 
   /**
-   * HUD 上的入口按钮：**右侧靠上**一个炮台图标按钮，点它 = 进入框选模式（再点 = 取消）。
+   * 悬浮在屏幕上的入口按钮（手机/桌面同一个）：一个炮台图标浮标，点它 = 进入框选模式
+   * （再点 = 取消，右键 / Esc 也能取消），按住还能把它拖到任意位置（位置记进本机设置）。
    *
-   * <p>用独立的一张铺满屏幕的 Table 挂在 hudGroup 上（childrenOnly，不挡其它 UI），
-   * 不依赖原版建造菜单的内部结构 —— 触摸端也有明确的可点入口（手机没有快捷键）。
+   * <p>【用户要求 2026-09-28】不要再改 input / {@code buildPlacementUI}，入口就用这个浮标：
+   * 直接把自己挂到 {@code Core.scene.root}（在 hudGroup 之上），不依赖原版建造菜单的内部结构，
+   * 触摸端 / 桌面都有明确的可点入口（手机没有快捷键）。
    *
-   * <p>位置：右侧、小地图正下方（用户要求"从左下角移到右边靠上"）。原来放在左下角，
-   * 手机上正好压着"指挥"按钮那一带。
+   * <p>【为什么挂 scene root 而不是 hudGroup】客户端（MindustryX 实测）会在 hudGroup 里再叠一层
+   * 铺满屏幕的可点容器 / 方块信息面板，排在 hudGroup 的按钮之上 —— 挂在 hudGroup 里的按钮会
+   * "看得见、点不动"（点在按钮中心上命中的是那层 ScrollPane）。挂到 root 上就压过它们；
+   * 对话框是后加到 root 的，仍然盖在这个浮标上面（弹窗时照旧被挡住，语义不变）。
    */
-  static void ensureButton() {
-    // 按钮已经做进原版放置 UI（buildPlacementUI）时不再挂 HUD 悬浮按钮
-    if (!useHudButton) {
-      if (button != null && button.parent != null) {
+  static void ensureButton(boolean show) {
+    if (Core.scene == null)
+      return;
+    if (!show) {
+      // 只在游戏里出现：回到主菜单就把浮标收掉，别糊在菜单上挡点击
+      if (button != null) {
         try {
           button.remove();
         } catch (Throwable ignored) {
@@ -366,48 +389,130 @@ public class SuperTurretPlacer {
       }
       return;
     }
+    // 防重复：WorldLoadEvent 会把引用清掉，但老浮标可能还挂在场景里 —— 按名字先收掉残留的那份
+    if (button == null && Core.scene.root != null) {
+      Element stale = Core.scene.root.find("combineSuperTurretButton");
+      if (stale != null) {
+        try {
+          stale.remove();
+        } catch (Throwable ignored) {
+        }
+      }
+    }
     if (button != null && button.parent != null) {
-      // 【别被后加的 HUD 层盖住】MindustryX 之类的客户端会在 hudGroup 里再叠一层（实测是个
-      // 铺满屏幕的 ScrollPane）—— 它排在按钮后面（z 更高），于是按钮**看得见却点不动**
-      // （驱动实测：点在按钮中心上命中的是 ScrollPane）。这里每帧把按钮挪到 hudGroup 最上层。
-      // 对话框挂在 scene root、不在 hudGroup 里，所以弹窗照样盖住它，不会跑到弹窗上面去。
+      // 每帧置顶（原因见上面）+ 收边，别被后加的 HUD 层盖住、也别被拖/缩到屏幕外
       try {
         button.toFront();
       } catch (Throwable ignored) {
       }
+      clampButton(button);
       return;
     }
     if (buttonRetry-- > 0)
       return;
     buttonRetry = 30;
     try {
-      if (ui == null || ui.hudGroup == null)
+      if (ui == null || Core.scene.root == null)
         return;
-      arc.scene.ui.layout.Table root = new arc.scene.ui.layout.Table();
-      root.name = "combineSuperTurretButton";
-      root.setFillParent(true);
-      root.touchable = arc.scene.event.Touchable.childrenOnly;
-      root.align(arc.util.Align.topRight);
-      // 顶部留白用一张空白格铺出来（Table 上没有 padXxx 这一类方法）：
-      // 让按钮落在小地图下面一点，不盖小地图、也不进右边那条建造菜单。
-      root.add().size(8f, BUTTON_TOP_PAD);
-      root.row();
-      root.button(mindustry.gen.Icon.turret, mindustry.ui.Styles.clearNonei, SuperTurretPlacer::toggle)
-          .size(48f).padRight(8f)
-          .tooltip("超级组合炮台：点一下框选炮台（再点一下 / 右键 / Esc 取消）");
-      // 【挂在 scene root（hudGroup 之上）而不是 hudGroup 里】：
-      // 客户端（MindustryX 实测）会在 hudGroup 里再叠一层铺满屏幕的可点容器 / 方块信息面板，
-      // 排在 hudGroup 的按钮之上 —— 挂在 hudGroup 里的按钮就会"看得见、点不动"
-      // （驱动实测：点按钮中心命中的是那个 ScrollPane）。挂到 root 上就压过它们；
-      // 对话框是后加到 root 的，仍然盖在这张表上面（弹窗时按钮照旧被挡住，语义不变）。
-      if (Core.scene != null)
-        Core.scene.root.addChild(root);
-      else
-        ui.hudGroup.addChild(root);
-      button = root;
-      Log.info("[combine] 超级组合炮台按钮已挂到 HUD 右上（小地图下方）");
+      float size = Scl.scl(BUTTON_SIDE);
+      ImageButton b = new ImageButton(mindustry.gen.Icon.turret, mindustry.ui.Styles.clearTogglei);
+      b.name = "combineSuperTurretButton";
+      b.setSize(size, size);
+      b.resizeImage(size * 0.6f);
+      b.setOrigin(arc.util.Align.center);
+      // 和"复制"键一样是**切换**键：正在框选就高亮，点第二下 = 取消
+      b.update(() -> b.setChecked(selecting()));
+      // 点按 = 切换框选；拖动 = 挪浮标（超过阈值才算拖动，见 DragTap）
+      b.addListener(new DragTap());
+      b.addListener(Tooltip.Tooltips.getInstance().create(
+          "超级组合炮台：点一下框选炮台合体（再点一下 / 右键 / Esc 取消），按住可拖动", false));
+      Core.scene.root.addChild(b);
+      button = b;
+      applyButtonPos(b);
+      Log.info("[combine] 超级组合炮台悬浮按钮已挂到 HUD（可拖动）");
     } catch (Throwable t) {
-      Log.err("[combine] 超级组合炮台按钮挂载失败（还能用快捷键）", t);
+      Log.err("[combine] 超级组合炮台悬浮按钮挂载失败（还能用框选相关的其它操作）", t);
+    }
+  }
+
+  /** 浮标落点：上次拖到的位置（按屏幕比例存），没有就默认右上角、小地图正下方。 */
+  static void applyButtonPos(Element e) {
+    Element p = e.parent;
+    float w = p == null ? Core.graphics.getWidth() : p.getWidth();
+    float h = p == null ? Core.graphics.getHeight() : p.getHeight();
+    float nx = Core.settings == null ? Float.NaN : Core.settings.getFloat(ICON_POS_X, Float.NaN);
+    float ny = Core.settings == null ? Float.NaN : Core.settings.getFloat(ICON_POS_Y, Float.NaN);
+    if (!Float.isNaN(nx) && !Float.isNaN(ny)) {
+      // 存的是屏幕比例（0-1）：换设备 / 换分辨率也不会跑到屏幕外
+      e.setPosition(nx * w, ny * h);
+    } else {
+      // 默认：右上角、小地图正下方（用户要求"从左下角移到右边靠上"）
+      e.setPosition(w - Scl.scl(BUTTON_EDGE_PAD) - e.getWidth(), h - Scl.scl(BUTTON_TOP_PAD) - e.getHeight());
+    }
+    clampButton(e);
+  }
+
+  /** 把浮标收进屏幕内（拖动 / 分辨率变化时用）。 */
+  static void clampButton(Element e) {
+    Element p = e.parent;
+    if (p == null)
+      return;
+    e.setPosition(
+        Mathf.clamp(e.x, 0f, Math.max(0f, p.getWidth() - e.getWidth())),
+        Mathf.clamp(e.y, 0f, Math.max(0f, p.getHeight() - e.getHeight())));
+  }
+
+  /** 把浮标位置按屏幕比例记进本机设置（拖动结束时调）。 */
+  static void saveButtonPos(Element e) {
+    Element p = e.parent;
+    if (p == null || Core.settings == null)
+      return;
+    try {
+      Core.settings.putFloat(ICON_POS_X, p.getWidth() > 0f ? e.x / p.getWidth() : 0f);
+      Core.settings.putFloat(ICON_POS_Y, p.getHeight() > 0f ? e.y / p.getHeight() : 0f);
+    } catch (Throwable ignored) {
+    }
+  }
+
+  /**
+   * 浮标上的点按 / 拖动判定：位移超过 {@link #DRAG_THRESHOLD} 才算拖动（挪浮标 + 存位置），
+   * 否则算点按（切换框选）。用 {@code event.stageX/Y} 的位移而不是元素的局部坐标 ——
+   * 元素会跟着手指走，局部坐标每帧都在变，拿来算位移是不对的。
+   */
+  static class DragTap extends InputListener {
+    float downX, downY, startX, startY;
+    boolean moved;
+
+    @Override
+    public boolean touchDown(InputEvent event, float x, float y, int pointer, KeyCode button) {
+      if (button != KeyCode.mouseLeft && button != KeyCode.mouseRight && button != KeyCode.mouseMiddle)
+        return false;
+      downX = event.stageX;
+      downY = event.stageY;
+      startX = event.listenerActor.x;
+      startY = event.listenerActor.y;
+      moved = false;
+      return true;
+    }
+
+    @Override
+    public void touchDragged(InputEvent event, float x, float y, int pointer) {
+      float dx = event.stageX - downX, dy = event.stageY - downY;
+      if (!moved && Math.abs(dx) + Math.abs(dy) < Scl.scl(DRAG_THRESHOLD))
+        return;
+      moved = true;
+      event.listenerActor.setPosition(startX + dx, startY + dy);
+      clampButton(event.listenerActor);
+    }
+
+    @Override
+    public void touchUp(InputEvent event, float x, float y, int pointer, KeyCode button) {
+      if (!moved) {
+        toggle();
+      } else {
+        saveButtonPos(event.listenerActor);
+      }
+      moved = false;
     }
   }
 
@@ -431,13 +536,6 @@ public class SuperTurretPlacer {
       } catch (Throwable ignored) {
       }
   }
-
-  /**
-   * 是否还要在 HUD 上挂那个悬浮按钮。把按钮做进原版放置 UI 之后（见
-   * {@link combine.Main#installInputHandler()}）就关掉，免得同一件事有两个入口。
-   * 输入处理器换不掉时（别的模组也换了）保持 true，HUD 按钮就当兜底。
-   */
-  public static boolean useHudButton = true;
 
   static class Processor implements InputProcessor {
     @Override

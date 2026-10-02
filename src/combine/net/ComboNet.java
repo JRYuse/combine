@@ -9,6 +9,7 @@ import combine.util.ComboPower;
 import combine.util.ComboReflect;
 import combine.util.ComboUi;
 import arc.struct.IntFloatMap;
+import arc.struct.IntMap;
 import arc.struct.IntSet;
 import arc.struct.ObjectIntMap;
 import arc.struct.ObjectMap;
@@ -153,6 +154,9 @@ public class ComboNet {
      *   · 新方块是组合建筑，且自己或邻居是网络成员/连接件 → 可能刚并进网络 → 要重算。
      */
     public static void markTileChanged(mindustry.world.Tile tile){
+        // 【性能】登记表就地更新（放置/拆除都从这里过）：这样下面这些判据、以及随后的整图重建
+        // 迭代的都是"组合相关的小名单"，而不是全图建筑（见 allComboBuildings 的说明）。
+        trackTile(tile);
         try{
             if(tile == null){
                 markDirty();
@@ -178,10 +182,14 @@ public class ComboNet {
             if(b.proximity != null){
                 for(Building nb : b.proximity){
                     if(nb == null) continue;
-                    // 【相邻两种组合建筑也可能刚并成一张网（合体炮台↔组合炮台 / 跨类型要节点的那条边）】
-                    // 以前只认"邻居是网络成员/连接件"，于是一台孤立的组合建筑旁边又放一台组合建筑时
-                    // 不会重算网络 —— 表现就是"合体炮台挨着组合炮台也不组合"（用户报的）。
-                    if(isLinker(nb) || netMemberPos.contains(nb.pos()) || ComboReflect.isComboBuild(nb)){
+                    // 【性能·用户报"加一个新建筑就卡一下、组合工厂的优化没了"】
+                    // 条件必须收到"这次放置**真的可能改变分组**"：
+                    //   · 邻居是连接件（节点/连接器）→ 可能刚被连上 → 要重算；
+                    //   · 邻居能和这台**并成一个组合体**（同类方块 / 单位生产族的跨类型 / 合体炮台↔组合炮台）
+                    //     → 要重算（这一条覆盖了"合体炮台挨着组合炮台"那种情况）。
+                    // 36e0c49 一度放宽成"邻居是**任意**组合建筑就整图重算"，于是大型基地里每放一台
+                    // 方块（哪怕旁边只是种类完全不同的机器）都要全图建图+拆池+合池 —— 那一下就是卡顿。
+                    if(isLinker(nb) || canJoinWith(b, nb)){
                         markDirty();
                         return;
                     }
@@ -198,15 +206,182 @@ public class ComboNet {
         return inRebuild;
     }
 
+    /**
+     * 这台方块和邻居能不能**真的**并进同一个组合体（不是"都是组合建筑"就算）：
+     * · 同一个方块类（同类相邻并池，见各 Combined*Build.rebuildCombo）；
+     * · 或者两边都声明 allowCrossTypeCombo（单位生产族）／合体炮台↔组合炮台。
+     *
+     * 只用来给 {@link #markTileChanged} 判断"这次放置要不要整图重算"。
+     */
+    private static boolean canJoinWith(Building a, Building nb){
+        if(a == null || nb == null || a.block == null || nb.block == null) return false;
+        // 方块类相同（同类）→ 相邻就会并成一组
+        if(a.block.getClass() == nb.block.getClass()) return true;
+        if(!ComboReflect.isComboBuild(a) || !ComboReflect.isComboBuild(nb)) return false;
+        return crossAdjacencyAllowed(a, nb);
+    }
+
     private static boolean inRebuild = false;
 
     /** 每帧一次的收口：只有真的脏了才重建。 */
     private static void flush(){
         if(loadDedupeFrames > 0) loadDedupeFrames --;
         sweepAbandonedHeatProbes();
+        // 拆掉的组合体不该把它的共享配置留给"同位置的下一台"（见 ComboShare.pruneBodyMasks）
+        ComboShare.pruneBodyMasks();
         if(!dirty) return;
         dirty = false;
         rebuild();
+    }
+
+    /*
+     * ============================ 「组合相关建筑」登记表（性能） ============================
+     *
+     * 【用户报"新建或拆除组合建筑的时候会卡一下，掉帧很严重"】
+     *
+     * 一次放置/拆除会同时叫「本地组合体重建」（各 Combined*Build.rebuildCombo，里面的
+     * itemPoolSharedOutside 要问"这口池子组外还有谁在用"）和「整张组合网络重建」
+     * （ComboNet.rebuildInner，要建全局图）—— 两边以前都调 {@link #allComboBuildings()}，
+     * 而那个实现**每次都把全图建筑过一遍**（Groups.build + 组合仓库 + 协作组合）。
+     * 实测（headless，Archipelago，1.2 万台建筑）：单次 rebuild 里
+     * 「快照 4.0ms + settle 2.8ms」就占了 ~7ms，整次 11ms —— 放在手机上就是十几到几十毫秒的顿挫。
+     *
+     * 这里改成**增量登记**：只在"世界中真的出现/消失了一栋可能与组合有关的建筑"时更新这份表，
+     * 平时 rebuild 直接迭代这份小名单。判定 {@link #relevantBuilding} 覆盖了所有会读这份名单的
+     * 地方（组合建筑本身、组合节点/连接器、核心（池共享要与核心对账）、热相关方块（节点要能连上））。
+     *
+     * 【安全网】世界加载/换图/生成期间一律走 {@link #fullScanBuildings}（老逻辑），
+     * 绝不拿"读了一半的登记表"去并池；只要有任何一处调用 {@link #invalidateTracked()}，
+     * 下一次查询就重新全图扫一遍。所以最坏情况只是退回旧性能，不会算错。
+     */
+    private static final ObjectSet<Building> trackedSet = new ObjectSet<>();
+    private static final IntMap<Building> trackedByPos = new IntMap<>();
+    private static boolean trackedReady = false;
+    /** 登记表里有多少个连接件 / 多少个"跨类型可连"的候选 —— 都为 0 时网络图一定没有边。 */
+    private static int trackedLinkers = 0, trackedCrossCandidates = 0;
+
+    /** 让登记表失效：下一次查询全图重扫（换图、读档、队伍过滤开关变化、协作名单变化都要叫）。 */
+    public static void invalidateTracked(){
+        trackedReady = false;
+        trackedSet.clear();
+        trackedByPos.clear();
+        trackedLinkers = trackedCrossCandidates = 0;
+    }
+
+    /** "跨类型相邻也并"的候选（决定网络图里会不会有跨类型边）。只跟方块类型有关。 */
+    private static boolean isCrossCandidateBuild(Building b){
+        if(b == null || b.block == null) return false;
+        return crossTypeCombinable(b) || isSuperTurret(b) || isTurretCombo(b);
+    }
+
+    /**
+     * 这栋建筑会不会被某条读 {@link #allComboBuildings()} 的逻辑用到：
+     * · 组合建筑（含组合仓库/容器、组合墙等功能方块、协作组合方块）—— 网络重建/容量/并池；
+     * · 组合节点 / 组合连接器 —— 网络图的顶点；
+     * · 核心 —— {@code itemPoolSharedOutside} 要认出"这口池子核心也在用"（判错就是物品翻倍/消失）；
+     * · 热相关方块 —— 组合节点要能连上 afflict / 矿渣制热机这类"只传热不存池"的方块。
+     */
+    private static boolean relevantBuilding(Building b){
+        if(b == null || b.block == null) return false;
+        if(ComboReflect.isComboBuild(b)) return true;
+        if(isLinker(b)) return true;
+        if(b instanceof mindustry.world.blocks.storage.CoreBlock.CoreBuild) return true;
+        return ComboReflect.isHeatBuild(b);
+    }
+
+    private static boolean teamAllowed(Building b){
+        return !combine.util.ComboTeams.playersOnly || combine.util.ComboTeams.playerTeam(b.team);
+    }
+
+    private static void trackAdd(Building b){
+        if(b == null || !relevantBuilding(b) || !teamAllowed(b)) return;
+        if(!ComboReflect.inWorld(b)) return;
+        if(trackedSet.add(b)){
+            trackedByPos.put(b.pos(), b);
+            if(isLinker(b)) trackedLinkers++;
+            else if(isCrossCandidateBuild(b)) trackedCrossCandidates++;
+        }
+    }
+
+    private static void trackRemove(Building b){
+        if(b == null) return;
+        if(trackedSet.remove(b)){
+            trackedByPos.remove(b.pos());
+            if(isLinker(b)) trackedLinkers = Math.max(0, trackedLinkers - 1);
+            else if(isCrossCandidateBuild(b)) trackedCrossCandidates = Math.max(0, trackedCrossCandidates - 1);
+        }
+    }
+
+    /** 按当前登记表重算"连接件数 / 跨类型候选数"（清理残骸之后叫一次）。 */
+    private static void recountTracked(){
+        trackedLinkers = trackedCrossCandidates = 0;
+        for(Building b : trackedSet){
+            if(b == null) continue;
+            if(isLinker(b)) trackedLinkers++;
+            else if(isCrossCandidateBuild(b)) trackedCrossCandidates++;
+        }
+    }
+
+    /** 一格方块变了之后同步登记表（旧的那栋摘掉、新的这栋按需加进来）。 */
+    private static void trackTile(Tile tile){
+        if(tile == null){
+            invalidateTracked();
+            return;
+        }
+        Building old = trackedByPos.get(tile.pos());
+        if(old != null && old != tile.build) trackRemove(old);
+        // 非原点格（multiblock 覆盖格）变化时也兜一下：把这一格上原来那栋按格摘掉
+        if(tile.build == null){
+            Building here = trackedByPos.get(tile.pos());
+            if(here != null) trackRemove(here);
+        }
+        trackAdd(tile.build);
+    }
+
+    /** 全图扫描（老实现）：世界加载/换图期间、或登记表失效时用。 */
+    private static Seq<Building> fullScanBuildings(){
+        Seq<Building> all = new Seq<>();
+        ObjectSet<Building> set = new ObjectSet<>();
+        // 【性能/用户报】"进大型基地图非常卡，我怀疑敌人的建筑也组合；设置成只有玩家建筑组合还是很卡"。
+        // 分组那一步早就按 ComboTeams.playerTeam 挡了，可**扫描/重建**这一层没挡 —— 于是
+        // 3 万台建筑（其中 1.7 万台可组合的敌方建筑）每帧/每次网络重建都要过一遍。开关打开时
+        // 这里直接把非玩家队伍的建筑滤掉，模组的开销只跟玩家自己的建筑数有关。
+        boolean playersOnly = combine.util.ComboTeams.playersOnly;
+        for(Building b : Groups.build){
+            if(b == null) continue;
+            if(playersOnly && !combine.util.ComboTeams.playerTeam(b.team)) continue;
+            if(relevantBuilding(b) && ComboReflect.inWorld(b) && set.add(b)) all.add(b);
+        }
+        for(CombinedStorageBlock.CombinedStorageBuild sb : CombinedStorageBlock.trackedSet()){
+            if(sb == null) continue;
+            if(playersOnly && !combine.util.ComboTeams.playerTeam(sb.team)) continue;
+            if(ComboReflect.inWorld(sb) && set.add(sb)) all.add(sb);
+        }
+        for(Building cb : CoopCombo.trackedBuildings()){
+            if(cb == null) continue;
+            if(playersOnly && !combine.util.ComboTeams.playerTeam(cb.team)) continue;
+            if(ComboReflect.inWorld(cb) && set.add(cb)) all.add(cb);
+        }
+        return all;
+    }
+
+    /** 世界加载/生成期间不能用增量表（那时建筑是一批批塞进来的，事件也可能不齐）。 */
+    private static boolean canUseTrackedCache(){
+        return trackedReady && !loadingWorld && world != null && !world.isGenerating();
+    }
+
+    /** 强制重建登记表（世界加载完之后叫一次）。 */
+    public static void rescanTracked(){
+        for(Building b : fullScanBuildings()){
+            if(trackedSet.add(b)) trackedByPos.put(b.pos(), b);
+        }
+        recountTracked();
+        trackedReady = true;
+    }
+
+    /** 登记表能不能用来判断"这张网络图一定没有边"（没有连接件、也没有跨类型候选）。 */
+    private static boolean trackedHasNoEdges(){
+        return canUseTrackedCache() && trackedLinkers == 0 && trackedCrossCandidates == 0;
     }
 
     /**
@@ -217,24 +392,29 @@ public class ComboNet {
      * 蓝框预览、网络重建都得用这份完整名单（否则"节点连不上旁边的组合仓库"）。
      */
     public static Seq<Building> allComboBuildings(){
-        Seq<Building> all = new Seq<>();
-        ObjectSet<Building> set = new ObjectSet<>();
-        // 【性能/用户报】"进大型基地图非常卡，我怀疑敌人的建筑也组合；设置成只有玩家建筑组合还是很卡"。
-        // 分组那一步早就按 ComboTeams.playerTeam 挡了，可**扫描/重建**这一层没挡 —— 于是
-        // 3 万台建筑（其中 1.7 万台可组合的敌方建筑）每帧/每次网络重建都要过一遍。开关打开时
-        // 这里直接把非玩家队伍的建筑滤掉，模组的开销只跟玩家自己的建筑数有关。
-        boolean playersOnly = combine.util.ComboTeams.playersOnly;
-        for(Building b : Groups.build){
-            if(playersOnly && !combine.util.ComboTeams.playerTeam(b.team)) continue;
-            if(ComboReflect.inWorld(b) && set.add(b)) all.add(b);
+        if(!canUseTrackedCache()) return fullScanBuildings();
+        Seq<Building> all = new Seq<>(trackedSet.size);
+        // 【安全网】万一有极少数"已拆掉但事件没走到"的残骸留在登记表里，这里顺手清掉并把
+        // 计数重算一遍（真拆过它们的格子下一次放置会重新登记）。正常路径上不会有残骸。
+        Seq<Building> stale = null;
+        for(Building b : trackedSet){
+            if(b != null && b.isValid() && ComboReflect.inWorld(b)){
+                all.add(b);
+            }else{
+                if(stale == null) stale = new Seq<>();
+                if(b != null) stale.add(b);
+            }
         }
-        for(CombinedStorageBlock.CombinedStorageBuild sb : CombinedStorageBlock.trackedSet()){
-            if(playersOnly && !combine.util.ComboTeams.playerTeam(sb.team)) continue;
-            if(ComboReflect.inWorld(sb) && set.add(sb)) all.add(sb);
-        }
-        for(Building cb : CoopCombo.trackedBuildings()){
-            if(playersOnly && !combine.util.ComboTeams.playerTeam(cb.team)) continue;
-            if(ComboReflect.inWorld(cb) && set.add(cb)) all.add(cb);
+        if(stale != null){
+            for(int i = 0; i < stale.size; i++){
+                Building b = stale.get(i);
+                trackedSet.remove(b);
+                try{
+                    if(trackedByPos.get(b.pos()) == b) trackedByPos.remove(b.pos());
+                }catch(Throwable ignored){
+                }
+            }
+            recountTracked();
         }
         return all;
     }
@@ -250,6 +430,8 @@ public class ComboNet {
     /** WorldLoadBeginEvent：进入读档语义窗口。 */
     public static void beginWorldLoad(){
         loadingWorld = true;
+        // 换图/读档：增量登记表作废（世界内容整批换，事件不一定齐），下次查询全图重扫
+        invalidateTracked();
         // 换了世界：上一张地图现场拆出来的池子不再有意义
         freshSplitItems.clear();
         freshSplitLiquids.clear();
@@ -309,6 +491,9 @@ public class ComboNet {
     public static void rebuildLoading(){
         loadingWorld = true;
         try{
+            // 世界已经load好：把"组合相关建筑"登记表重建一遍（增量表从这里开始生效）
+            invalidateTracked();
+            rescanTracked();
             rebuild(null, true);
         }finally{
             loadingWorld = false;
@@ -682,19 +867,28 @@ public class ComboNet {
     }
 
     /**
-     * 物品容量的取值范围：勾了"物品"共享就按整张网络算，没勾就只看本地组合体
-     * （两端各留各的池子，容量当然也只能算各自那一片）。
+     * 物品容量的取值范围：勾了"物品"共享就按整张网络算；没勾就只看**这一台自己**
+     * （"不共享物品"= 每台各留各的模块，容量自然也只能算自己那一份，见 perMemberGroups）。
      */
     public static Seq<Building> itemScope(Building self){
         if(self == null) return new Seq<>();
-        if(!ComboShare.shares(self, ComboShare.ITEMS)) return ComboReflect.group(self);
+        if(!ComboShare.shares(self, ComboShare.ITEMS)){
+            Seq<Building> one = new Seq<>();
+            if(self.isValid()) one.add(self);
+            return one;
+        }
         return displayMembers(self, ComboReflect.group(self).size);
     }
 
     /** 同上，液体版。 */
     public static Seq<Building> liquidScope(Building self){
         if(self == null) return new Seq<>();
-        if(!ComboShare.shares(self, ComboShare.LIQUIDS)) return ComboReflect.group(self);
+        // 【每台各留各的】没勾"液体"= 这一台只看自己那份液池（同 itemScope）
+        if(!ComboShare.shares(self, ComboShare.LIQUIDS)){
+            Seq<Building> one = new Seq<>();
+            if(self.isValid()) one.add(self);
+            return one;
+        }
         return displayMembers(self, ComboReflect.group(self).size);
     }
 
@@ -894,6 +1088,7 @@ public class ComboNet {
 
     private static void rebuildInner(Building excluded, boolean loading){
         long _t0 = System.nanoTime(), _tA = _t0, _tB = _t0, _tC = _t0, _tD = _t0, _tE = _t0, _tF = _t0;
+        long _tG = _t0, _tH = _t0, _tI = _t0, _tJ = _t0, _tK = _t0;
 
         // 网络结构变了：显示用的连通分量缓存立刻作废（同帧内别拿旧网络画面板）
         invalidateComponentCache();
@@ -907,10 +1102,11 @@ public class ComboNet {
             || CombinedStorageBlock.pendingDedupe() || CoopCombo.pendingDedupe() || pendingLoadDedupe();
 
         try{
-            Seq<Building> all = new Seq<>();
-            ObjectSet<Building> allSet = new ObjectSet<>();
-            for(Building b : allComboBuildings()){
-                if(b != excluded && allSet.add(b)) all.add(b);
+            // 【性能】allComboBuildings() 返回的就是一份去过重的新 Seq（登记表本身是 ObjectSet），
+            // 这里不用再建一张 ObjectSet 去重、也不用再拷一份 —— 只处理 excluded 即可。
+            Seq<Building> all = allComboBuildings();
+            if(excluded != null){
+                for(int i = all.size - 1; i >= 0; i--) if(all.get(i) == excluded) all.remove(i);
             }
             _tA = System.nanoTime();
 
@@ -918,136 +1114,190 @@ public class ComboNet {
             settleLocalGroups(all);
             _tB = System.nanoTime();
 
-            // 2) 找出所有本地组合体的 leader（同一组合体只出现一次）。
+            // 2) 找出所有本地组合体的 leader（同一组合体只出现一次），
+            //    同时记下"这张图到底有没有边"的两个前提。
             Seq<Building> groupLeaders = new Seq<>();
-            ObjectSet<Building> seenLeaders = new ObjectSet<>();
+            ObjectIntMap<Building> leaderIndex = new ObjectIntMap<>();
+            // 【性能】登记表说"图里不可能有边"时，本地组合体下标 == 分量下标 ——
+            // 那么第 5 步的"成员归类"可以并进这一趟做掉，省掉一整轮对全部组合建筑的反射（groupRep）。
+            boolean fuseSimple = trackedHasNoEdges();
+            Seq<Seq<Building>> fusedMembers = fuseSimple ? new Seq<>() : null;
+            boolean hasLinker = false, hasCrossCandidate = false;
             for(Building b : all){
+                if(b instanceof ComboConnector.ComboConnectorBuild
+                    || b instanceof ComboNode.ComboNodeBuild){
+                    hasLinker = true;
+                }
                 if(!ComboReflect.isComboBuild(b)) continue;
                 // 用 localGroupRep：组合仓库/容器按"相邻成簇"算一个组合体。
                 // 否则同一条仓库链里的每台都会成为独立顶点，它们共用的那份物品模块会被
                 // splitAcrossComponents 当成"断开残留"再拆成每人一份（读档后"名义连在一起、
                 // 模块却不共享"就是这个）。
                 Building l = ComboNode.groupRep(b);
-                if(l != null && seenLeaders.add(l)) groupLeaders.add(l);
+                if(l == null) l = b;
+                int li = leaderIndex.get(l, -1);
+                if(li < 0){
+                    li = groupLeaders.size;
+                    leaderIndex.put(l, li);
+                    groupLeaders.add(l);
+                    if(fuseSimple) fusedMembers.add(new Seq<Building>());
+                    // 跨类型边只可能从"跨类型可组合 / 合体炮台 / 炮台"这几类顶点长出来
+                    if(crossTypeCombinable(l) || isSuperTurret(l) || isTurretCombo(l)) hasCrossCandidate = true;
+                }
+                if(fuseSimple) fusedMembers.get(li).add(b);
             }
+            _tG = System.nanoTime();
 
             // 3) 建图：顶点 = 连接器/节点 + 本地组合体 leader。
-            Seq<Building> vertices = new Seq<>();
-            ObjectSet<Building> vertexSet = new ObjectSet<>();
-            for(Building b : all){
-                if(b instanceof ComboConnector.ComboConnectorBuild
-                    || b instanceof ComboNode.ComboNodeBuild){
-                    if(vertexSet.add(b)) vertices.add(b);
+            //
+            // 【性能·用户报"新建或拆除组合建筑的时候会卡一下，掉帧很严重"】
+            // 没有连接件、也没有跨类型可连的顶点时（绝大多数基地的绝大多数时刻），
+            // 顶点之间**不可能有边** —— 每个本地组合体自成一张网络。
+            // 以前这种情形也照样"给每个顶点建一份 edges Seq + BFS + 建 components/leaderComponent"，
+            // 1000+ 组合建筑时单这几步就是 4~6ms，还制造几千个临时对象喂给安卓的 GC。
+            // 现在直接按 leader 给出单点分量，整张图一步都不建。
+            final boolean simpleNet = !hasLinker && !hasCrossCandidate;
+            Seq<Seq<Building>> components = null;
+            ObjectIntMap<Building> compIdxOfLeader;
+            int compCount;
+            int vertexCount = 0;
+            Seq<Seq<Building>> compMembers;
+            if(simpleNet){
+                // 快路：没有建图/拆池子步骤，这几段计时置零（timeDebug 打印不出负数）
+                _tH = _tI = _tJ = _tK = _tG;
+                compIdxOfLeader = leaderIndex;
+                compCount = groupLeaders.size;
+                if(fuseSimple){
+                    compMembers = fusedMembers;
+                }else{
+                    compMembers = new Seq<>();
+                    for(int i = 0; i < compCount; i++) compMembers.add(new Seq<Building>());
+                    fillCompMembers(compMembers, all, compIdxOfLeader);
                 }
-            }
-            for(Building l : groupLeaders){
-                if(vertexSet.add(l)) vertices.add(l);
-            }
+            }else{
+                Seq<Building> vertices = new Seq<>();
+                vertexCount = 0; // 稍后赋值
+                ObjectSet<Building> vertexSet = new ObjectSet<>();
+                for(Building b : all){
+                    if(b instanceof ComboConnector.ComboConnectorBuild
+                        || b instanceof ComboNode.ComboNodeBuild){
+                        if(vertexSet.add(b)) vertices.add(b);
+                    }
+                }
+                for(Building l : groupLeaders){
+                    if(vertexSet.add(l)) vertices.add(l);
+                }
+                vertexCount = vertices.size;
 
-            ObjectMap<Building, Seq<Building>> edges = new ObjectMap<>();
-            for(Building v : vertices) edges.put(v, new Seq<>());
+                ObjectMap<Building, Seq<Building>> edges = new ObjectMap<>();
+                for(Building v : vertices) edges.put(v, new Seq<>());
+                _tH = System.nanoTime();
 
-            // 【相邻的不同"组合类"也算连上】用户报"挖铅钻头就没有和窑炉组合在一起"：
-            // CombinedCrafter/CombinedDrill/CombinedGenerator… 各自的本地分组只认**同一种方块**
-            // （allowCrossTypeCombo 只在同类内部生效），跨类型以前只能靠连接器/节点。
-            // 而"两种工厂相邻放置就当一台整机"正是这个模组最初的玩法，所以这里把
-            // 「相邻 + 两边都声明 allowCrossTypeCombo」的两个本地组合体直接连一条边 ——
-            // 后续并池/容量/面板/电网全走连接器那套现成逻辑（热量本来就靠原版 proximity 直传，不受影响）。
-            for(Building leader : groupLeaders){
-                Seq<Building> group = ComboReflect.group(leader);
-                if(group == null || group.isEmpty()) group = Seq.with(leader);
-                for(Building mem : group){
-                    if(mem == null || !mem.isValid() || mem.proximity == null) continue;
-                    for(Building nb : mem.proximity){
-                        if(nb == null || !nb.isValid() || !ComboReflect.isComboBuild(nb)) continue;
-                        Building other = ComboNode.groupRep(nb);
-                        if(other == null || other == leader) continue;
-                        if(!vertexSet.contains(other)) continue;
-                        if(!crossTypeCombinable(leader) || !crossTypeCombinable(other)) {
-                            // 默认只有同种组合建筑相邻才并池；**合体炮台 ↔ 组合炮台**是例外，相邻也当一台整机。
-                            if(!(isSuperTurret(leader) && isTurretCombo(other))
-                                && !(isSuperTurret(other) && isTurretCombo(leader))) continue;
+                // 【相邻的不同"组合类"也算连上】用户报"挖铅钻头就没有和窑炉组合在一起"：
+                // CombinedCrafter/CombinedDrill/CombinedGenerator… 各自的本地分组只认**同一种方块**
+                // （allowCrossTypeCombo 只在同类内部生效），跨类型以前只能靠连接器/节点。
+                // 而"两种工厂相邻放置就当一台整机"正是这个模组最初的玩法，所以这里把
+                // 「相邻 + 两边都声明 allowCrossTypeCombo」的两个本地组合体直接连一条边 ——
+                // 后续并池/容量/面板/电网全走连接器那套现成逻辑（热量本来就靠原版 proximity 直传，不受影响）。
+                for(Building leader : groupLeaders){
+                    // 【性能】只有"跨类型可连"的候选才需要看邻居：其余组合体相邻也不会有边。
+                    if(!(crossTypeCombinable(leader) || isSuperTurret(leader) || isTurretCombo(leader))) continue;
+                    Seq<Building> group = ComboReflect.group(leader);
+                    if(group == null || group.isEmpty()) group = Seq.with(leader);
+                    for(Building mem : group){
+                        if(mem == null || !mem.isValid() || mem.proximity == null) continue;
+                        for(Building nb : mem.proximity){
+                            if(nb == null || !nb.isValid() || !ComboReflect.isComboBuild(nb)) continue;
+                            Building other = ComboNode.groupRep(nb);
+                            if(other == null || other == leader) continue;
+                            if(!vertexSet.contains(other)) continue;
+                            if(!crossTypeCombinable(leader) || !crossTypeCombinable(other)) {
+                                // 默认只有同种组合建筑相邻才并池；**合体炮台 ↔ 组合炮台**是例外，相邻也当一台整机。
+                                if(!(isSuperTurret(leader) && isTurretCombo(other))
+                                    && !(isSuperTurret(other) && isTurretCombo(leader))) continue;
+                            }
+                            addEdge(edges, leader, other);
                         }
-                        addEdge(edges, leader, other);
                     }
                 }
-            }
+                _tI = System.nanoTime();
 
-            for(Building v : vertices){
-                if(v instanceof ComboConnector.ComboConnectorBuild c){
-                    for(Building nb : c.proximity){
-                        connectVertex(edges, vertexSet, c, nb);
+                for(Building v : vertices){
+                    if(v instanceof ComboConnector.ComboConnectorBuild c){
+                        for(Building nb : c.proximity){
+                            connectVertex(edges, vertexSet, c, nb);
+                        }
+                    }else if(v instanceof ComboNode.ComboNodeBuild n){
+                        for(int i = 0; i < n.links.size; i++){
+                            connectVertex(edges, vertexSet, n, world.build(n.links.get(i)));
+                        }
+                        // 【贴着也算连上】节点紧挨着另一个节点 / 贴着一片组合体时，和 componentMembers
+                        // 保持一致：并池/热量/面板都按同一张网络算（用户把节点摆在两台之间不点连线时
+                        // 就是这么用的）。
+                        if(n.proximity != null)
+                            for(Building nb : n.proximity) connectVertex(edges, vertexSet, n, nb);
                     }
-                }else if(v instanceof ComboNode.ComboNodeBuild n){
-                    for(int i = 0; i < n.links.size; i++){
-                        connectVertex(edges, vertexSet, n, world.build(n.links.get(i)));
-                    }
-                    // 【贴着也算连上】节点紧挨着另一个节点 / 贴着一片组合体时，和 componentMembers
-                    // 保持一致：并池/热量/面板都按同一张网络算（用户把节点摆在两台之间不点连线时
-                    // 就是这么用的）。
-                    if(n.proximity != null)
-                        for(Building nb : n.proximity) connectVertex(edges, vertexSet, n, nb);
                 }
-            }
+                _tJ = System.nanoTime();
 
-            // 4) 连通分量。
-            ObjectSet<Building> visited = new ObjectSet<>();
-            Seq<Seq<Building>> components = new Seq<>();
-            for(Building v : vertices){
-                if(visited.contains(v)) continue;
-                Seq<Building> comp = new Seq<>();
-                Queue<Building> queue = new Queue<>();
-                queue.addLast(v);
-                visited.add(v);
-                while(!queue.isEmpty()){
-                    Building cur = queue.removeFirst();
-                    comp.add(cur);
-                    Seq<Building> es = edges.get(cur);
-                    if(es == null) continue;
-                    for(Building nb : es){
-                        if(visited.add(nb)) queue.addLast(nb);
+                // 4) 连通分量。
+                ObjectSet<Building> visited = new ObjectSet<>();
+                components = new Seq<>();
+                for(Building v : vertices){
+                    if(visited.contains(v)) continue;
+                    Seq<Building> comp = new Seq<>();
+                    Queue<Building> queue = new Queue<>();
+                    queue.addLast(v);
+                    visited.add(v);
+                    while(!queue.isEmpty()){
+                        Building cur = queue.removeFirst();
+                        comp.add(cur);
+                        Seq<Building> es = edges.get(cur);
+                        if(es == null) continue;
+                        for(Building nb : es){
+                            if(visited.add(nb)) queue.addLast(nb);
+                        }
+                    }
+                    components.add(comp);
+                }
+                _tK = System.nanoTime();
+
+                // 5) 每个分量的组合体成员：按“当前 leader 归属”收集，不依赖可能过期的 group 缓存。
+                compCount = components.size;
+                compIdxOfLeader = new ObjectIntMap<>();
+                for(int i = 0; i < compCount; i++){
+                    for(Building b : components.get(i)){
+                        if(ComboReflect.isComboBuild(b)) compIdxOfLeader.put(b, i);
                     }
                 }
-                components.add(comp);
+                compMembers = new Seq<>();
+                for(int i = 0; i < compCount; i++) compMembers.add(new Seq<Building>());
+                fillCompMembers(compMembers, all, compIdxOfLeader);
             }
-
-            // 5) 每个分量的组合体成员：按“当前 leader 归属”收集，不依赖可能过期的 group 缓存。
-            IdentityHashMap<Building, Integer> leaderComponent = new IdentityHashMap<>();
-            for(int i = 0; i < components.size; i++){
-                for(Building b : components.get(i)){
-                    if(ComboReflect.isComboBuild(b)) leaderComponent.put(b, i);
-                }
-            }
-            Seq<Seq<Building>> compMembers = new Seq<>();
-            for(int i = 0; i < components.size; i++) compMembers.add(new Seq<Building>());
-            for(Building b : all){
-                if(!ComboReflect.isComboBuild(b)) continue;
-                Building l = ComboNode.groupRep(b);
-                if(l == null) l = b;
-                Integer idx = leaderComponent.get(l);
-                if(idx != null) compMembers.get(idx).add(b);
-            }
+            _tC = System.nanoTime();
 
             // 6) 断开连接器/节点时：被多个分量共用的模块按分量容量比例拆开，总值不变。
-            _tC = System.nanoTime();
             splitAcrossComponents(compMembers);
             _tD = System.nanoTime();
 
             // 6.5) 共享配置：同一张网络里的连接件统一成同一份，并建"成员 -> 网络配置"索引。
             //      有任一项没勾的网络还会把节点电力连线重新对齐（勾上就连，取消就拆）。
             Seq<Integer> compMasks = new Seq<>();
-            for(int i = 0; i < components.size; i++) compMasks.add(resolveShareMask(components.get(i)));
+            for(int i = 0; i < compCount; i++)
+                compMasks.add(simpleNet ? resolveShareMaskOne(groupLeaders.get(i)) : resolveShareMask(components.get(i)));
             ComboShare.clearMemberMasks();
-            for(int i = 0; i < components.size; i++){
+            for(int i = 0; i < compCount; i++){
                 int mask = compMasks.get(i);
                 if(ComboShare.fullShare(mask)) continue;
                 Seq<Building> members = compMembers.get(i);
                 for(int k = 0; k < members.size; k++) ComboShare.setMemberMask(members.get(k).pos(), mask);
             }
-            for(int i = 0; i < components.size; i++){
-                Seq<Building> verts = components.get(i);
-                for(int k = 0; k < verts.size; k++)
-                    if(verts.get(k) instanceof ComboNode.ComboNodeBuild node) syncNodePower(node);
+            if(!simpleNet){
+                for(int i = 0; i < compCount; i++){
+                    Seq<Building> verts = components.get(i);
+                    for(int k = 0; k < verts.size; k++)
+                        if(verts.get(k) instanceof ComboNode.ComboNodeBuild node) syncNodePower(node);
+                }
             }
 
             // 7) 分量内合并共享池：运行期“相加”，读档窗口“去重”。
@@ -1079,9 +1329,11 @@ public class ComboNet {
             }
             _tE = System.nanoTime();
             if(timeDebug){
-                Log.info("[combine][time] 快照=@ms settle=@ms 建图=@ms 拆池=@ms 合池=@ms 合计=@ms all=@ verts=@ comps=@",
+                Log.info("[combine][time] 快照=@ms settle=@ms 建图=@ms 拆池=@ms 合池=@ms 合计=@ms all=@ verts=@ comps=@ "
+                    + "| leaders=@ms vlist=@ms cross=@ms linker=@ms bfs=@ms members=@ms",
                     (_tA-_t0)/1e6, (_tB-_tA)/1e6, (_tC-_tB)/1e6, (_tD-_tC)/1e6, (_tE-_tD)/1e6, (_tE-_t0)/1e6,
-                    all.size, vertices.size, components.size);
+                    all.size, vertexCount, compCount,
+                    (_tG-_tB)/1e6, (_tH-_tG)/1e6, (_tI-_tH)/1e6, (_tJ-_tI)/1e6, (_tK-_tJ)/1e6, (_tC-_tK)/1e6);
             }
 
             // 读档语义只在读档过程中生效；任何一次运行期重建都意味着读档已经结束
@@ -1207,6 +1459,54 @@ public class ComboNet {
     }
 
     /**
+     * 把每栋组合建筑按"它所属本地组合体的 leader"归到对应分量（保持 all 的原有顺序）。
+     */
+    private static void fillCompMembers(Seq<Seq<Building>> compMembers, Seq<Building> all,
+                                        ObjectIntMap<Building> compIdxOfLeader){
+        for(int i = 0; i < all.size; i++){
+            Building b = all.get(i);
+            if(!ComboReflect.isComboBuild(b)) continue;
+            Building l = ComboNode.groupRep(b);
+            if(l == null) l = b;
+            int idx = compIdxOfLeader.get(l, -1);
+            if(idx >= 0) compMembers.get(idx).add(b);
+        }
+    }
+
+    /**
+     * 有没有哪一份物品模块被**两个以上分量**同时引用（只有这种情况才需要按分量拆池）。
+     * 只记"第一次见到的分量下标"，不是它自己就说明被多个分量共用 —— 不建任何 IntSet。
+     */
+    private static boolean anyItemPoolSharedAcross(Seq<Seq<Building>> comps){
+        IdentityHashMap<ItemModule, Integer> first = new IdentityHashMap<>();
+        for(int i = 0; i < comps.size; i++){
+            Seq<Building> comp = comps.get(i);
+            for(int k = 0; k < comp.size; k++){
+                Building m = comp.get(k);
+                if(m == null || m.items == null) continue;
+                Integer prev = first.put(m.items, i);
+                if(prev != null && prev != i) return true;
+            }
+        }
+        return false;
+    }
+
+    /** 同上，液体版。 */
+    private static boolean anyLiquidPoolSharedAcross(Seq<Seq<Building>> comps){
+        IdentityHashMap<LiquidModule, Integer> first = new IdentityHashMap<>();
+        for(int i = 0; i < comps.size; i++){
+            Seq<Building> comp = comps.get(i);
+            for(int k = 0; k < comp.size; k++){
+                Building m = comp.get(k);
+                if(m == null || m.liquids == null) continue;
+                Integer prev = first.put(m.liquids, i);
+                if(prev != null && prev != i) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * 这个建筑手里的库存模块是不是"核心的池子"：核心本身，或者已经并进核心的组合仓库。
      * 这类模块**故意**被多台建筑共用，绝不能当成"断开残留的共享池"去拆。
      */
@@ -1220,6 +1520,9 @@ public class ComboNet {
     }
 
     private static void splitItemsAcrossComponents(Seq<Seq<Building>> comps){
+        // 【性能】先做一次"便宜"的判断：分量之间没有任何共用物品模块时（绝大多数基地的绝大多数时刻），
+        // 下面的 allMembers/owners/coreOwned 三张表纯属白建 —— 1000+ 分量时这一下就是 1.5ms 起步。
+        if(!anyItemPoolSharedAcross(comps)) return;
         ObjectSet<Building> allMembers = new ObjectSet<>();
         for(Seq<Building> comp : comps)
             for(Building m : comp)
@@ -1317,6 +1620,8 @@ public class ComboNet {
     }
 
     private static void splitLiquidsAcrossComponents(Seq<Seq<Building>> comps){
+        // 同 splitItemsAcrossComponents：分量间没有共用液体模块就直接返回。
+        if(!anyLiquidPoolSharedAcross(comps)) return;
         ObjectSet<Building> allMembers = new ObjectSet<>();
         for(Seq<Building> comp : comps)
             for(Building m : comp)
@@ -1429,24 +1734,53 @@ public class ComboNet {
         int best = -1, bestStamp = Integer.MIN_VALUE, bestPos = Integer.MAX_VALUE;
         for(int i = 0; i < vertices.size; i++){
             Building v = vertices.get(i);
-            if(!(v instanceof ComboShare.Holder h)) continue;
-            int st = h.shareStamp();
+            if(v == null) continue;
+            int st, m;
+            if(v instanceof ComboShare.Holder h){
+                st = h.shareStamp();
+                m = h.shareMask();
+            }else if(ComboShare.hasBodyMask(v)){
+                // 组合体自己也带共享配置（悬浮面板里勾选的那份），和连接件一视同仁
+                st = ComboShare.bodyStampOf(v);
+                m = ComboShare.bodyMaskOf(v);
+            }else{
+                continue;
+            }
             if(st > bestStamp || (st == bestStamp && v.pos() < bestPos)){
                 bestStamp = st;
                 bestPos = v.pos();
-                best = h.shareMask();
+                best = m;
             }
         }
         if(best < 0) return ComboShare.ALL;
-        for(int i = 0; i < vertices.size; i++)
-            if(vertices.get(i) instanceof ComboShare.Holder h){
+        for(int i = 0; i < vertices.size; i++){
+            Building v = vertices.get(i);
+            if(v instanceof ComboShare.Holder h){
                 h.shareMask(best);
                 h.shareStamp(bestStamp);
+            }else if(ComboShare.hasBodyMask(v)){
+                ComboShare.setBodyMask(v.pos(), best, bestStamp);
             }
+        }
         return best & ComboShare.ALL;
     }
 
-    /** 一张网络里的成员按"本地组合体"分组（节点/连接器跨距离接起来的那几片各自算一组）。 */
+    /** 单点分量的共享配置（快路用：分量里只有一个组合体，没有节点/连接器要统一）。 */
+    private static int resolveShareMaskOne(Building v){
+        if(v == null) return ComboShare.ALL;
+        if(v instanceof ComboShare.Holder h) return h.shareMask() & ComboShare.ALL;
+        if(ComboShare.hasBodyMask(v)) return ComboShare.bodyMaskOf(v) & ComboShare.ALL;
+        return ComboShare.ALL;
+    }
+
+    /**
+     * 一张网络里的成员按"本地组合体"分组（节点/连接器跨距离接起来的那几片各自算一组）。
+     *
+     * <p>【现在只有"不共享"的项才需要分组】而且口径已经改成**按单台**（见 {@link #perMemberGroups}）——
+     * 用户报的"关闭物品共享后物品模块还是共享的"就是因为以前按"本地组合体"分组、
+     * 组内照旧共用一份。这个方法留着给"将来想按本地组合体粒度共享某项"用。
+     */
+    @SuppressWarnings("unused")
     private static Seq<Seq<Building>> localGroups(Seq<Building> members){
         Seq<Seq<Building>> groups = new Seq<>();
         ObjectMap<Building, Seq<Building>> byRep = new ObjectMap<>();
@@ -1467,6 +1801,25 @@ public class ComboNet {
     }
 
     /**
+     * 每台成员各自一组。
+     *
+     * <p>【用户报】"关闭物品共享后物品模块还是共享的" —— 以前"不共享物品"只把物品池拆到
+     * **本地组合体**那一层（相邻同类照旧共用一份），于是把一台组合体的"物品"取消勾选时
+     * 什么都没变。现在只要"物品"没勾，就按**单台**粒度拆：每台自己一份模块、自己算容量。
+     */
+    private static Seq<Seq<Building>> perMemberGroups(Seq<Building> members){
+        Seq<Seq<Building>> groups = new Seq<>();
+        for(int i = 0; i < members.size; i++){
+            Building m = members.get(i);
+            if(m == null) continue;
+            Seq<Building> g = new Seq<>();
+            g.add(m);
+            groups.add(g);
+        }
+        return groups;
+    }
+
+    /**
      * 分量内统一共享池 —— 按共享配置**逐项**处理。
      *
      * <p>运行期(loadPhase=false)：各成员手里是真实库存，合并 = 相加到 pos 最小的成员模块；
@@ -1478,10 +1831,25 @@ public class ComboNet {
      */
     private static void mergeComponent(Seq<Building> members, int mask, boolean loadPhase){
         if(members.size <= 0) return;
+        // 【性能】单台分量（独立的一台组合建筑，最常见）：它手里就是自己那份池子，
+        // 下面那套 pickItemModule/localGroups 只是白建 Seq、白扫一遍。
+        // 结果完全等价：itemCap/liquidCap 就是这一台的基础容量，模块一个都不动。
+        if(members.size == 1){
+            Building one = members.first();
+            if(one != null){
+                ComboReflect.setItemCap(one, ComboReflect.baseItemCap(one));
+                ComboReflect.setLiquidCap(one, ComboReflect.baseLiquidCap(one));
+                ComboReflect.markClean(one);
+            }
+            return;
+        }
         boolean shareItems = (mask & ComboShare.ITEMS) != 0;
         boolean shareLiquids = (mask & ComboShare.LIQUIDS) != 0;
-        // 两项都共享时不用分组，省掉一次遍历（默认配置就走这条路，和以前一模一样）
-        Seq<Seq<Building>> groups = (shareItems && shareLiquids) ? null : localGroups(members);
+        // 两项都共享时不用分组，省掉一次遍历（默认配置就走这条路，和以前一模一样）。
+        // 物品/液体没勾共享 → **按单台**分组（每台各留各的模块，见 perMemberGroups）：
+        // 用户报的"关闭物品共享后物品模块还是共享的"，根因就是以前只拆到"本地组合体"那一层。
+        Seq<Seq<Building>> liquidGroups = shareLiquids ? null : perMemberGroups(members);
+        Seq<Seq<Building>> itemGroups = shareItems ? null : perMemberGroups(members);
 
         if(shareItems){
             ItemModule itemTarget = pickItemModule(members, loadPhase);
@@ -1493,9 +1861,9 @@ public class ComboNet {
                 }
             }
         }else{
-            // 刚把"物品"取消勾选时两边还是同一口池子：先按本地组合体的容量比例拆回去
-            splitItemsAcrossComponents(groups);
-            for(Seq<Building> g : groups){
+            // 刚把"物品"取消勾选时大家还是同一口池子：先按各自的容量比例拆回"每台一份"
+            splitItemsAcrossComponents(itemGroups);
+            for(Seq<Building> g : itemGroups){
                 ItemModule target = pickItemModule(g, loadPhase);
                 if(target == null) continue;
                 for(Building m : g){
@@ -1516,8 +1884,8 @@ public class ComboNet {
                 }
             }
         }else{
-            splitLiquidsAcrossComponents(groups);
-            for(Seq<Building> g : groups){
+            splitLiquidsAcrossComponents(liquidGroups);
+            for(Seq<Building> g : liquidGroups){
                 LiquidModule target = pickLiquidModule(g, loadPhase);
                 if(target == null) continue;
                 for(Building m : g){
@@ -1530,23 +1898,24 @@ public class ComboNet {
 
         int itemCap = componentItemCap(members);
         float liquidCap = componentLiquidCap(members);
-        if(groups == null){
-            for(Building m : members){
-                ComboReflect.setItemCap(m, itemCap);
-                ComboReflect.setLiquidCap(m, liquidCap);
-                ComboReflect.markClean(m);
-            }
+        // 容量：共享的按整分量算，不共享的按"自己那一组"算
+        if(shareItems){
+            for(Building m : members) ComboReflect.setItemCap(m, itemCap);
         }else{
-            for(Seq<Building> g : groups){
-                int ic = shareItems ? itemCap : componentItemCap(g);
-                float lc = shareLiquids ? liquidCap : componentLiquidCap(g);
-                for(Building m : g){
-                    ComboReflect.setItemCap(m, ic);
-                    ComboReflect.setLiquidCap(m, lc);
-                    ComboReflect.markClean(m);
-                }
+            for(Seq<Building> g : itemGroups){
+                int ic = componentItemCap(g);
+                for(Building m : g) ComboReflect.setItemCap(m, ic);
             }
         }
+        if(shareLiquids){
+            for(Building m : members) ComboReflect.setLiquidCap(m, liquidCap);
+        }else{
+            for(Seq<Building> g : liquidGroups){
+                float lc = componentLiquidCap(g);
+                for(Building m : g) ComboReflect.setLiquidCap(m, lc);
+            }
+        }
+        for(Building m : members) ComboReflect.markClean(m);
     }
 
     private static ItemModule pickItemModule(Seq<Building> members, boolean loadPhase){

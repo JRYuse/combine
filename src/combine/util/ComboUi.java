@@ -16,6 +16,66 @@ import arc.util.Log;
 public class ComboUi {
   private static final ObjectSet<String> reported = new ObjectSet<>();
 
+  /** 设置键：组合建筑 display() 里要不要画"详细信息"（构成 + 物品池 + 液体池 + 电力条）。 */
+  public static final String DETAIL_KEY = "combine-display-detail";
+  /** 设置键：点击组合体时要不要弹"悬浮信息面板"（CoopPanel）。 */
+  public static final String PANEL_KEY = "combine-show-panel";
+  /** 设置键：点击组合体时要不要弹"组合体共享面板"（ComboSharePanel：勾选物品/液体/电力/热量）。 */
+  public static final String SHARE_KEY = "combine-show-share-panel";
+
+  /** 点击**自己队伍**的组合体时要不要弹"组合体共享"面板（设置里可关；默认开）。 */
+  public static boolean sharePanel() {
+    try {
+      return arc.Core.settings == null || arc.Core.settings.getBool(SHARE_KEY, true);
+    } catch (Throwable ignored) {
+      return true;
+    }
+  }
+
+  public static void setSharePanel(boolean value) {
+    if (arc.Core.settings != null) {
+      arc.Core.settings.put(SHARE_KEY, value);
+      arc.Core.settings.saveValues();
+    }
+  }
+
+  /**
+   * display() 里要不要显示组合建筑的"详细信息"（构成 / 物品池 / 液体池 / 电力条）。
+   *
+   * <p>设置里关掉就退回**原版面板**（由各组合建筑的 display() 调 {@code super.display(table)}），
+   * 用户口径："一个控制 display 是否显示详细信息，不显示详细信息就用 super.display(table)"。
+   */
+  public static boolean detail() {
+    try {
+      return arc.Core.settings == null || arc.Core.settings.getBool(DETAIL_KEY, true);
+    } catch (Throwable ignored) {
+      return true;
+    }
+  }
+
+  /** 点击组合体时要不要弹那个悬浮信息面板（设置里可关）。 */
+  public static boolean panel() {
+    try {
+      return arc.Core.settings == null || arc.Core.settings.getBool(PANEL_KEY, true);
+    } catch (Throwable ignored) {
+      return true;
+    }
+  }
+
+  public static void setDetail(boolean value) {
+    if (arc.Core.settings != null) {
+      arc.Core.settings.put(DETAIL_KEY, value);
+      arc.Core.settings.saveValues();
+    }
+  }
+
+  public static void setPanel(boolean value) {
+    if (arc.Core.settings != null) {
+      arc.Core.settings.put(PANEL_KEY, value);
+      arc.Core.settings.saveValues();
+    }
+  }
+
   /** 安全执行一段界面绘制代码；同 tag 只报告一次，避免每帧刷屏。 */
   public static void safe(String tag, Runnable runnable) {
     try {
@@ -83,5 +143,66 @@ public class ComboUi {
     if (sb.length() == 0) sb.append("无");
     table.add("[lightgray]构成: " + sb + "[]").left().width(COMPOSITION_WIDTH).wrap();
     table.row();
+    // 用户要求把 display() 的"详细信息"加回来：整组的物品池 / 液体池 / 电力条。
+    // 只在设置里开着"显示详细信息"时画（关掉走的是原版 super.display）。
+    if (detail())
+      addPoolBars(table, self);
+  }
+
+  /**
+   * 整组的物品池 / 液体池 / 电力条（display() 的"详细信息"）。
+   *
+   * <p>用户报过"display 里只留构成"是把物品/液体/电力删掉了（commit ae21e33），这里加回来。
+   * 分子分母都用 {@link combine.net.ComboNet} 的整网口径（和悬浮面板同源），
+   * 免得出现"1482273/60"这种池子在别处、分母还是单台的数字。
+   */
+  public static void addPoolBars(arc.scene.ui.layout.Table table, mindustry.gen.Building self) {
+    if (table == null || self == null || self.block == null)
+      return;
+    try {
+      int itemCap = Math.max(combine.net.ComboNet.panelItemCap(self), 1);
+      mindustry.world.modules.ItemModule items = combine.net.ComboNet.panelItemPool(self);
+      if (items != null) {
+        for (mindustry.type.Item item : mindustry.Vars.content.items()) {
+          int amount = items.get(item);
+          if (amount <= 0)
+            continue;
+          final int t = amount, c = itemCap;
+          table.add(new mindustry.ui.Bar(
+              () -> item.localizedName + ": " + t + "/" + c,
+              () -> item.color,
+              () -> (float) t / c)).width(COMPOSITION_WIDTH).height(18f).pad(4).left();
+          table.row();
+        }
+      }
+
+      float liquidCap = Math.max(combine.net.ComboNet.panelLiquidCap(self), 1f);
+      mindustry.world.modules.LiquidModule liquids = combine.net.ComboNet.panelLiquidPool(self);
+      if (liquids != null) {
+        for (mindustry.type.Liquid liquid : mindustry.Vars.content.liquids()) {
+          float amount = liquids.get(liquid);
+          if (amount <= 0.001f)
+            continue;
+          final float t = amount, c = liquidCap;
+          table.add(new mindustry.ui.Bar(
+              () -> liquid.localizedName + ": " + arc.util.Strings.fixed(t, 1) + "/" + arc.util.Strings.fixed(c, 1),
+              () -> liquid.barColor != null ? liquid.barColor : liquid.color,
+              () -> t / c)).width(COMPOSITION_WIDTH).height(18f).pad(4).left();
+          table.row();
+        }
+      }
+
+      // 电力条：整网耗电（组里没人耗电就不画）
+      float totalPower = 0f;
+      for (mindustry.gen.Building m : combine.net.ComboNet.displayMembers(self, 1)) {
+        if (m != null && m.isValid() && m.block != null && m.block.consPower != null)
+          totalPower += m.block.consPower.usage;
+      }
+      addPowerBar(table, self, totalPower);
+    } catch (Throwable t) {
+      if (reported.add("pools")) {
+        Log.err("[combine] 组合面板画物品/液体/电力条失败（已跳过）", t);
+      }
+    }
   }
 }

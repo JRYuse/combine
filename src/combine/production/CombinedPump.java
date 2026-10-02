@@ -110,7 +110,7 @@ public class CombinedPump extends Pump {
             // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
             for (Building b : ComboReflect.linkedReachable(this,
                     o -> o instanceof CombinedPumpBuild other && other.team == team && other.isValid(),
-                    (cur, o) -> cur.block == o.block
+                    (cur, o) -> cur.block.getClass() == o.block.getClass()
                     || ((CombinedPump) cur.block).allowCrossTypeCombo
                     || ((CombinedPump) o.block).allowCrossTypeCombo)) {
                 if (b != this)
@@ -469,6 +469,7 @@ public class CombinedPump extends Pump {
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          if (!ComboUi.detail()) { super.display(table); return; }
           // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
           ComboUi.safe("combinedpump:display", () -> displayInner(table));
         }

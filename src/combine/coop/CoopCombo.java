@@ -280,6 +280,12 @@ public class CoopCombo {
   /** 改了 anyFamily / blacklist 之后叫一下，清掉资格缓存。 */
   public static void clearEligibilityCache() {
     eligibleCache.clear();
+    // 【性能】ComboNet 的"组合相关建筑"登记表也按资格（isComboBuild → CoopCombo.eligible）过滤，
+    // 资格变了必须让它重扫，否则新启用的方块永远进不了网络重建的名单。
+    try {
+      ComboNet.invalidateTracked();
+    } catch (Throwable ignored) {
+    }
   }
 
   // ==================== "不组合"名单的持久化（设置界面用） ====================
@@ -431,6 +437,12 @@ public class CoopCombo {
     if (isLinker(a)) return joinable(b);
     if (isLinker(b)) return joinable(a);
     if (!eligible(a.block) || !eligible(b.block)) return false;
+    // 【这里必须按"同一个方块"，不能按方块类】JS 模组的方块经常成批共享同一个
+    // Rhino JavaAdapter 类（实测废土科技 103 个可组合方块只落在 26 个类里，
+    // 光 `adapter42` 一个类就对应 28 个**完全不同**的建筑）。按类分组会把这 28 个
+    // 毫不相干的建筑在基地里并成一个巨型协作组 —— 每帧搬运/每次放置重算都按组大小走，
+    // 表现就是"加一个新建筑就卡一下、组合工厂的优化没了"（用户报的）。
+    // 跨类型成组仍然由 allowCrossType 控制（默认关），要跨方块组合就走组合节点/连接器。
     return a.block == b.block || allowCrossType;
   }
 
@@ -1481,6 +1493,7 @@ public class CoopCombo {
     while (stack.size > 0) {
       Building cur = stack.pop();
       for (Building nb : cur.proximity) {
+        // 口径必须和 linkable 一致：同一个方块（不是"同一个方块类"，原因见 linkable）
         if (nb != null && nb.isValid() && nb.block == b.block && nb.team == b.team && seen.add(nb)) {
           stack.add(nb);
           n++;

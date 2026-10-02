@@ -29,6 +29,8 @@ import mindustry.world.Block;
 import mindustry.world.Tile;
 import mindustry.world.blocks.ControlBlock;
 import mindustry.world.blocks.defense.turrets.ItemTurret;
+import mindustry.world.blocks.defense.turrets.BaseTurret;
+import mindustry.world.blocks.defense.turrets.PointDefenseTurret;
 import mindustry.world.blocks.defense.turrets.Turret;
 import mindustry.world.consumers.ConsumePower;
 import mindustry.world.draw.DrawTurret;
@@ -149,11 +151,25 @@ public class SuperTurret extends Block {
 
   /** 一台世界里的炮台 → 该拿来当"格子炮台"的方块（组合方块换回它替换前的原版实例）。 */
   public static @Nullable Block cellBlock(Block worldBlock) {
-    if (!(worldBlock instanceof Turret))
+    if (!cellCapable(worldBlock))
       return null;
     Block orig = BlockCloner.comboToOriginal.get(worldBlock);
     Block b = orig != null ? orig : worldBlock;
-    return b instanceof Turret ? b : null;
+    return cellCapable(b) ? b : null;
+  }
+
+  /**
+   * 能不能拿来当"格子炮台"。
+   *
+   * <p>用户要求把 {@link PointDefenseTurret}（原版 point-defense / segment 那类点防炮）
+   * 也纳入框选范围。它不是 {@code Turret} —— 原版层级是
+   * {@code PointDefenseTurret extends ReloadTurret extends BaseTurret}，
+   * 而 {@code BaseTurret extends Block}（{@code Turret extends ReloadTurret} 是另一条），
+   * 所以以前 {@code instanceof Turret} 那条判据直接把它排除了。
+   * 它一样是"一格一台、自己找目标自己开火"的炮台，按 {@link BaseTurret} 的 build 处理即可。
+   */
+  public static boolean cellCapable(Block b) {
+    return b instanceof Turret || b instanceof PointDefenseTurret;
   }
 
   /** 布局串里的一格：';' 分隔，空格子 = 空串，否则 "方块名@朝向度数"。 */
@@ -915,7 +931,7 @@ public class SuperTurret extends Block {
     /** 被框选进来的炮台坐标（"x,y;x,y"）—— 超级炮台放下后要把它们拆掉。 */
     public String sources = "";
     public boolean sourcesConsumed = false;
-    public Turret.TurretBuild[] cells = new Turret.TurretBuild[0];
+    public BaseTurret.BaseTurretBuild[] cells = new BaseTurret.BaseTurretBuild[0];
     public Block[] cellBlocks = new Block[0];
     public float[] cellRot = new float[0];
     /** 每格的热量探针（把整台的热量喂给这一格，见 {@link HeatProbe}）。 */
@@ -1126,7 +1142,7 @@ public class SuperTurret extends Block {
 
     @Override
     public void onDestroyed() {
-      for (Turret.TurretBuild c : cells)
+      for (BaseTurret.BaseTurretBuild c : cells)
         if (c != null)
           try {
             c.onDestroyed();
@@ -1153,24 +1169,25 @@ public class SuperTurret extends Block {
     public @Nullable Turret.TurretBuild controlCell() {
       ensureCells();
       Turret.TurretBuild fallback = null;
-      for (Turret.TurretBuild c : cells) {
-        if (c == null || c.block == null)
+      for (BaseTurret.BaseTurretBuild c : cells) {
+        // 点防炮（BaseTurret，不是 Turret）没有 ControlBlock/代理单位这一套，不参与"手动操控"
+        if (!(c instanceof Turret.TurretBuild tb) || c.block == null)
           continue;
         // 已经接管的那一格就一直用它：否则弹药打空/换弹时"控制对象"会跳到别格，
         // 玩家体验就是"操控着突然被踢出去"。
-        if (c.controlled())
-          return c;
+        if (tb.controlled())
+          return tb;
         if (fallback == null)
-          fallback = c;
+          fallback = tb;
         // 优先挑现在**真能开火**的那一格（里面的炮台不一定都吃同一种弹药，
         // 挑到没弹的那台会出现"接管了却打不出子弹"）
         boolean ammo = false;
         try {
-          ammo = c.hasAmmo();
+          ammo = tb.hasAmmo();
         } catch (Throwable ignored) {
         }
         if (ammo)
-          return c;
+          return tb;
       }
       return fallback;
     }
@@ -1224,7 +1241,7 @@ public class SuperTurret extends Block {
 
     /** 第 i 格炮台的热量需求（heatRequirement>0 才吃热；空格/不需要热的格子 = 0）。 */
     public float cellHeatReq(int i) {
-      Turret.TurretBuild c = i >= 0 && i < cells.length ? cells[i] : null;
+      BaseTurret.BaseTurretBuild c = i >= 0 && i < cells.length ? cells[i] : null;
       return c != null && c.block instanceof Turret t ? Math.max(0f, t.heatRequirement) : 0f;
     }
 
@@ -1306,8 +1323,9 @@ public class SuperTurret extends Block {
       // 操控源 = 被接管那一格的代理单位身上的玩家（无头测试里 Vars.player 可能是空的，
       // 所以认单位上的控制器，而不是 Vars.player）
       boolean live = src != null && src.getPlayer() != null;
-      for (Turret.TurretBuild c : cells) {
-        if (c == null || c == owner)
+      for (BaseTurret.BaseTurretBuild c : cells) {
+        // 点防炮没有逻辑控制通道（不是 TurretBuild），跳过
+        if (!(c instanceof Turret.TurretBuild tb) || tb == owner)
           continue;
         try {
           if (live) {
@@ -1317,9 +1335,9 @@ public class SuperTurret extends Block {
             // 世界坐标），而 aimX/aimY 本来就是世界坐标 —— 再 unconv 一次准星被缩到
             // 错误位置，其它格全部转向乱点（用户报的"合体里只能控制一台的转向"）。
             // 这里照 control() 里 LAccess.shoot 的语义直接写字段（它就做这三件事）。
-            c.targetPos.set(src.aimX(), src.aimY());
-            c.logicControlTime = 120f;
-            c.logicShooting = src.isShooting();
+            tb.targetPos.set(src.aimX(), src.aimY());
+            tb.logicControlTime = 120f;
+            tb.logicShooting = src.isShooting();
             // 【转向也一起管】只靠逻辑控制通道时，转向速度用的是格子自己的 potentialEfficiency ——
             // 有的 mod 炮台自带用电/效率被卡住，就变成"只开火不转"（用户报的"只能控制一个的转向"）。
             // 手动操控时按**整台**的电力满足率直接转，整台没电才不转。
@@ -1331,10 +1349,10 @@ public class SuperTurret extends Block {
                     ct.rotateSpeed * powerFrac * arc.util.Time.delta);
               }
             }
-          } else if (c.logicControlTime > 0f) {
+          } else if (tb.logicControlTime > 0f) {
             // 玩家松手了：结束逻辑控制，交回它自己的 AI
-            c.logicControlTime = -1f;
-            c.logicShooting = false;
+            tb.logicControlTime = -1f;
+            tb.logicShooting = false;
           }
         } catch (Throwable ignored) {
           // 某一格同步失败不该影响其它格/整台
@@ -1346,15 +1364,15 @@ public class SuperTurret extends Block {
     public @Nullable Turret.TurretBuild possessedCell() {
       ensureCells();
       Unit cur = player == null ? null : player.unit();
-      for (Turret.TurretBuild c : cells) {
-        if (c == null || c.unit == null)
+      for (BaseTurret.BaseTurretBuild c : cells) {
+        if (!(c instanceof Turret.TurretBuild tb) || tb.unit == null)
           continue;
         // 玩家正式接管的那一格
-        if (cur != null && c.unit() == cur)
-          return c;
+        if (cur != null && tb.unit() == cur)
+          return tb;
         // 兜底（无头测试等 player 为空的场合）：谁被玩家控制器占着就当操控源
-        if (cur == null && c.unit().getPlayer() != null)
-          return c;
+        if (cur == null && tb.unit().getPlayer() != null)
+          return tb;
       }
       return null;
     }
@@ -1374,7 +1392,7 @@ public class SuperTurret extends Block {
       ensureCells();
       boolean any = false, anyWorkable = false, needsPower = false;
       for (int i = 0; i < cells.length; i++) {
-        Turret.TurretBuild c = cells[i];
+        BaseTurret.BaseTurretBuild c = cells[i];
         if (c == null)
           continue;
         any = true;
@@ -1383,7 +1401,8 @@ public class SuperTurret extends Block {
           needsPower = true;
         boolean ok;
         try {
-          ok = c.hasAmmo();
+          // 点防炮（BaseTurret）没有弹仓那一套：只要它这一格在，就算有"输入"
+          ok = !(c instanceof Turret.TurretBuild tb) || tb.hasAmmo();
         } catch (Throwable t) {
           ok = true;
         }
@@ -1648,7 +1667,7 @@ public class SuperTurret extends Block {
         feedAmmoRound(8);
 
       for (int i = 0; i < cells.length; i++) {
-        Turret.TurretBuild c = cells[i];
+        BaseTurret.BaseTurretBuild c = cells[i];
         if (c == null || c.dead())
           continue;
         // 池子/电网可能被 ComboNet 换成别的模块对象：每帧对齐引用
@@ -1693,8 +1712,8 @@ public class SuperTurret extends Block {
           // 环节（用户抓包：探针挂在炮台 proximity 里，格子 heatReq 仍 0，装填 1%、根本不
           // 发射）。这不是显示，canConsume 直接 false。分到的那一份见 heatShare()。
           float cellReq = c.block instanceof Turret t ? t.heatRequirement : 0f;
-          if (cellReq > 0f && demandTotal > 0f)
-            c.heatReq = totalHeat * cellReq / demandTotal;
+          if (cellReq > 0f && demandTotal > 0f && c instanceof Turret.TurretBuild tb)
+            tb.heatReq = totalHeat * cellReq / demandTotal;
         } catch (Throwable t) {
           if (cellBroken.add(i))
             Log.err("[combine] 超级组合炮台第 @ 格（@）更新出错，已停用这一格", i,
@@ -1712,7 +1731,7 @@ public class SuperTurret extends Block {
     /** 各格的用电量合计（上报给电网）。 */
     public float cellPowerUse() {
       float sum = 0f;
-      for (Turret.TurretBuild c : cells) {
+      for (BaseTurret.BaseTurretBuild c : cells) {
         if (c == null || c.block == null || !c.block.hasPower || c.block.consPower == null)
           continue;
         try {
@@ -1736,7 +1755,7 @@ public class SuperTurret extends Block {
      * <p>{@code budget} 是本次调用最多搬几发：updateTile 用轮询方式喂（每格每轮一点），
      * 让所有格子**同时**装填，而不是先把第 0 格塞满才轮到下一格（用户报的"挨个填充"）。
      */
-    public void feedAmmo(Turret.TurretBuild c, int idx, int budget) {
+    public void feedAmmo(BaseTurret.BaseTurretBuild c, int idx, int budget) {
       if (items == null || !(c instanceof ItemTurret.ItemTurretBuild itb))
         return;
       ItemTurret it = (ItemTurret) c.block;
@@ -1767,7 +1786,7 @@ public class SuperTurret extends Block {
     /** 轮询装填一整轮：每格最多 {@code perCell} 发，轮流喂一遍。 */
     public void feedAmmoRound(int perCell) {
       for (int i = 0; i < cells.length; i++) {
-        Turret.TurretBuild c = cells[i];
+        BaseTurret.BaseTurretBuild c = cells[i];
         if (c == null || c.dead())
           continue;
         try {
@@ -1801,7 +1820,7 @@ public class SuperTurret extends Block {
         cellAmmo = new Item[n];
       cellAmmo[idx] = item;
 
-      Turret.TurretBuild c = cells[idx];
+      BaseTurret.BaseTurretBuild c = cells[idx];
       if (c instanceof ItemTurret.ItemTurretBuild itb && items != null && itb.ammo != null) {
         int total = 0;
         for (int k = 0; k < itb.ammo.size; k++) {
@@ -1906,13 +1925,13 @@ public class SuperTurret extends Block {
     }
 
     void disposeCells() {
-      for (Turret.TurretBuild c : cells)
+      for (BaseTurret.BaseTurretBuild c : cells)
         if (c != null)
           try {
             c.remove();
           } catch (Throwable ignored) {
           }
-      cells = new Turret.TurretBuild[0];
+      cells = new BaseTurret.BaseTurretBuild[0];
       cellBlocks = new Block[0];
       cellRot = new float[0];
       probes = new HeatProbe.HeatProbeBuild[0];
@@ -1925,7 +1944,7 @@ public class SuperTurret extends Block {
     void buildCells() {
       int n = side * side;
       String[] tokens = cellTokens(layout);
-      Turret.TurretBuild[] cs = new Turret.TurretBuild[n];
+      BaseTurret.BaseTurretBuild[] cs = new BaseTurret.BaseTurretBuild[n];
       Block[] bs = new Block[n];
       float[] rs = new float[n];
       HeatProbe.HeatProbeBuild[] ps = new HeatProbe.HeatProbeBuild[n];
@@ -1939,7 +1958,7 @@ public class SuperTurret extends Block {
         if (cb == null)
           continue;
         int cx = cellTile(tile.x, side, i % side), cy = cellTile(tile.y, side, i / side);
-        Turret.TurretBuild c = makeCell(cb, cx, cy, rotOfToken(token));
+        BaseTurret.BaseTurretBuild c = makeCell(cb, cx, cy, rotOfToken(token));
         if (c == null)
           continue;
         cs[i] = c;
@@ -2016,10 +2035,10 @@ public class SuperTurret extends Block {
 
     /** 造一格虚拟炮台：原版 build 类 + 一张只属于它的假 Tile（坐标 = 这一格的中心）。 */
     @Nullable
-    Turret.TurretBuild makeCell(Block cb, int cx, int cy, float rot) {
+    BaseTurret.BaseTurretBuild makeCell(Block cb, int cx, int cy, float rot) {
       try {
         Building raw = cb.newBuilding();
-        if (!(raw instanceof Turret.TurretBuild c))
+        if (!(raw instanceof BaseTurret.BaseTurretBuild c))
           return null;
         Tile fake = new Tile(cx, cy);
         setTileBlock(fake, cb);
@@ -2185,7 +2204,7 @@ public class SuperTurret extends Block {
         Item a = cellAmmoAt(i);
         write.s(a == null ? 0 : a.id + 1);
       }
-      for (Turret.TurretBuild c : cells) {
+      for (BaseTurret.BaseTurretBuild c : cells) {
         if (c == null) {
           write.b((byte) -1);
         } else {
@@ -2209,7 +2228,7 @@ public class SuperTurret extends Block {
       int n = side * side;
       for (int i = 0; i < n; i++) {
         byte ver = read.b();
-        Turret.TurretBuild c = i < cells.length ? cells[i] : null;
+        BaseTurret.BaseTurretBuild c = i < cells.length ? cells[i] : null;
         if (c == null)
           continue;
         c.read(read, ver);
@@ -2229,7 +2248,7 @@ public class SuperTurret extends Block {
       if (items == null || item == null || items.get(item) >= realItemCap)
         return false;
       for (int i = 0; i < cells.length; i++) {
-        Turret.TurretBuild c = cells[i];
+        BaseTurret.BaseTurretBuild c = cells[i];
         if (!(c instanceof ItemTurret.ItemTurretBuild))
           continue;
         // 这一格选了别的弹药 -> 不进池（免得攒一堆没人用的）
@@ -2282,7 +2301,7 @@ public class SuperTurret extends Block {
         return false;
       if (liquids.get(liquid) >= realLiquidCap)
         return false;
-      for (Turret.TurretBuild c : cells) {
+      for (BaseTurret.BaseTurretBuild c : cells) {
         if (c != null && c.block != null && c.block.hasLiquids && c.block.consumesLiquid(liquid))
           return true;
       }
@@ -2305,7 +2324,7 @@ public class SuperTurret extends Block {
         super.draw();
       ensureCells();
       for (int i = 0; i < cells.length; i++) {
-        Turret.TurretBuild c = cells[i];
+        BaseTurret.BaseTurretBuild c = cells[i];
         if (c == null)
           continue;
         Block cb = i < cellBlocks.length ? cellBlocks[i] : null;
@@ -2318,17 +2337,25 @@ public class SuperTurret extends Block {
         if (k != 1f)
           Draw.scl(k);
         try {
-          if (cellDrawerIncomplete(cb)) {
-            // drawer 的图没加载上：只能画整块图标，至少这一格是一台完整的炮台
-            drawCellIcon(cb, c.x, c.y, c.rotation);
-          } else {
+          if (c instanceof Turret.TurretBuild tb && !cellDrawerIncomplete(cb)) {
             // 照原版 DrawTurret 那套画（本体/液体/顶盖 + 描边 + parts，带后坐/热量动画），
             // 但**跳过通用底板（base）和阴影** —— 底板由超级炮台自己那块大板负责，
             // 每格再垫一张 block-N 小底板就是用户报的"多出来的底座"。
             // 不直接调 c.draw()：原版把"描边+全部 parts"画在同一段里，任何一个 part
             // 抛异常会整段丢失（"炮管和轮廓线一起没"就是这么来的）；这里逐件隔离，
             // 一件坏了只丢那一件，其余照常画。
-            drawCellDrawer(cb, c);
+            drawCellDrawer(cb, tb);
+          } else if (!(c instanceof Turret.TurretBuild)) {
+            // 点防炮这类 BaseTurret：没有 DrawTurret（也就没有 parts/后坐），
+            // 原版自己的 draw() 会连底板和投影一起画（每格多一块小底座）。
+            // 这里只画炮身，口径和其它格子一致（朝上 = rotation-90）。
+            TextureRegion reg = firstFound(cb.region, cb.fullIcon, cb.uiIcon,
+                Core.atlas == null ? null : Core.atlas.find("error"));
+            if (reg != null)
+              Draw.rect(reg, c.x, c.y, c.rotation - 90f);
+          } else {
+            // drawer 的图没加载上：只能画整块图标，至少这一格是一台完整的炮台
+            drawCellIcon(cb, c.x, c.y, c.rotation);
           }
         } catch (Throwable ignored) {
         } finally {
@@ -2343,7 +2370,7 @@ public class SuperTurret extends Block {
     @Override
     public void drawSelect() {
       super.drawSelect();
-      for (Turret.TurretBuild c : cells) {
+      for (BaseTurret.BaseTurretBuild c : cells) {
         if (c == null)
           continue;
         try {
@@ -2359,7 +2386,7 @@ public class SuperTurret extends Block {
     if (!(b instanceof SuperTurretBuild sb))
       return 0;
     int n = 0;
-    for (Turret.TurretBuild c : sb.cells)
+    for (BaseTurret.BaseTurretBuild c : sb.cells)
       if (c != null)
         n++;
     return n;

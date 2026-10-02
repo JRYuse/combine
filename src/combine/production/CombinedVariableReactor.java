@@ -85,7 +85,7 @@ public class CombinedVariableReactor extends VariableReactor {
       comboGroup.add(this);
       for (Building b : ComboReflect.linkedReachable(this,
           o -> o instanceof CombinedVariableReactorBuild other && other.team == team && other.isValid(),
-          (cur, o) -> cur.block == o.block
+          (cur, o) -> cur.block.getClass() == o.block.getClass()
               || ((CombinedVariableReactor) cur.block).allowCrossTypeCombo
               || ((CombinedVariableReactor) o.block).allowCrossTypeCombo)) {
         if (b != this)
@@ -292,6 +292,10 @@ public class CombinedVariableReactor extends VariableReactor {
     // -------------------- 显示 --------------------
     @Override
     public void display(arc.scene.ui.layout.Table table) {
+      if (!ComboUi.detail()) {
+        super.display(table);
+        return;
+      }
       // 原版显示 + 组合构成行（面板异常绝不外抛）
       try {
         super.display(table);

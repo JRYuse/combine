@@ -149,17 +149,24 @@ public class Main extends Mod {
     });
 
     // 读档窗口：WorldLoadBegin → 读档语义合并（去重）；结束前不做运行期相加
-    Events.on(mindustry.game.EventType.WorldLoadBeginEvent.class, e -> ComboNet.beginWorldLoad());
+    Events.on(mindustry.game.EventType.WorldLoadBeginEvent.class, e -> {
+      // 换图：上一张图的"组合体共享配置"不能带到新图（新档里读到本块会再装回来）
+      combine.saves.ComboShareState.onWorldLoadBegin();
+      ComboNet.beginWorldLoad();
+    });
     // 【读**存档**只会发 SaveLoadEvent，不会发 WorldLoadBegin/WorldLoad】那两条是"读地图"才发的。
     // 读存档（战役区块 / 存档槽）走 SaveIO.load → SaveLoadEvent，于是"读档去重窗口"以前从来没开过：
     // 每台建筑手里那份"同一口池子的副本"被按运行期语义相加，一轮存读物品就翻好几倍
     // （用户报的"物品数量异常增长"，实测 14.7M → 32.6M → 69M）。
     // 这里在读档末尾把窗口打开 + 立刻按去重语义合并一次（之后头几帧也按去重算）。
     Events.on(SaveLoadEvent.class, e -> {
+      // 【必须在 beginWorldLoad 之前】读档末尾补一次"没读到本块就清空"（见 ComboShareState）
+      combine.saves.ComboShareState.onLoadFinished();
       ComboNet.beginWorldLoad();
       ComboNet.rebuildLoading();
     });
     Events.on(WorldLoadEvent.class, e -> {
+      combine.saves.ComboShareState.onLoadFinished();
       // 联机入服时 rules 是刚按名字反查出来的（researched/bannedBlocks 可能装着被替换掉的原版实例），
       // 必须在任何 UI/建造校验读到它之前纠正，否则客户端建造菜单里组合建筑会全部消失。
       Replacer.remapStaleContent();
@@ -188,6 +195,10 @@ public class Main extends Mod {
 
     // 跨组合体网络（连接器/节点）：每帧最多重建一次，避免放一个连接器就重建 5~10 遍
     ComboNet.register();
+
+    // 【arc 输入兜底】只吞掉"UI 元素在触摸派发过程中被摘掉 → Element.notify 读 getScene() 为 null"
+    // 那条 arc 已知 NPE（别的异常照旧抛），别让一次点击把整个存档崩回主菜单。详见 ComboInputGuard。
+    combine.util.ComboInputGuard.register();
 
     // 组合墙分组：同样每帧最多重算一遍（放一格墙会触发 placed + 四周 proximity，
     // 原先每一遍都整组 BFS 一次 —— 多线程建造刷墙时就是"帧率下降十分明显"的大头）
@@ -226,8 +237,8 @@ public class Main extends Mod {
 
     // 超级组合炮台：快捷键/按钮 → 框选炮台 → 按数量生成对应边长的组合体（纯客户端交互）
     combine.turret.SuperTurretPlacer.register();
-    // 手机/桌面都把"框选合体"按钮做进**原版放置 UI**（buildPlacementUI 那一行）
-    installInputHandler();
+    // 【用户要求 2026-09-28】不再改 input：入口是 SuperTurretPlacer 自己挂的"框选合体"悬浮按钮
+    // （手机/桌面同一个，可拖动，见 SuperTurretPlacer#ensureButton），输入处理器保持原版。
 
     Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
     // 客户端在这之后才把蓝图库从磁盘读进来（assets.load(schematics)），再兜一次键；
@@ -333,6 +344,21 @@ public class Main extends Mod {
         mindustry.io.SaveVersion w;
         if (v instanceof mindustry.io.versions.Save11) {
           w = new SafeW11();
+        } else if (v instanceof mindustry.io.versions.LegacySaveVersion
+            || v instanceof mindustry.io.versions.LegacySaveVersion2) {
+          // 【不能换】v1-v5（Save1..Save5，都继承 LegacySaveVersion / LegacySaveVersion2）
+          // **各自覆写了 readMap / readEntities**，语义和"通用 LegacyRegion 包装器"不一样：
+          //   · Save1/Save2/Save3 的 readEntities 是老式"跳过所有实体"（Save3 还自己读一遍
+          //     队伍计划），Save1/Save2 连计划都没有；
+          //   · Save4 的 readEntities 是 `readTeamBlocks + readWorldEntities(idMap)`，
+          //     **不读 entity ID 映射段**（这个版本根本没写映射）；
+          //   · Save1/Save2/Save3 的 readMap 还在 legacy chunk 里**混用 stream 和 chunkReads**。
+          // 以前把它们统一换成 SafeWLegacy（= 通用 LegacyRegion）：readEntities 退回
+          // "先读 entity 映射再读队伍计划"，于是 v4 的老地图一读就错位 ——
+          // 用户报的"部分地图加载报 Unknown object type / Error reading region entities"。
+          // 这些老版本本来也不需要"实体块容错"（它们的地图区是短块、模组建筑读法不同），
+          // 直接保留原版读取器最安全。
+          continue;
         } else if (v instanceof mindustry.io.versions.LegacyRegionSaveVersion) {
           w = new SafeWLegacy(v.version);
         } else if (v instanceof mindustry.io.versions.ShortChunkSaveVersion) {
@@ -352,6 +378,8 @@ public class Main extends Mod {
     // 关掉模组后原版读档时这些字段整块跳过，组合建筑干净地变回原版建筑
     // （详见 combine.saves.ComboSaved / ComboSaveState）
     combine.saves.ComboSaveState.register();
+    // 组合体自己的"共享哪些部分"配置（按 pos 存在 ComboShare 里，见 ComboShareState）
+    combine.saves.ComboShareState.register();
 
     try {
       getWhiteList();
@@ -401,46 +429,6 @@ public class Main extends Mod {
   /** 客户端才有的贴图/图标环境（专用服务器 Core.atlas 为 null）。 */
   static boolean visuals() {
     return !Vars.headless && arc.Core.atlas != null;
-  }
-
-  /**
-   * 把 InputHandler 换成"只重写 buildPlacementUI"的子类（手机 {@link combine.input.ComboMobileInput}、
-   * 桌面 {@link combine.input.ComboDesktopInput}），这样"框选合体"按钮就长在原版放置 UI 的那一行里
-   * （手机 = 复制键右边；桌面 = 蓝图/粘贴键右边）。
-   *
-   * <p>走原版 {@code Control.setInput()}：它会保留当前选中的方块、把老处理器的输入处理器与 UI 摘掉，
-   * 再调 {@code add()}（内部会重新调 {@code buildPlacementUI}），所以按钮立刻就位。
-   *
-   * <p>只替换**恰好是原版那两个类**的处理器：别的模组换了自己的子类就不动（宁可少个按钮，
-   * 也不能把别人的输入行为顶掉），这种情况保留 HUD 上的兜底按钮。
-   */
-  static void installInputHandler() {
-    if (Vars.headless)
-      return;
-    Events.on(ClientLoadEvent.class, e -> {
-      try {
-        if (Vars.control == null || Vars.control.input == null)
-          return;
-        mindustry.input.InputHandler cur = Vars.control.input;
-        String cn = cur.getClass().getName();
-        if (cn.equals("combine.input.ComboMobileInput") || cn.equals("combine.input.ComboDesktopInput"))
-          return;
-        if (cn.equals("mindustry.input.MobileInput")) {
-          Vars.control.setInput(new combine.input.ComboMobileInput());
-        } else if (cn.equals("mindustry.input.DesktopInput")) {
-          Vars.control.setInput(new combine.input.ComboDesktopInput());
-        } else {
-          // 别的模组/别的客户端换了自己的输入处理器：不替换，HUD 按钮继续当兜底
-          Log.info("[combine] 输入处理器是 @（不是原版那两个），框选合体按钮仍挂在 HUD 上", cn);
-          return;
-        }
-        combine.turret.SuperTurretPlacer.useHudButton = false;
-        Log.info("[combine] 框选合体按钮已挂进原版放置 UI（@）",
-            cn.equals("mindustry.input.MobileInput") ? "手机" : "桌面");
-      } catch (Throwable t) {
-        Log.err("[combine] 换输入处理器失败（框选合体按钮仍在 HUD 上）", t);
-      }
-    });
   }
 
   void getWhiteList() {
@@ -695,9 +683,14 @@ public class Main extends Mod {
             + "每格一台炮台、不够的格子留空；物品/液体/电力整台共用，各格各自开火、各自冷却。"
             + "虚影跟着鼠标走，左键确定位置，右键/Q/Esc 取消。";
         st.alwaysUnlocked = true;
-        // 两个星球都能用（不挂科技树，显式声明，免得 onPlanet 过滤掉）
-        st.shownPlanets.add(Planets.serpulo);
-        st.shownPlanets.add(Planets.erekir);
+        // 【不要往 shownPlanets 里加星球】原版 UnlockableContent.isOnPlanet() 是
+        // "planet == null || shownPlanets.isEmpty() || shownPlanets.contains(planet)" ——
+        // 一旦写进了 {塞普罗, 埃里克尔}，**别的星球（含模组星球）就会被过滤掉**。
+        // 卡住的是放置那一步：Build.validPlaceIgnoreUnits 里的 type.environmentBuildable()
+        // （原版 Block.environmentBuildable() 就是 isOnPlanet(state.getPlanet())）——
+        // 框选、虚影都正常，点下去却什么也不发生，表现就是用户报的
+        // "在其他星球的地图上合体炮台无法建造"。
+        // 空集合 = 所有星球都能用，这里什么都不用加。
         st.init();
         st.postInit();
       } catch (Throwable t) {

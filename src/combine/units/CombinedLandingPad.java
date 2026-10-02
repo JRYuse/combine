@@ -113,7 +113,7 @@ public class CombinedLandingPad extends LandingPad {
             // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
             for (Building b : ComboReflect.linkedReachable(this,
                     o -> o instanceof CombinedLandingPadBuild other && other.team == team && other.isValid(),
-                    (cur, o) -> cur.block == o.block
+                    (cur, o) -> cur.block.getClass() == o.block.getClass()
                     || ((CombinedLandingPad) cur.block).allowCrossTypeCombo
                     || ((CombinedLandingPad) o.block).allowCrossTypeCombo)) {
                 if (b != this)
@@ -144,8 +144,12 @@ public class CombinedLandingPad extends LandingPad {
             }
             for (CombinedLandingPadBuild b : newGroup) {
                 if (b.isValid()) {
-                    b.comboTotalLiquidCap = totalLiqCap;
-                    b.comboTotalItemCap = totalItemCap;
+                    // 【不共享液体】每台只算自己的液容量（和物品同一口径）
+                    b.comboTotalLiquidCap = combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.LIQUIDS)
+                            ? totalLiqCap : Math.max(ComboReflect.baseLiquidCap(b), 1f);
+                    // 【不共享物品】面板上"物品"没勾 = 每台各留各的模块，容量也只算自己那份
+                    b.comboTotalItemCap = combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.ITEMS)
+                            ? totalItemCap : Math.max(ComboReflect.baseItemCap(b), 1);
                 }
             }
 
@@ -180,8 +184,12 @@ public class CombinedLandingPad extends LandingPad {
             // 【池子可能不只本组在用】核心库存 / 组合节点接过来的别的组合体也在引用它时，
             // 本地拆分一律不动这口池子（退出成员拿空模块，由 ComboNet 按网络重新分配）。
             // 否则就是从核心库存里搬东西给退出的工厂 —— 用户报的"拆工厂时核心里的东西全没了"。
-            boolean poolOurs = !ComboReflect.itemPoolSharedOutside(poolItems, oldGroup);
-            boolean liquidPoolOurs = !ComboReflect.liquidPoolSharedOutside(poolLiquids, oldGroup);
+            // 【不共享物品】没有"公共池"：谁也别并进来、退出成员也别被换成空模块（否则等于丢物品）
+            boolean localShareItems = combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.ITEMS);
+            boolean poolOurs = localShareItems && !ComboReflect.itemPoolSharedOutside(poolItems, oldGroup);
+            // 【不共享液体】没有"公共液池"：退出成员各留各的（否则会被换成空模块 = 丢液体）
+            boolean localShareLiquids = combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.LIQUIDS);
+            boolean liquidPoolOurs = localShareLiquids && !ComboReflect.liquidPoolSharedOutside(poolLiquids, oldGroup);
             for (CombinedLandingPadBuild b : oldGroup) {
                 if (!b.isValid()) continue;
                 if (poolOurs && poolItems != null && b.items != null && b.items != poolItems) {
@@ -284,8 +292,8 @@ public class CombinedLandingPad extends LandingPad {
                         b.liquids = oldLiquids;
             for (int i = 0; i < kicked.size; i++) {
                 CombinedLandingPadBuild b = kicked.get(i);
-                b.items = newItemMods[i];
-                b.liquids = newLiquidMods[i];
+                if (poolOurs) b.items = newItemMods[i];
+                if (liquidPoolOurs) b.liquids = newLiquidMods[i];
             }
         }
 
@@ -312,12 +320,15 @@ public class CombinedLandingPad extends LandingPad {
             ObjectSet<ItemModule> sharedItemPools = ComboReflect.itemPoolsSharedOutside(group());
             ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(group());
             ItemModule sharedItems = sharedItemPools.isEmpty() ? null : sharedItemPools.first();
-            if (sharedItems != null) leader.items = sharedItems;
+            // 【不共享物品】没勾"物品"时谁也别并谁（拆开由 ComboNet 按单台粒度做，见 perMemberGroups）
+            boolean localShareItems = combine.net.ComboShare.shares(leader, combine.net.ComboShare.ITEMS);
+            if (localShareItems && sharedItems != null) leader.items = sharedItems;
             LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
-            if (sharedLiquids != null) leader.liquids = sharedLiquids;
+            boolean localShareLiquids = combine.net.ComboShare.shares(leader, combine.net.ComboShare.LIQUIDS);
+            if (localShareLiquids && sharedLiquids != null) leader.liquids = sharedLiquids;
             ObjectSet<ItemModule> processedItems = new ObjectSet<>();
             ObjectSet<LiquidModule> processedLiquids = new ObjectSet<>();
-            if (leader.items != null) {
+            if (localShareItems && leader.items != null) {
                 processedItems.add(leader.items);
                 for (CombinedLandingPadBuild m : group()) {
                     if (m != leader && m.isValid() && m.items != null && !processedItems.contains(m.items)
@@ -336,7 +347,7 @@ public class CombinedLandingPad extends LandingPad {
                         m.items = leader.items;
                 if (leader.items != null) leader.items.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
             }
-            if (leader.liquids != null) {
+            if (localShareLiquids && leader.liquids != null) {
                 processedLiquids.add(leader.liquids);
                 for (CombinedLandingPadBuild m : group()) {
                     if (m != leader && m.isValid() && m.liquids != null
@@ -564,6 +575,7 @@ public class CombinedLandingPad extends LandingPad {
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          if (!ComboUi.detail()) { super.display(table); return; }
           // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
           ComboUi.safe("combinedlandingpad:display", () -> displayInner(table));
         }

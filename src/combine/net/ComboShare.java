@@ -12,9 +12,11 @@ import mindustry.gen.Building;
  * <ul>
  *   <li><b>全勾（默认）</b>：和以前完全一样 —— 跨连接件接起来的几张本地组合体被当成
  *       "一台大机器"（共用一份池子、容量相加、电网并起来、热量通算）。</li>
- *   <li><b>有任意一项没勾</b>：两端不再合成一台大机器（本地组合体不跨连接件合并），
- *       改由 {@link ComboNet} 在网络层**逐项**共享：勾上的共用一份模块 / 并到一张电网，
- *       没勾的各自留着。这样"共用液体但不共用物品"、"各接各的电"这类组合才成立。</li>
+ *   <li><b>有任意一项没勾</b>：不再合成一台大机器，改由 {@link ComboNet} **逐项**共享：
+ *       勾上的共用一份模块 / 并到一张电网，没勾的**每台各留各的**（连本地组合体内部也不并）。
+ *       这样"共用液体但不共用物品"、"各接各的电"这类组合才成立。
+ *       （用户报的"关闭物品共享后物品模块还是共享的"就是这条：以前没勾只拆到"本地组合体"
+ *       那一层，组内还是共用一份。）</li>
  * </ul>
  *
  * <p>配置存在连接件自己身上（{@link Holder}），同一张网络里的连接件保持一致：
@@ -101,13 +103,93 @@ public final class ComboShare {
         memberMask.put(pos, mask & ALL);
     }
 
+    // ==================== 组合体自己的配置 ====================
+    //
+    // 连接件（节点/连接器）能把配置存在自己身上（Holder）。组合方块是"替换出来"的，
+    // 没有统一基类可以加字段，所以组合体这份配置按 **pos** 存在这里（读档由
+    // ComboShareState 那个自定义存档块写回）。语义和连接件完全一样：
+    // 点任意一个组合体/连接件改的都是**同一张网络**的配置（resolveShareMask 统一）。
+
+    /** 组合体 pos -> 共享配置（写存档时只写非默认的那些，见 {@link #bodyEntries()}）。 */
+    private static final IntIntMap bodyMask = new IntIntMap();
+    /** 组合体 pos -> 最后一次配置的序号（同 resolveShareMask 的"后改的说了算"）。 */
+    private static final IntIntMap bodyStamp = new IntIntMap();
+
+    public static boolean hasBodyMask(Building b) {
+        return b != null && bodyMask.containsKey(b.pos());
+    }
+
+    public static int bodyMaskOf(Building b) {
+        return b == null ? ALL : bodyMask.get(b.pos(), ALL);
+    }
+
+    static int bodyStampOf(Building b) {
+        return b == null ? Integer.MIN_VALUE : bodyStamp.get(b.pos(), Integer.MIN_VALUE);
+    }
+
+    static void setBodyMask(int pos, int mask, int stamp) {
+        bodyMask.put(pos, mask & ALL);
+        bodyStamp.put(pos, stamp);
+    }
+
+    /** 新世界/读档前清空（旧的 pos -> 配置不能带到新图里）。 */
+    public static void clearBodyMasks() {
+        bodyMask.clear();
+        bodyStamp.clear();
+    }
+
+    /** 读档用：把存档里的组合体配置装回来（stamp 取当前序号，天然"后写"）。 */
+    public static void loadBodyMask(int pos, int mask) {
+        bodyMask.put(pos, mask & ALL);
+        bodyStamp.put(pos, nextStamp());
+    }
+
+    /** 存档用：所有**非默认**的组合体配置（默认全共享不写，存档不会因为组合体多而变大）。 */
+    public static Seq<int[]> bodyEntries() {
+        Seq<int[]> out = new Seq<>();
+        for (IntIntMap.Entry e : bodyMask)
+            if ((e.value & ALL) != ALL) out.add(new int[] { e.key, e.value & ALL });
+        return out;
+    }
+
+    /**
+     * 丢掉"这一格已经没有组合建筑了"的残留配置。
+     *
+     * <p>组合体这份配置是按 pos 存的，方块被拆掉之后没人来删它 —— 不清理的话，
+     * 同一格重新盖一台（甚至是**别的**方块）会默默继承上一台那份配置
+     * （"拆了重建，怎么还是各接各的电"）。ComboNet 每帧叫一次，只要表是空的就几乎零成本。
+     */
+    public static void pruneBodyMasks() {
+        if (bodyMask.size == 0) return;
+        Seq<Integer> dead = null;
+        try {
+            for (IntIntMap.Entry e : bodyMask) {
+                Building b = mindustry.Vars.world == null ? null : mindustry.Vars.world.build(e.key);
+                if (b == null || b.block == null || !combine.util.ComboReflect.isComboBuild(b)) {
+                    if (dead == null) dead = new Seq<>();
+                    dead.add(e.key);
+                }
+            }
+        } catch (Throwable ignored) {
+            return;
+        }
+        if (dead == null) return;
+        for (int i = 0; i < dead.size; i++) {
+            int pos = dead.get(i);
+            bodyMask.remove(pos);
+            bodyStamp.remove(pos);
+            memberMask.remove(pos);
+        }
+    }
+
     /**
      * 这个建筑所在网络（节点/连接器接起来的一整张网）的共享配置。
-     * 连接件读自己存的那份（已由 {@link #set} 统一），成员读网络索引。
+     * 连接件读自己存的那份，组合体读它自己那份，其余成员读网络索引（都已由 {@link #set} 统一）。
      */
     public static int maskOf(Building b) {
         if (b == null) return ALL;
         if (b instanceof Holder h) return h.shareMask() & ALL;
+        if (bodyMask.containsKey(b.pos())) return bodyMask.get(b.pos()) & ALL;
         return memberMask.get(b.pos(), ALL);
     }
 
@@ -144,31 +226,37 @@ public final class ComboShare {
     }
 
     /**
-     * 设置整张网络的共享配置：操作的那个连接件 + 同网络的其它连接件 + 网络成员索引一起改，
+     * 设置整张网络的共享配置：操作的那个组合体/连接件 + 同网络的其它成员一起改，
      * 并让 ComboNet 立刻重算（拆池/并池、电网重接、本地组合体分组）。
      */
     public static int set(Building operator, int mask) {
-        if (!(operator instanceof Holder self)) return ALL;
+        if (operator == null) return ALL;
         mask &= ALL;
         int s = nextStamp();
-        self.shareMask(mask);
-        self.shareStamp(s);
-        setMemberMask(operator.pos(), mask);
+        applyMask(operator, mask, s);
         try {
             Seq<Building> linkers = ComboNet.componentLinkers(operator);
-            for (int i = 0; i < linkers.size; i++) {
-                Building l = linkers.get(i);
-                if (l instanceof Holder h) {
-                    h.shareMask(mask);
-                    h.shareStamp(s);
-                    setMemberMask(l.pos(), mask);
-                }
-            }
+            for (int i = 0; i < linkers.size; i++) applyMask(linkers.get(i), mask, s);
             Seq<Building> members = ComboNet.componentMembers(operator);
-            for (int i = 0; i < members.size; i++) setMemberMask(members.get(i).pos(), mask);
+            for (int i = 0; i < members.size; i++) applyMask(members.get(i), mask, s);
         } catch (Throwable ignored) {
         }
         ComboNet.onShareChanged(operator);
         return mask;
+    }
+
+    /**
+     * 把一份配置写到某个建筑身上：连接件写自己的字段，组合体写 pos 表，别的成员只更新索引。
+     * 注意**不要**给非组合建筑（例如节点连线接进来的 mod 制热机）建 bodyMask —— 它们不参与共享配置。
+     */
+    private static void applyMask(Building b, int mask, int stamp) {
+        if (b == null) return;
+        if (b instanceof Holder h) {
+            h.shareMask(mask);
+            h.shareStamp(stamp);
+        } else if (combine.util.ComboReflect.isComboBuild(b)) {
+            setBodyMask(b.pos(), mask, stamp);
+        }
+        setMemberMask(b.pos(), mask);
     }
 }
