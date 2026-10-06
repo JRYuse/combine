@@ -53,7 +53,14 @@ public class FactoryCombiner {
   static long scanFrame = -1000L;
   /** 联机时客户端自己那份建筑拿不到蓝图里的 config，这里按"最近这次框选"补一次。 */
   static final Seq<Pending> pending = new Seq<>();
+  /** 预览虚影刚被"点下去"（{@code SuperCombineFactory.onNewPlan} 置位）：下一帧收掉虚影。 */
+  static boolean ordered = false;
   static final InputProcessor processor = new Processor();
+
+  /** 玩家把预览点下去了（{@code SuperCombineFactory.onNewPlan} 里调）：下一帧收虚影，别再重画暗底。 */
+  static void markOrdered() {
+    ordered = true;
+  }
 
   static class Pending {
     final String config;
@@ -78,6 +85,7 @@ public class FactoryCombiner {
       dragging = false;
       sx = sy = ex = ey = -1;
       pending.clear();
+      ordered = false;
       SuperCombineFactory.clearReplaceAllowed();
     });
     Events.on(mindustry.game.EventType.TileChangeEvent.class, e -> {
@@ -354,24 +362,75 @@ public class FactoryCombiner {
 
   // ==================== 联机：本机补配置 ====================
 
+  /** 这次预览的虚影还在不在（{@code selectPlans} 里还有没有本方块的蓝图计划）。 */
+  static boolean previewArmed() {
+    try {
+      if (control == null || control.input == null)
+        return false;
+      for (var plan : control.input.selectPlans)
+        if (plan != null && plan.block instanceof SuperCombineFactory)
+          return true;
+    } catch (Throwable ignored) {
+    }
+    return false;
+  }
+
+  /**
+   * 【落地即收工】预览结束：虚影计划 + 本机补配置队列 + "可顶名单"一起作废。
+   *
+   * <p>用户报的"放下去先盖一层暗的滤镜、过一会儿才恢复正常亮度"，暗的是**虚影**：本方块自己的
+   * {@code drawGhost} 会画一层 0.45 的黑底（预览时它本来就该在），而预览结束后原版还会拿这同一份
+   * plan 重画 —— 一是蓝图虚影（{@code control.input.selectPlans}，见 {@code DesktopInput.drawBottom}）
+   * 落地后不会自己消失、继续跟着鼠标；二是排队的建造计划（{@code InputHandler.drawBuildPlans}）
+   * 在开建前也按虚影画一遍。刚放下的工厂被这块黑底压住，直到虚影收掉才"亮回来"。
+   * 合体本来就是一次性的（原料已经在这次落地里被吃掉），落地就该立刻收工。
+   */
+  static void endPreview() {
+    pending.clear();
+    SuperCombineFactory.clearReplaceAllowed();
+    dropHoverGhost();
+  }
+
+  /** 收掉"还举在手上"的虚影计划：只动 {@code selectPlans}，不动补配置队列 / 可顶名单。 */
+  static void dropHoverGhost() {
+    try {
+      var in = control == null ? null : control.input;
+      if (in != null && !in.selectPlans.isEmpty()) {
+        boolean ours = false;
+        for (var plan : in.selectPlans)
+          if (plan != null && plan.block instanceof SuperCombineFactory) {
+            ours = true;
+            break;
+          }
+        // 只在虚影确实是本方块时清：selectPlans 是和原版蓝图共用的，别人的蓝图计划不动
+        if (ours) {
+          in.selectPlans.clear();
+          in.lastSchematic = null;
+        }
+      }
+    } catch (Throwable ignored) {
+    }
+  }
+
   static void onTileChanged(Tile tile) {
-    if (!selecting && pending.isEmpty())
-      return;
     if (tile == null || tile.build == null || player == null)
       return;
     if (!(tile.build instanceof SuperCombineFactory.SuperCombineFactoryBuild b))
       return;
-    if (b.layout != null && !b.layout.isEmpty())
-      return;
-    if (pending.isEmpty())
-      return;
-    Pending best = pending.first();
-    try {
-      b.configure(best.config);
-      pending.remove(best);
-    } catch (Throwable t) {
-      Log.err("[combine] 补组合工厂配置失败", t);
+    if (pending.isEmpty() && !previewArmed())
+      return; // 不是我们这次预览落的（别人放的 / 蓝图复制的）就不插手
+    // 联机时客户端自己那份建筑拿不到蓝图里的 config，这里按"最近这次框选"补一次
+    if ((b.layout == null || b.layout.isEmpty()) && !pending.isEmpty()) {
+      Pending best = pending.first();
+      try {
+        b.configure(best.config);
+      } catch (Throwable t) {
+        Log.err("[combine] 补组合工厂配置失败", t);
+      }
     }
+    if (!pending.isEmpty())
+      pending.remove(0);
+    endPreview();
   }
 
   static void flushPending() {
@@ -386,7 +445,9 @@ public class FactoryCombiner {
         pending.remove(i); // 30 秒还没落地就当没放成
     }
     if (pending.isEmpty())
-      SuperCombineFactory.clearReplaceAllowed();
+      // 超时没收工：这次预览已经废了（"可顶名单"一清，虚影压住原料时必然发红），
+      // 连虚影一起收掉，别留一个红色虚影跟着鼠标、落地了还压着新建筑
+      endPreview();
   }
 
   // ==================== 每帧 ====================
@@ -403,6 +464,13 @@ public class FactoryCombiner {
       return;
     }
     flushPending();
+    // 【落地即收工·第一步】玩家一点下去，计划就进了建造队列（见 SuperCombineFactory.onNewPlan）：
+    // 立刻收掉跟着手的虚影，别让它在放置后继续把暗底画在新工厂上。
+    // 补配置队列(pending)和"可顶名单"要留到真正落地，见 endPreview()/onTileChanged()。
+    if (ordered) {
+      ordered = false;
+      dropHoverGhost();
+    }
     if (!selecting)
       return;
     // 框选期间玩家在建造菜单里点了别的方块 → 退出框选，把操作权交回菜单

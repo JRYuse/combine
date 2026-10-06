@@ -254,6 +254,19 @@ public class FactoryCombineTest implements arc.ApplicationListener {
       callStatic(clsCF, "allowReplaceOver", new Class<?>[] { arc.struct.IntSet.class }, framed);
       check("允许在 2x2 工厂原位置上放 2x2 组合工厂",
           mindustry.world.Build.validPlace(cf, team, 60, 60, 0));
+      // 【用户报的"旁边有建筑就放不下去"】预览 footprint 里夹着传送带/墙这类杂项建筑时也要能放：
+      // 它们既不是原料、也不是要保护的对象，落地时随本台一起被顶掉（见 canReplace 的放行口径）。
+      Building belt = place(Vars.content.block("conveyor"), 62, 60, team);
+      Building wall = place(Vars.content.block("copper-wall"), 62, 61, team);
+      run(3);
+      check("传送带/墙已摆好（校验用例本身有效）", belt != null && wall != null);
+      check("预览同时压住被框住的工厂 + 传送带/墙也能放（杂项建筑放行）",
+          mindustry.world.Build.validPlace(cf, team, 61, 60, 0));
+      // "不能顶掉没框住的工厂"这条保护不能因为放行杂项建筑而失效（multi-press 不在全局计数里）
+      Building stray = place(Vars.content.block("multi-press"), 68, 68, team);
+      run(3);
+      check("没框住的工厂仍然挡住预览（不能顺手吃掉）",
+          stray != null && !mindustry.world.Build.validPlace(cf, team, 68, 68, 0));
 
       // ---------- 3) 落地：吃掉原料 + 建格子 + 库存跟着过来 ----------
       run(3);

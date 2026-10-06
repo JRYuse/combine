@@ -6,11 +6,11 @@ import mindustry.ui.dialogs.*; import mindustry.world.*; import mindustry.world.
 /**
  * 验证驱动：截图 + 开设置列表 + 打开 CoopPanel 并改池子看是否实时刷新。
  *
- * 截图输出目录：-Ddrv.out=<目录>（默认 ~/sd/shots）。文件按**跨次运行的连续序号**命名：
+ * 截图输出目录：-Ddrv.out=<目录>（默认"桌面/shots"）。文件按**跨次运行的连续序号**命名：
  *   001_main.png、002_settings_menu.png …  这样多次跑不会互相覆盖，也能看出先后顺序。
  */
 public class Driver extends Mod{
-    static String outDir = System.getProperty("drv.out", System.getProperty("user.home") + "/sd/shots");
+    static String outDir = System.getProperty("drv.out", System.getProperty("user.home") + "/Desktop/shots");
     static ClassLoader ml;
     static Building b1, b2, c1;
 
@@ -220,6 +220,19 @@ public class Driver extends Mod{
                 // 落地 → 喂料 → 截图 → 面板 → 退出 改成上一步做完再排下一步（见下面各方法尾部）。
                 Timer.schedule(Driver::factoryMergeDirect, 19f);
                 Timer.schedule(() -> { Log.info("[drv] factory 超时结束"); Core.app.exit(); }, 120f);
+            }else if(mode.equals("veil")){
+                // 用户报"合体工厂放下去后 2 秒内盖一层暗滤镜"：走**真·左键落地**（原版 flushPlans
+                // 排队、驱动不手动清 selectPlans），落地后隔约 1s 再拍 —— 暗底来自模组自己 drawGhost
+                // 画的黑板；修复后排队计划不再画黑板，这一帧应当和"建造完"那张一样亮。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupFactoryScene, 6f);
+                Timer.schedule(Driver::hideDialogs, 9f);
+                Timer.schedule(Driver::factoryBoxSelect, 11f);
+                Timer.schedule(Driver::factoryAim, 13f);
+                // 【串起来，别用独立定时器】软渲染一帧 200~400ms，几个定时器会挤在同一帧乱序触发
+                Timer.schedule(Driver::veilClick, 14f);
+                Timer.schedule(() -> { Log.info("[drv] veil 超时结束"); Core.app.exit(); }, 120f);
             }else if(mode.equals("mergebtn")){
                 // 用户要求 2026-09-28：把"框选合体"按钮改成**悬浮式**（手机/桌面同一个、可拖动），
                 // 并且不要再改 input。这里搭场景 + 跑检查（悬浮/可点/不挡/拖动/不改 input）+ 截图。
@@ -3379,6 +3392,64 @@ public class Driver extends Mod{
             Timer.schedule(Driver::factoryFeed, 2f);
         } catch (Throwable t) {
             Log.err("[drv] factoryMergeDirect failed", t);
+        }
+    }
+
+    /**
+     * 真·左键落地：调原版 {@code flushPlans}（会走 SuperCombineFactory.onNewPlan），
+     * **不**手动清 selectPlans —— 复现"放下后还残留虚影"的场景。之后隔 ~1s / ~3s 各拍一张，
+     * 比较新工厂有没有被暗底压住；同时打印 selectPlans 有没有被模组自己收掉。
+     */
+    static void veilClick() {
+        try {
+            ensurePlayerUnit((fcOx + 9) * 8f, (fcOy + 7) * 8f);
+            var plans = Vars.control.input.selectPlans;
+            if (plans.isEmpty() || Vars.player == null || Vars.player.unit() == null) {
+                Log.err("[drv] veil: 虚影或玩家单位缺失，跳过（plans=@）", plans.size);
+                return;
+            }
+            var plan = plans.first();
+            Block cf = plan.block;
+            int tx = plan.x, ty = plan.y;
+            Log.info("[drv] veil 落地前: selectPlans=@ block=@ @,@ 可放=@", plans.size, cf.name, tx, ty,
+                    mindustry.world.Build.validPlace(cf, Team.sharded, tx, ty, plan.rotation));
+            var m = mindustry.input.InputHandler.class.getDeclaredMethod("flushPlans", Seq.class);
+            m.setAccessible(true);
+            m.invoke(Vars.control.input, plans);
+            // 驱动造的单位不一定会执行建造队列（见 ensurePlayerUnit），照 superturret 的老兜底直接把
+            // 工厂落地 —— 这样"新工厂 + 还残留的排队计划"同框，正是用户报"放置后盖暗滤镜"的场景。
+            mindustry.gen.Call.constructFinish(Vars.world.tile(tx, ty), cf, null, (byte) 0, Team.sharded, plan.config);
+            Log.info("[drv] veil 落地后: selectPlans=@ 单位计划=@ 合体方块=@",
+                    plans.size, Vars.player.unit().plans().size, countMerged());
+            // 故意不 clear selectPlans：让模组自己 dropHoverGhost() 去收（这正是被测行为）
+            Vars.control.input.block = null;
+            Timer.schedule(() -> shot("veil_t0"), 0.4f);
+            Timer.schedule(Driver::veilDiag, 1.2f);
+            Timer.schedule(() -> shot("veil_t1"), 1.6f);
+            Timer.schedule(() -> shot("veil_t2"), 3.2f);
+            Timer.schedule(() -> { Log.info("[drv] veil 模式结束"); Core.app.exit(); }, 4.5f);
+        } catch (Throwable t) {
+            Log.err("[drv] veilClick failed", t);
+        }
+    }
+
+    /**
+     * 落地 ~1.2s 后查：跟手的虚影（selectPlans）必须已经被模组收掉，而且**排队中的建造计划**
+     * 不能出现在 selectPlans 里 —— drawGhost 就是靠这个判据决定要不要画黑板（暗底）。
+     */
+    static void veilDiag() {
+        try {
+            var in = Vars.control.input;
+            var u = Vars.player == null ? null : Vars.player.unit();
+            Object queued = u == null || u.plans().isEmpty() ? null : u.plans().first();
+            boolean queuedHeld = false;
+            for (var p : in.selectPlans)
+                if (p == queued)
+                    queuedHeld = true;
+            Log.info("[drv] veil 诊断: selectPlans=@ 排队计划仍在 selectPlans=@ 单位计划=@ 合体方块=@",
+                    in.selectPlans.size, queuedHeld, u == null ? -1 : u.plans().size, countMerged());
+        } catch (Throwable t) {
+            Log.err("[drv] veilDiag failed", t);
         }
     }
 

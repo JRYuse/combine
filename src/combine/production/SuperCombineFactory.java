@@ -532,6 +532,20 @@ public class SuperCombineFactory extends Block {
     drawGhost(plan, side);
   }
 
+  /** 这份虚影是不是"还举在手上"的预览（就是 {@code input.selectPlans} 里那一个对象）。 */
+  static boolean hoverPlan(mindustry.entities.units.BuildPlan plan) {
+    try {
+      if (control == null || control.input == null)
+        return true; // 判不出来就照旧画（宁可预览多一层暗底，也别把预览弄没了）
+      for (mindustry.entities.units.BuildPlan p : control.input.selectPlans)
+        if (p == plan)
+          return true;
+      return false;
+    } catch (Throwable ignored) {
+      return true;
+    }
+  }
+
   /** 虚影：整块底板 + 每格工厂自己的贴图（缩到 1 格）。 */
   public static void drawGhost(mindustry.entities.units.BuildPlan plan, int side) {
     if (plan == null || plan.block == null)
@@ -541,8 +555,13 @@ public class SuperCombineFactory extends Block {
       // 【别用 plan.drawx()】那是锚点那格的中心；偶数边长时锚点是第一格，直接拿来当底板中心会偏半格。
       float cx = footprintCenter(plan.x, side, tilesize);
       float cy = footprintCenter(plan.y, side, tilesize);
-      Draw.color(0f, 0f, 0f, 0.45f);
-      Fill.crect(cx - s / 2f, cy - s / 2f, s, s);
+      // 【暗底只给"还举在手上"的预览】原版除了预览，还会拿这同一份 plan 重画**已经下令建造**的计划
+      // （排队中的建造计划 / 收工前残留的那份），那几帧的暗底会糊在新放的工厂上 —— 就是用户报的
+      // "放置后两秒内盖一层暗滤镜"。判据：这份 plan 还在 {@code input.selectPlans} 里。
+      if (hoverPlan(plan)) {
+        Draw.color(0f, 0f, 0f, 0.45f);
+        Fill.crect(cx - s / 2f, cy - s / 2f, s, s);
+      }
       Draw.color(Pal.accent, 0.85f);
       Lines.stroke(0.4f);
       Lines.rect(cx - s / 2f + 0.6f, cy - s / 2f + 0.6f, s - 1.2f, s - 1.2f);
@@ -659,10 +678,20 @@ public class SuperCombineFactory extends Block {
    * 而被顶掉的工厂可能是 2x2/3x3 —— 不放开的话连 2x2 的硅冶炼厂都顶不掉（实测 validPlace=false，
    * 表现就是"框选完点下去什么也没发生"）。这里只按**方块类型**放行工厂；
    * "这一格到底是不是这次框选的原料"由逐格判据 {@link #canPlaceOn} 兜住。
+   *
+   * <p>【用户报的"旁边有建筑就放不下去"】原版这条判据还要求"同组 / 同大小"：本台是隐藏的虚拟方块
+   * （{@code group == none}），压在**传送带 / 管道 / 容器 / 墙 / 路由器**这类杂项建筑上时
+   * {@code canReplace} 一律 false；而预览 footprint 里只要有一格是这种建筑，
+   * 整个 {@code Build.validPlaceIgnoreUnits} 就判非法（表现：预览发红、点下去什么也没发生）。
+   * 这些格子上的东西本来就要被本台顶掉（它们既不是原料、也不是要保护的对象），
+   * 所以照原版"可替换"口径放行；**核心等 replaceable=false 的方块**仍按原版拦住，
+   * "不能顶掉没框住的工厂"也仍然只由 {@link #canPlaceOn} 负责。
    */
   @Override
   public boolean canReplace(Block other) {
-    return super.canReplace(other) || isFactoryBlock(other);
+    if (other == null)
+      return false;
+    return super.canReplace(other) || isFactoryBlock(other) || (other.replaceable && !other.privileged);
   }
 
   /** 本次「框选合体」里允许被顶掉的格子（pos）；只在预览生成到落地之间有效。 */
@@ -698,6 +727,16 @@ public class SuperCombineFactory extends Block {
     if (!replaceAllowedPos.isEmpty())
       rect.grow(6f * 8f * 2f);
     return rect;
+  }
+
+  /**
+   * 玩家把预览"点下去"了（原版蓝图放置会把计划塞进建造队列，见 {@code InputHandler.flushPlans}）：
+   * 让框选流程立刻收掉跟着手的虚影。不收的话虚影落地后还会继续重画，那层暗底就糊在新工厂上
+   * （用户报的"放置后两秒内盖一层暗滤镜"）。
+   */
+  @Override
+  public void onNewPlan(mindustry.entities.units.BuildPlan plan) {
+    FactoryCombiner.markOrdered();
   }
 
   // ==================== 电网：把各格用电量加总上报 ====================

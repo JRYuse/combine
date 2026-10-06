@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 交付模组：编译（**必须兼容安卓**）→ 检查调试残留 → 放到 ~/sd
+# 交付模组：编译（**必须兼容安卓**）→ 检查调试残留 → 放到桌面
+# （Linux/Termux 版；本机是 Windows → 用 verify/deliver.ps1，参数一样）
 #
 #   verify/deliver.sh
 #   OUT_DIR=/别的目录 verify/deliver.sh
@@ -9,7 +10,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT_DIR="${OUT_DIR:-$HOME/sd}"
+OUT_DIR="${OUT_DIR:-$HOME/Desktop}"
 JAR="$ROOT/build/libs/combine.jar"
 
 cd "$ROOT"

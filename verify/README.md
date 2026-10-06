@@ -74,7 +74,12 @@ verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.MultiBuildPerfTest -Dper
 ## 3. 真客户端截图（UI 改动必跑）
 
 `factory` 模式：摆三台工厂 → 合成一台 1x1 组合工厂 → 截图（世界里那个方块自己画出来的样子）
-→ 再弹出"点方块"的那张面板截图（构成列表 + 解体按钮）。截图在 `~/sd/shots/`。
+→ 再弹出"点方块"的那张面板截图（构成列表 + 解体按钮）。截图在**桌面** `shots/`。
+
+`veil` 模式：走**原版左键落地**（`flushPlans` → `SuperCombineFactory.onNewPlan`）把工厂放下去，
+落地后 +0.4s / +1.6s / +3.2s 各拍一张，看新工厂有没有被"残留虚影的黑底"压暗（用户报的
+"放置后两秒内盖一层暗滤镜、过两秒才亮回来"）。日志里 `排队计划仍在 selectPlans=false` 且
+`selectPlans=0` = `drawGhost` 不会再画黑板；截图也在**桌面** `shots/`。
 
 ### arc 界面输入的兜底（`ComboInputGuard`）
 
@@ -95,7 +100,7 @@ verify/run-client.sh vanilla /tmp/mp_coop/data coop    # CoopPanel 实时刷新
 verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑一遍
 ```
 
-截图落在 `~/sd/shots/`（脚本会自动建目录；文件名带跨次运行的连续序号 001_、002_…，多次跑不会互相覆盖）：
+截图落在**桌面** `shots/`（脚本会自动建目录；文件名带跨次运行的连续序号 001_、002_…，多次跑不会互相覆盖）：
 
 | 文件 | 内容 |
 |---|---|
@@ -105,7 +110,7 @@ verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑�
 
 原理：`Xvfb` 提供离屏 X，`SDL_VIDEODRIVER=offscreen` 让 SDL 走 EGL，Mesa 软渲染（llvmpipe）出画面；
 截图由 `verify/client/Driver.java`（一个驱动 mod）用 `ScreenUtils.saveScreenshot` 自己抓。
-驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn|bp|wall|rebuild|rep|pwr|tech|tech2|technode|mega|pool|userpanel`、`-Ddrv.out=<目录>`
+驱动 mod 的参数：`-Ddrv.mode=list|coop|factory|veil|gen|status|conn|bp|wall|rebuild|rep|pwr|tech|tech2|technode|mega|pool|userpanel`、`-Ddrv.out=<目录>`
 （`tech` = 主菜单直接开科技树；`tech2` = 进图后再开、并把每棵根树的树页都切一遍截图；`technode` = 把镜头居中到组合连接器/液体卸载器节点再截图，用来核对节点在不在两棵树上、图标对不对）
 （`gen` = 核反应堆 + 一台容量 10 万的发电机，看燃料条/发电效率；`status` = 方块状态菱形 + 容器面板；
 `conn` = 两台组合工厂 + 一串组合连接器，看连接器贴图/连线与信息面板；
@@ -151,7 +156,7 @@ curl -L -o /tmp/mind160.jar   https://github.com/Anuken/Mindustry/releases/downl
 ## 5. 交付
 
 ```bash
-verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 jar 放到 ~/sd/combine.jar
+verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 jar 放到 桌面/combine.jar
 ```
 带版本号的文件名由使用者自己改，脚本不生成。
 
@@ -166,7 +171,7 @@ verify/run-mp.sh official /tmp/mp_coop/data 200 20 80
 ```
 
 三个进程：官方 headless **专用服务器**（`~/sd/server-release.jar`，用 FIFO 喂 `host` 命令）、
-`verify/lagnet.py`（socket 代理，加延迟/抖动/UDP 丢包）、**真客户端**（Xvfb + 软渲染，边跑边截图到 `~/sd/shots/`）。
+`verify/lagnet.py`（socket 代理，加延迟/抖动/UDP 丢包）、**真客户端**（Xvfb + 软渲染，边跑边截图到**桌面** `shots/`）。
 服务端按剧本 造单位 → 融合成组合巨兽 → 解体 → 再融合，客户端每秒记录自己看到的世界；
 脚本最后比对"服务端每个**阶段边界**出现过的状态，客户端是不是都看到过"（漏了 = 没同步 / 幽灵 / 看不见），
 截图路径和线程数峰值都会打印出来。单次约 4~5 分钟（客户端软渲染加载就要 1.5~2 分钟）。
