@@ -734,15 +734,16 @@ public class CombinedGenerator extends ConsumeGenerator {
               // 组外也在用的模块不能"全额并入"（并入不清空源模块 = 凭空多一份）
               && !sharedItemPools.contains(member.items)) {
             processedItems.add(member.items);
-            for (Item item : ((CombinedGenerator) member.block).cachedItems) {
+            // 【全额并入，且**遍历所有物品**】以前只搬 cachedItems（该方块声明过的输入/输出）
+            // 还按容量夹：存档里"同一口池子只写一份真数据"之后，组长手里可能是空模块，
+            // 池子里那些不在 cachedItems 里的物品（历史遗留/别处倒进来的）就永远搬不过去，
+            // 紧接着 member.items = leader.items 把那份真数据整个丢掉 ——
+            // 用户报的"所有存档读写后组合建筑物品都会丢失"。并完就是这个整组的池子，
+            // 组容量本来就是成员容量之和，全额并入不会超容，截断只会丢物品。
+            for (Item item : content.items()) {
               int amt = member.items.get(item);
-              if (amt > 0) {
-                // FIX: 每种物品独立上限，余量按该类型剩余空间计算
-                int canAccept = Math.max(0, totalItemCap - leader.items.get(item));
-                int transfer = Math.min(amt, canAccept);
-                if (transfer > 0)
-                  leader.items.add(item, transfer);
-              }
+              if (amt > 0)
+                leader.items.add(item, amt);
             }
           }
         }
@@ -761,14 +762,10 @@ public class CombinedGenerator extends ConsumeGenerator {
               && !processedLiquids.contains(member.liquids)
               && !sharedLiquidPools.contains(member.liquids)) {
             processedLiquids.add(member.liquids);
-            for (Liquid liquid : cachedLiquids) {
+            for (Liquid liquid : content.liquids()) {
               float amt = member.liquids.get(liquid);
-              if (amt > 0.001f) {
-                float canAccept = Math.max(0f, totalLiquidCap - leader.liquids.get(liquid));
-                float transfer = Math.min(amt, canAccept);
-                if (transfer > 0.001f)
-                  leader.liquids.add(liquid, transfer);
-              }
+              if (amt > 0.001f)
+                leader.liquids.add(liquid, amt);
             }
           }
         }

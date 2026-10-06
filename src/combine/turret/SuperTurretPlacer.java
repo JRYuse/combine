@@ -69,6 +69,9 @@ public class SuperTurretPlacer {
   static final InputProcessor processor = new Processor();
   /** HUD 上的悬浮入口按钮（用户要求：手机/桌面都用悬浮式按钮触发框选，别再改 input）。 */
   static @Nullable Element button;
+  /** 点开后出现的两个子按钮：炮台合体 + 工厂合体。 */
+  static @Nullable Element turretBtn, factoryBtn;
+  static boolean subButtonsShown;
   /** 悬浮按钮边长（像素，乘 Scl）。 */
   static final float BUTTON_SIDE = 48f;
   /** 默认落点距屏幕右边缘的留白（像素，乘 Scl）。 */
@@ -112,7 +115,9 @@ public class SuperTurretPlacer {
       sx = sy = ex = ey = -1;
       pending.clear();
       button = null; // 场景重建了，下一帧补挂
+      hideSubButtons();
       buttonRetry = 0;
+      SuperTurret.clearReplaceAllowed();
     });
     Events.on(mindustry.game.EventType.TileChangeEvent.class, e -> {
       try {
@@ -126,16 +131,59 @@ public class SuperTurretPlacer {
 
   /** 快捷键/按钮入口：再按一次就取消。 */
   public static void toggle() {
+    onMainTap();
+  }
+
+  /**
+   * 主按钮点按（非拖动）。
+   *
+   * <p>【用户要求 2026-10-04】点浮标 = 在它旁边展开两个子按钮（炮台合体 / 工厂合体），
+   * 浮标在屏幕左半边就把子按钮摆到右边、在右半边就摆到左边（见 {@link #positionSubButtons}）；
+   * 再点一次收起。框选进行中时点它 = 取消框选（手机没有右键/Esc，这是触摸端的退出出口）。
+   */
+  public static void onMainTap() {
     if (selecting) {
       cancel();
-    } else {
-      start();
+      hideSubButtons();
+      return;
     }
+    if (combine.production.FactoryCombiner.selecting()) {
+      combine.production.FactoryCombiner.cancel();
+      hideSubButtons();
+      return;
+    }
+    toggleSubButtons();
+  }
+
+  /** 主按钮点按（非拖动）：显示/隐藏两个子按钮。 */
+  public static void toggleSubButtons() {
+    if (subButtonsShown) {
+      hideSubButtons();
+    } else {
+      showSubButtons();
+    }
+  }
+
+  /** 炮台合体子按钮被点：启动炮台框选。 */
+  static void onTurretBtn() {
+    hideSubButtons();
+    start();
+  }
+
+  /** 工厂合体子按钮被点：启动工厂框选。 */
+  static void onFactoryBtn() {
+    hideSubButtons();
+    combine.production.FactoryCombiner.start();
   }
 
   public static void start() {
     if (headless || state == null || !state.isGame() || player == null || !player.isBuilder())
       return;
+    // 两个框选流程互斥：已经开始框工厂了就别同时框炮台（两个处理器会互相抢事件）
+    try {
+      combine.production.FactoryCombiner.cancel();
+    } catch (Throwable ignored) {
+    }
     selecting = true;
     dragging = false;
     sx = sy = ex = ey = -1;
@@ -170,12 +218,19 @@ public class SuperTurretPlacer {
   static void finish() {
     int x1 = Math.min(sx, ex), y1 = Math.min(sy, ey), x2 = Math.max(sx, ex), y2 = Math.max(sy, ey);
     Seq<Building> found = scan(player.team(), x1, y1, x2, y2);
-    if (found.size < 2) {
-      ui.showInfoFade("[scarlet]这个框里只有 @ 台炮台（至少要 2 台）", found.size);
+    // 【加炮台】框里可以有现成的合体炮台：它的每一格的炮台都算数（等于把那台拆开重拼，
+    // 也就是"往合体炮台里加新炮台"），所以数的是**格子数**不是建筑数。
+    int cellCount = cellCount(found);
+    if (cellCount < 2) {
+      ui.showInfoFade("[scarlet]这个框里只有 @ 台炮台（至少要 2 台）", cellCount);
       return;
     }
+    int absorbed = 0;
+    for (Building b : found)
+      if (b instanceof SuperTurret.SuperTurretBuild)
+        absorbed++;
 
-    int side = SuperTurret.sideFor(found.size);
+    int side = SuperTurret.sideFor(cellCount);
     SuperTurret block = SuperTurret.blockForSide(side);
     if (block == null) {
       ui.showInfoFade("[scarlet]" + arc.util.Strings.format("超级组合炮台（@x@）还没装配好", side, side));
@@ -198,40 +253,109 @@ public class SuperTurretPlacer {
     pending.add(new Pending(layout));
     if (pending.size > 8)
       pending.remove(0);
+    // 【只许顶被框住的炮台】把这次框选里那些炮台占的格子登记给放置判据
+    //（SuperTurret.canPlaceOn 逐格检查），于是预览盖在它们上面是绿的、盖在**没框住**的炮台上是红的。
+    SuperTurret.allowReplaceOver(framedTiles(found));
     selecting = false;
     dragging = false;
-    ui.showInfoFade("[accent]" + arc.util.Strings.format(
-        "@ 台炮台 → @x@ 超级组合炮台[]：左键确定位置，右键/Q/Esc 取消", found.size, side, side));
+    ui.showInfoFade(absorbed > 0
+        ? arc.util.Strings.format("[accent]@ 格炮台（含 @ 台现成合体）→ @x@ 超级组合炮台[]："
+            + "左键确定位置，右键/Q/Esc 取消", cellCount, absorbed, side, side)
+        : arc.util.Strings.format(
+            "@ 台炮台 → @x@ 超级组合炮台[]：左键确定位置，右键/Q/Esc 取消", cellCount, side, side));
   }
 
-  /** 把选中的炮台按行优先铺进格子里（多余格子留空）。 */
+  /** 选中的这些建筑一共能出多少格炮台（合体炮台按它的格子数算）。 */
+  public static int cellCount(Seq<Building> found) {
+    int n = 0;
+    for (Building b : found) {
+      if (b instanceof SuperTurret.SuperTurretBuild st)
+        n += st.cellBlocks == null ? 0 : st.cellBlocks.length;
+      else if (b != null && b.block != null && SuperTurret.cellBlock(b.block) != null)
+        n++;
+    }
+    return n;
+  }
+
+  /** 这次框选里那些炮台占的**所有格子**（pos）：只有这些格子允许被超级炮台顶掉。 */
+  public static arc.struct.IntSet framedTiles(Seq<Building> found) {
+    arc.struct.IntSet out = new arc.struct.IntSet();
+    for (Building b : found) {
+      if (b == null || b.tile == null || b.block == null)
+        continue;
+      int size = Math.max(b.block.size, 1);
+      for (int i = 0; i < size; i++)
+        for (int j = 0; j < size; j++) {
+          Tile t = world.tile(SuperTurret.cellTile(b.tile.x, size, i),
+              SuperTurret.cellTile(b.tile.y, size, j));
+          if (t != null)
+            out.add(t.pos());
+        }
+    }
+    return out;
+  }
+
+  /** 把选中的炮台按行优先铺进格子里（多余格子留空）；合体炮台直接把它每一格的炮台铺开。 */
   public static String layoutOf(Seq<Building> found, int cellCount) {
     StringBuilder sb = new StringBuilder();
-    for (int i = 0; i < cellCount; i++) {
-      if (i > 0)
-        sb.append(';');
-      if (i >= found.size)
-        continue;
-      Building b = found.get(i);
+    int written = 0;
+    for (Building b : found) {
       if (b == null || b.block == null)
         continue;
+      if (b instanceof SuperTurret.SuperTurretBuild st) {
+        // 现成的合体炮台：把它每一格的炮台按原朝向铺开
+        for (int i = 0; i < st.cellBlocks.length; i++) {
+          Block cb = st.cellBlocks[i];
+          if (cb == null)
+            continue;
+          if (written > 0)
+            sb.append(';');
+          written++;
+          sb.append(SuperTurret.encodeCell(cb, i < st.cellRot.length ? st.cellRot[i] : 90f));
+        }
+        continue;
+      }
       Block cb = SuperTurret.cellBlock(b.block);
       if (cb == null)
         continue;
       // 点防炮的 build 是 BaseTurret.BaseTurretBuild（不是 TurretBuild），rotation 字段同样有
       float rot = b instanceof mindustry.world.blocks.defense.turrets.BaseTurret.BaseTurretBuild tb
           ? tb.rotation : 90f;
+      if (written > 0)
+        sb.append(';');
+      written++;
       sb.append(SuperTurret.encodeCell(cb, rot));
+    }
+    // 补齐到 cellCount 个槽位（多余格子留空）
+    for (int i = written; i < cellCount; i++) {
+      sb.append(';');
     }
     return sb.toString();
   }
 
-  /** 被选中的炮台坐标（"x,y;x,y"）：超级炮台放下后要把它们拆掉。 */
+  /**
+   * 被选中的炮台坐标（"x,y;x,y"）：超级炮台放下后要把它们拆掉。
+   *
+   * <p>现成的合体炮台用 {@code !x,y} 标记 —— 落地时由 {@code consumeSources} 把整台并进来
+   * （连它的库存一起），而不是当成"一格炮台"处理。
+   */
   public static String sourcesOf(Seq<Building> found) {
     StringBuilder sb = new StringBuilder();
     for (Building b : found) {
       if (b == null || b.tile == null)
         continue;
+      if (b instanceof SuperTurret.SuperTurretBuild st) {
+        // 现成的合体炮台：它贡献几格就写几项（每一项都是同一台，落地时第一次就把整台并进来，
+        // 后面的重复项看到那台已经没了会自动跳过）。这样 sources 和 layout 的格子一一对齐。
+        for (int i = 0; i < st.cellBlocks.length; i++) {
+          if (st.cellBlocks[i] == null)
+            continue;
+          if (sb.length() > 0)
+            sb.append(';');
+          sb.append('!').append(b.tile.x).append(',').append(b.tile.y);
+        }
+        continue;
+      }
       if (sb.length() > 0)
         sb.append(';');
       sb.append(b.tile.x).append(',').append(b.tile.y);
@@ -262,7 +386,16 @@ public class SuperTurretPlacer {
         // （用户要求："一个 4*4 的炮台合体后只占一格"）。
         if (b.tile != null && b.tile != t)
           continue;
-        // 框选范围 = Turret（含组合炮塔）+ 点防炮（PointDefenseTurret，见 SuperTurret.cellCapable）
+        // 【加炮台】现成的合体炮台也认：把它框进去 = 连它里面那些炮台一起重新拼
+        //（想往一台合体里加炮台，就把那台 + 要加的炮台一起框上，再点一下放下去）。
+        if (b instanceof SuperTurret.SuperTurretBuild) {
+          out.add(b);
+          if (out.size >= max)
+            return out;
+          continue;
+        }
+        // 框选范围 = Turret（含组合炮塔）+ 点防炮（PointDefenseTurret）+ 牵引光束炮（TractorBeamTurret），
+        // 见 SuperTurret.cellCapable
         if (SuperTurret.cellBlock(b.block) == null)
           continue;
         out.add(b);
@@ -303,14 +436,18 @@ public class SuperTurretPlacer {
   }
 
   static void flushPending() {
-    if (pending.isEmpty())
+    if (pending.isEmpty()) {
+      SuperTurret.clearReplaceAllowed(); // 预览已落地/超时 → "可顶格子"名单作废
       return;
+    }
     for (int i = pending.size - 1; i >= 0; i--) {
       Pending p = pending.get(i);
       p.frames += Time.delta;
       if (p.frames > 60f * 30f)
         pending.remove(i); // 30 秒还没落地就当没放成
     }
+    if (pending.isEmpty())
+      SuperTurret.clearReplaceAllowed();
   }
 
   // ==================== 每帧 ====================
@@ -363,8 +500,9 @@ public class SuperTurretPlacer {
   }
 
   /**
-   * 悬浮在屏幕上的入口按钮（手机/桌面同一个）：一个炮台图标浮标，点它 = 进入框选模式
-   * （再点 = 取消，右键 / Esc 也能取消），按住还能把它拖到任意位置（位置记进本机设置）。
+   * 悬浮在屏幕上的入口按钮（手机/桌面同一个）：一个图标浮标，**点它 = 在旁边展开两个子按钮**
+   * （炮台合体 / 工厂合体，见 {@link #showSubButtons}），再点一次收起；框选进行中时点它 = 取消。
+   * 按住还能把它拖到任意位置（位置记进本机设置），子按钮会跟着换边。
    *
    * <p>【用户要求 2026-09-28】不要再改 input / {@code buildPlacementUI}，入口就用这个浮标：
    * 直接把自己挂到 {@code Core.scene.root}（在 hudGroup 之上），不依赖原版建造菜单的内部结构，
@@ -379,6 +517,7 @@ public class SuperTurretPlacer {
     if (Core.scene == null)
       return;
     if (!show) {
+      hideSubButtons(); // 子按钮跟着主按钮一起收掉
       // 只在游戏里出现：回到主菜单就把浮标收掉，别糊在菜单上挡点击
       if (button != null) {
         try {
@@ -415,7 +554,7 @@ public class SuperTurretPlacer {
       if (ui == null || Core.scene.root == null)
         return;
       float size = Scl.scl(BUTTON_SIDE);
-      ImageButton b = new ImageButton(mindustry.gen.Icon.turret, mindustry.ui.Styles.clearTogglei);
+      ImageButton b = new ImageButton(mindustry.gen.Icon.add, mindustry.ui.Styles.clearTogglei);
       b.name = "combineSuperTurretButton";
       b.setSize(size, size);
       b.resizeImage(size * 0.6f);
@@ -425,7 +564,7 @@ public class SuperTurretPlacer {
       // 点按 = 切换框选；拖动 = 挪浮标（超过阈值才算拖动，见 DragTap）
       b.addListener(new DragTap());
       b.addListener(Tooltip.Tooltips.getInstance().create(
-          "超级组合炮台：点一下框选炮台合体（再点一下 / 右键 / Esc 取消），按住可拖动", false));
+          "组合工厂：点一下展开炮台/工厂合体，按住可拖动", false));
       Core.scene.root.addChild(b);
       button = b;
       applyButtonPos(b);
@@ -474,6 +613,64 @@ public class SuperTurretPlacer {
     }
   }
 
+
+  // ==================== 子按钮 ====================
+
+  static void showSubButtons() {
+    if (button == null || Core.scene == null || Core.scene.root == null) return;
+    hideSubButtons();
+    float subSize = Scl.scl(40f);
+
+    ImageButton tb = new ImageButton(mindustry.gen.Icon.turret, mindustry.ui.Styles.clearTogglei);
+    tb.name = "combineSubTurretBtn";
+    tb.setSize(subSize, subSize);
+    tb.resizeImage(subSize * 0.55f);
+    tb.addListener(Tooltip.Tooltips.getInstance().create("框选炮台合体", false));
+    tb.clicked(SuperTurretPlacer::onTurretBtn);
+    Core.scene.root.addChild(tb);
+    turretBtn = tb;
+
+    ImageButton fb = new ImageButton(mindustry.gen.Icon.production, mindustry.ui.Styles.clearTogglei);
+    fb.name = "combineSubFactoryBtn";
+    fb.setSize(subSize, subSize);
+    fb.resizeImage(subSize * 0.55f);
+    fb.addListener(Tooltip.Tooltips.getInstance().create("框选工厂合体", false));
+    fb.clicked(SuperTurretPlacer::onFactoryBtn);
+    Core.scene.root.addChild(fb);
+    factoryBtn = fb;
+
+    subButtonsShown = true;
+    positionSubButtons();
+  }
+
+  static void hideSubButtons() {
+    if (turretBtn != null) { try { turretBtn.remove(); } catch (Throwable ignored) {} turretBtn = null; }
+    if (factoryBtn != null) { try { factoryBtn.remove(); } catch (Throwable ignored) {} factoryBtn = null; }
+    subButtonsShown = false;
+  }
+
+  /**
+   * 按主按钮位置把两个子按钮摆到它旁边：**主按钮在屏幕左半边 → 子按钮在它右边；
+   * 在右半边 → 在它左边**（用户 2026-10-04 要求）。
+   *
+   * <p>两个子按钮在那一侧**竖排成一列、整体与主按钮垂直居中**，彼此留 {@code gap} 的缝 ——
+   * 以前是 "mainY+mainH-subH / mainY" 两条，40px 高的按钮只错开 8px，看着就是"一个按钮"。
+   */
+  static void positionSubButtons() {
+    if (button == null || turretBtn == null || factoryBtn == null) return;
+    Element p = button.parent;
+    if (p == null) return;
+    float mainX = button.x, mainY = button.y;
+    float mainW = button.getWidth(), mainH = button.getHeight();
+    float subW = turretBtn.getWidth(), subH = turretBtn.getHeight();
+    float gap = Scl.scl(4f);
+    boolean onLeft = mainX + mainW / 2f < p.getWidth() / 2f;
+    float x = onLeft ? mainX + mainW + gap : mainX - subW - gap;
+    // 竖排一列、整体垂直居中于主按钮（上 = 炮台合体，下 = 工厂合体）
+    float bottom = mainY + mainH / 2f - (subH * 2f + gap) / 2f;
+    factoryBtn.setPosition(x, bottom);
+    turretBtn.setPosition(x, bottom + subH + gap);
+  }
   /**
    * 浮标上的点按 / 拖动判定：位移超过 {@link #DRAG_THRESHOLD} 才算拖动（挪浮标 + 存位置），
    * 否则算点按（切换框选）。用 {@code event.stageX/Y} 的位移而不是元素的局部坐标 ——
@@ -508,9 +705,10 @@ public class SuperTurretPlacer {
     @Override
     public void touchUp(InputEvent event, float x, float y, int pointer, KeyCode button) {
       if (!moved) {
-        toggle();
+        onMainTap();
       } else {
         saveButtonPos(event.listenerActor);
+            if (subButtonsShown) positionSubButtons();
       }
       moved = false;
     }
@@ -518,6 +716,9 @@ public class SuperTurretPlacer {
 
   /** 我们的输入处理器必须是"最后一个"（= 最先收到事件），否则框选时左键会去开枪/开面板。 */
   static void ensureProcessor() {
+    // 子按钮开着时每帧跟着主按钮位置更新布局
+    if (subButtonsShown && state != null && state.isGame())
+      positionSubButtons();
     try {
       var list = Core.input.getInputProcessors();
       if (list == null)

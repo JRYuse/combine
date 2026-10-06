@@ -18,6 +18,8 @@ import combine.production.CombinedPump;
 import combine.production.CombinedSolidPump;
 import combine.production.CombinedWallCrafter;
 import combine.production.CombinedVariableReactor;
+import combine.production.SuperCombineFactory;
+import combine.production.FactoryCombiner;
 import combine.saves.SafeW11;
 import combine.saves.SafeWLegacy;
 import combine.saves.SafeWShort;
@@ -113,6 +115,7 @@ public class Main extends Mod {
   public static ComboConnector comboConnector;
   public static ComboNode comboNode;
   public static LiquidUnloader liquidUnloader;
+  public static SuperCombineFactory superCombineFactory;
 
   static JsonReader reader = new JsonReader();
   static JsonValue json;
@@ -237,6 +240,7 @@ public class Main extends Mod {
 
     // 超级组合炮台：快捷键/按钮 → 框选炮台 → 按数量生成对应边长的组合体（纯客户端交互）
     combine.turret.SuperTurretPlacer.register();
+    combine.production.FactoryCombiner.register();
     // 【用户要求 2026-09-28】不再改 input：入口是 SuperTurretPlacer 自己挂的"框选合体"悬浮按钮
     // （手机/桌面同一个，可拖动，见 SuperTurretPlacer#ensureButton），输入处理器保持原版。
 
@@ -393,6 +397,7 @@ public class Main extends Mod {
       // 造价表必须在 content.load() 之后现造（Items.* 是 load() 阶段才赋值的静态字段）
       initRequirementTables();
       createLinkBlocks();
+      createSuperCombineFactory();
       createLiquidBlocks();
       // 跨距离传热用的探针（组合节点/连接器把热喂给"连线接进来的"需热建筑；和超级炮台开关无关）
       combine.util.ComboHeatProbe.create();
@@ -600,6 +605,47 @@ public class Main extends Mod {
     // 免得玩家在战役里彻底造不出来。
     comboConnector.alwaysUnlocked = !onTree;
     comboNode.alwaysUnlocked = !onTree;
+  }
+
+  /**
+   * 组合工厂（合体工厂）：框选多台工厂 → 合成一台 side×side（每格一台工厂）、物品/液体/电力/热量共享的方块
+   * （入口是 HUD 浮标里的"工厂合体"子按钮，见 combine.production.FactoryCombiner）。
+   *
+   * <p>和其它"方块在 Mod.init() 里现造"的情况一样：v8 不会替这一步注册的方块调
+   * init()/postInit()/loadIcon()，必须自己补，否则 buildType / 图标是空的。
+   * 方块本身不显示在建造菜单里（buildVisibility=hidden + isVisible()=false），
+   * 但放置流程要合法（isPlaceable() 单独放行）。
+   */
+  void createSuperCombineFactory() {
+    if (SuperCombineFactory.bySide[SuperCombineFactory.MIN_SIDE] != null)
+      return;
+    // 每种边长一个方块（和超级组合炮台一样）：N 台工厂 → ceil(sqrt(N)) × ceil(sqrt(N))，
+    // 每格一台工厂（缩到 1x1）。台数不够铺满的格子留空。
+    for (int side = SuperCombineFactory.MIN_SIDE; side <= SuperCombineFactory.MAX_SIDE; side++) {
+      SuperCombineFactory f = new SuperCombineFactory("super-combine-factory-" + side, side);
+      try {
+        f.localizedName = "组合工厂 " + side + "x" + side;
+        f.description = "多台工厂合体成 " + side + "x" + side + " 的组合工厂：每格一台工厂（缩到 1x1），"
+            + "物品/液体/电力/热量整台共享，可以继续往里加工厂，也能解体拆回每一台。"
+            + "入口：屏幕上的浮标 →「工厂合体」→ 框选要合体的工厂。";
+        f.health = 320 * side;
+        // 【必须用 hidden】以前写成 requirements(Category, ItemStack.with())：那个重载会把
+        // buildVisibility 覆盖成 shown，于是这个 0 造价的方块直接进了建造菜单（用户可见的 bug）。
+        f.requirements(Category.production, BuildVisibility.hidden, new ItemStack[0]);
+        f.init();
+        f.postInit();
+        // 血量/液体产物的信息条：原版是在 afterPatch 里建的，我们现造的方块要自己调一次
+        f.setBars();
+      } catch (Throwable t) {
+        Log.err("[combine] 组合工厂 @x@ 装配失败（已兜底，不会带崩建造菜单）", side, side, t);
+      } finally {
+        ensureIcons(f);
+      }
+      SuperCombineFactory.bySide[side] = f;
+    }
+    superCombineFactory = SuperCombineFactory.bySide[SuperCombineFactory.MIN_SIDE];
+    Log.info("[combine] 组合工厂：@ 种边长已装配（2x2 .. @x@）",
+        SuperCombineFactory.MAX_SIDE - SuperCombineFactory.MIN_SIDE + 1, SuperCombineFactory.MAX_SIDE);
   }
 
   void createLiquidBlocks() {

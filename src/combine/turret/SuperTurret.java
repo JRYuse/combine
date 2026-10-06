@@ -20,6 +20,7 @@ import combine.util.IComboGrouped;
 import mindustry.entities.units.BuildPlan;
 import mindustry.game.Team;
 import mindustry.gen.Building;
+import mindustry.gen.Call;
 import mindustry.gen.Unit;
 import mindustry.graphics.Drawf;
 import mindustry.graphics.Pal;
@@ -31,6 +32,7 @@ import mindustry.world.blocks.ControlBlock;
 import mindustry.world.blocks.defense.turrets.ItemTurret;
 import mindustry.world.blocks.defense.turrets.BaseTurret;
 import mindustry.world.blocks.defense.turrets.PointDefenseTurret;
+import mindustry.world.blocks.defense.turrets.TractorBeamTurret;
 import mindustry.world.blocks.defense.turrets.Turret;
 import mindustry.world.consumers.ConsumePower;
 import mindustry.world.draw.DrawTurret;
@@ -166,10 +168,14 @@ public class SuperTurret extends Block {
    * {@code PointDefenseTurret extends ReloadTurret extends BaseTurret}，
    * 而 {@code BaseTurret extends Block}（{@code Turret extends ReloadTurret} 是另一条），
    * 所以以前 {@code instanceof Turret} 那条判据直接把它排除了。
-   * 它一样是"一格一台、自己找目标自己开火"的炮台，按 {@link BaseTurret} 的 build 处理即可。
+   * <p>同理还有 {@link TractorBeamTurret}（原版牵引光束炮）：原版层级是
+   * {@code TractorBeamTurret extends BaseTurret}，它同样没挂在 {@code Turret} 上，
+   * 也是一格一台、自己找目标自己开火（用户要求一并纳入框选范围）。
+   *
+   * <p>它们一样是"一格一台、自己找目标自己开火"的炮台，按 {@link BaseTurret} 的 build 处理即可。
    */
   public static boolean cellCapable(Block b) {
-    return b instanceof Turret || b instanceof PointDefenseTurret;
+    return b instanceof Turret || b instanceof PointDefenseTurret || b instanceof TractorBeamTurret;
   }
 
   /** 布局串里的一格：';' 分隔，空格子 = 空串，否则 "方块名@朝向度数"。 */
@@ -222,6 +228,13 @@ public class SuperTurret extends Block {
   public static final String CONFIG_TAG = "~";
   /** 原版 readObjectSafe 的上限是 1200，留点余量。 */
   public static final int CONFIG_MAX = 1150;
+  /**
+   * "解体"的配置哨兵：走 config 通道（{@code configure()} → 服务端权威执行 + 转发给所有客户端），
+   * 点方块打开的那张面板上的"解体"按钮就发这个串 —— 触摸端也有入口。
+   *
+   * <p>用 {@code !} 开头：布局里的方块名只可能是 {@code [a-z0-9-]}，两种串不会撞。
+   */
+  public static final String DISSOLVE_TAG = "!dissolve";
 
   /** 把 layout + sources 编成"短到能过联机"的配置串。 */
   public static String encodeConfig(String layout, String sources) {
@@ -261,25 +274,35 @@ public class SuperTurret extends Block {
     java.io.DataOutputStream d = new java.io.DataOutputStream(buf);
     try {
       String[] toks = cellTokens(layout);
-      d.writeByte(1);
+      String[] src = (sources == null || sources.isEmpty()) ? new String[0] : sources.split(";");
+      // 默认还用格式 1（不加标志位）：100 格 + 100 坐标时每多一个字节都会顶到 1200 上限，
+      // 只有真的出现"整台合体"那种 source（加炮台，见 DISSOLVE/consumeSources）才升到格式 2。
+      boolean flagged = false;
+      for (String s : src)
+        if (s != null && s.startsWith("!"))
+          flagged = true;
+      d.writeByte(flagged ? 2 : 1);
       d.writeShort(toks.length);
       for (String tok : toks) {
         Block cb = blockOfToken(tok);
         d.writeShort(cb == null ? 0xFFFF : (cb.id & 0xFFFF));
         d.writeShort(Math.round(rotOfToken(tok)) & 0xFFFF);
       }
-      String[] src = (sources == null || sources.isEmpty()) ? new String[0] : sources.split(";");
       d.writeShort(src.length);
       for (String s : src) {
-        int comma = s == null ? -1 : s.indexOf(',');
+        boolean wholeBuild = s != null && s.startsWith("!");
+        String body = wholeBuild ? s.substring(1) : s;
+        int comma = body == null ? -1 : body.indexOf(',');
+        if (flagged)
+          d.writeByte(wholeBuild ? 1 : 0);
         if (comma < 0) {
           d.writeShort(0);
           d.writeShort(0);
           continue;
         }
         try {
-          d.writeShort(Integer.parseInt(s.substring(0, comma).trim()) & 0xFFFF);
-          d.writeShort(Integer.parseInt(s.substring(comma + 1).trim()) & 0xFFFF);
+          d.writeShort(Integer.parseInt(body.substring(0, comma).trim()) & 0xFFFF);
+          d.writeShort(Integer.parseInt(body.substring(comma + 1).trim()) & 0xFFFF);
         } catch (Throwable t) {
           d.writeShort(0);
           d.writeShort(0);
@@ -303,7 +326,7 @@ public class SuperTurret extends Block {
     try {
       byte[] raw = arc.util.serialization.Base64Coder.decode(cfg.substring(CONFIG_TAG.length()).trim());
       java.io.DataInputStream d = new java.io.DataInputStream(new java.io.ByteArrayInputStream(raw));
-      d.readByte(); // 格式号
+      int fmt = d.readByte(); // 格式号（2 = 每项带"整台"标志）
       int n = d.readUnsignedShort();
       StringBuilder lay = new StringBuilder();
       for (int i = 0; i < n; i++) {
@@ -323,9 +346,12 @@ public class SuperTurret extends Block {
       StringBuilder src = new StringBuilder();
       int sc = d.readUnsignedShort();
       for (int i = 0; i < sc; i++) {
+        boolean wholeBuild = fmt >= 2 && d.readByte() != 0;
         int x = d.readShort(), y = d.readShort();
         if (i > 0)
           src.append(';');
+        if (wholeBuild)
+          src.append('!');
         src.append(x).append(',').append(y);
       }
       return new String[] { lay.toString(), src.toString() };
@@ -405,6 +431,69 @@ public class SuperTurret extends Block {
   @Override
   public boolean isPlaceable() {
     return supportsEnv(state.rules.env) && (!isBanned() || state.rules.editor);
+  }
+
+  /**
+   * 【用户要求】框选出一台超级炮台之后，预览要能**直接放在被框选的炮台原来的位置上**
+   * （不然得先找空地放下、再手动拆掉原来的炮台，很麻烦）。
+   *
+   * <p>原版放置判据里"这一格上的方块能不能被顶掉"问的就是这个方法
+   * （{@code Build.validPlaceIgnoreUnits} → {@code block.canReplace(tile.block())}）：
+   * 这里只按**方块类型**放行炮台；"这一格到底是不是这次框选里的原料"由逐格判据
+   * {@link #canPlaceOn(Tile, Team, int)} 兜住（用户要求：只能顶被框住的炮台）。
+   */
+  @Override
+  public boolean canReplace(Block other) {
+    return super.canReplace(other) || cellCapable(other);
+  }
+
+  /** 本次「框选合体」里**允许被顶掉**的格子（pos）；只在预览生成到落地之间有效。 */
+  private static final arc.struct.IntSet replaceAllowedPos = new arc.struct.IntSet();
+
+  /** 放置器在生成合体预览时登记：这些格子上的炮台是这次框选的原料，落地时允许顶掉。 */
+  public static void allowReplaceOver(arc.struct.IntSet positions) {
+    replaceAllowedPos.clear();
+    if (positions != null)
+      replaceAllowedPos.addAll(positions);
+  }
+
+  /** 预览结束（落地 / 取消 / 换图）就作废。 */
+  public static void clearReplaceAllowed() {
+    replaceAllowedPos.clear();
+  }
+
+  /**
+   * 【用户要求】超级炮台**只能顶被框住的炮台**。
+   *
+   * <p>{@link #canReplace(Block)} 只看得到方块类型，看不到是哪一格；逐格判据在这里
+   * （{@code Build.validPlaceIgnoreUnits} 对覆盖到的每一格都会问一次 {@code canPlaceOn}）：
+   * 这一格上站着炮台、又不在本次框选的原料名单里，就直接判非法 ——
+   * 免得放一台超级炮台顺手把旁边**没被框住**的炮台顶掉。
+   */
+  @Override
+  public boolean canPlaceOn(Tile tile, Team team, int rotation) {
+    if (tile != null && tile.build != null && cellCapable(tile.block())
+        && !replaceAllowedPos.contains(tile.pos()))
+      return false;
+    return super.canPlaceOn(tile, team, rotation);
+  }
+
+  /**
+   * 【用户要求】合体预览只要**压住被框住炮台的一部分**就该能放 —— 那台炮台反正立刻会被本台吃掉。
+   *
+   * <p>原版 {@code Build.validPlaceIgnoreUnits} 里还有一条"新方块必须**完全包住**被顶掉的旧方块"
+   * 的判据（{@code block.bounds(...).contains(tile.block().bounds(...))}），
+   * 4x4 的预览压在被框住的 2x2 炮台上、只要它露出去一点就会被判非法。
+   * 所以**合体预览期间**（= 这份"可顶名单"还有效时）把本台的包围盒往外放大几格，
+   * 让这条判据放宽；预览一结束就恢复原样，不影响别的地方用 bounds 的地方。
+   */
+  @Override
+  public arc.math.geom.Rect bounds(int x, int y, arc.math.geom.Rect rect) {
+    rect = super.bounds(x, y, rect);
+    if (!replaceAllowedPos.isEmpty())
+      // 每条边多让 4 格（arc 的 grow(amount) 是"每边 amount/2"，所以传 4 格 × 8px × 2）
+      rect.grow(4f * 8f * 2f);
+    return rect;
   }
 
   /** 一格的绘制缩放：把这一格炮台贴图缩到一格以内（= 用户要的 1x1 小炮）。 */
@@ -1151,6 +1240,65 @@ public class SuperTurret extends Block {
       super.onDestroyed();
     }
 
+    /** 拆除时把里面每台炮台的**建造成本**退还给玩家（见 {@link #refundCellCosts()}）。 */
+    @Override
+    public void onDeconstructed(mindustry.gen.Unit unit) {
+      try {
+        refundCellCosts();
+      } catch (Throwable t) {
+        Log.err("[combine] 超级组合炮台：退还格子炮台造价失败", t);
+      }
+      super.onDeconstructed(unit);
+    }
+
+    /**
+     * 【用户问的"拆除合体炮台会返回里面的炮台的物品吗"】本方块自己的 requirements 是空的
+     * （{@code new ItemStack[0]}，见 Main），原版"按 deconstruct.requirements 退钱"一分不退；
+     * 可那些炮台是合体时被**吃掉**的，造价本来就花出去了。
+     *
+     * <p>这里按原版 {@code ConstructBuild} 拆解完成的同一口径退：每台格子炮台的
+     * {@code requirements} × {@code rules.buildCostMultiplier} × {@code rules.deconstructRefundMultiplier}，
+     * 进本队核心（物品没解锁 / 核心装不下就不给，和原版一致）。
+     *
+     * <p>弹药/液体不算——它们本来就在池子里，跟着方块一起走（拆了就没了，和原版一样）。
+     */
+    void refundCellCosts() {
+      if (team == null || cellBlocks == null || cellBlocks.length == 0)
+        return;
+      mindustry.game.Rules rules = state == null ? null : state.rules;
+      float mul = rules == null ? 1f
+          : Math.max(0f, rules.buildCostMultiplier) * Math.max(0f, rules.deconstructRefundMultiplier);
+      if (mul <= 0f)
+        return;
+      mindustry.world.blocks.storage.CoreBlock.CoreBuild core = null;
+      try {
+        core = team.data().core();
+      } catch (Throwable ignored) {
+      }
+      if (core == null || core.items == null)
+        return;
+      for (Block cb : cellBlocks) {
+        if (cb == null || cb.requirements == null)
+          continue;
+        for (mindustry.type.ItemStack stack : cb.requirements) {
+          if (stack == null || stack.item == null)
+            continue;
+          int amount = Mathf.round(stack.amount * mul);
+          if (amount <= 0)
+            continue;
+          try {
+            if (!stack.item.unlockedNowHost())
+              continue;
+            boolean room = rules == null || rules.infiniteResources
+                || core.items.get(stack.item) < core.storageCapacity - amount;
+            if (room)
+              core.items.add(stack.item, amount);
+          } catch (Throwable ignored) {
+          }
+        }
+      }
+    }
+
     @Override
     public boolean shouldConsume() {
       return true; // 电网/物品都按整台算
@@ -1448,6 +1596,14 @@ public class SuperTurret extends Block {
         if (cellBroken.add(-2))
           Log.err("[combine] rebuildCombo 每 tick 抛异常", t);
       }
+      // 【用户报"合体炮台受伤后血量被压制在一个炮台血量的数值上，一直修但恢复不了"】
+      // 血量上限以前只在 buildCells()（重建格子）那一刻算一次：只要 maxHealth 被任何一条
+      // 路径写小过（读同步包时格子还没重建、中途应用了一次残缺布局、方块被原地重建…
+      // 都会让 maxHealth 退到"方块静态血量"或"一格炮台的血量"），此后**再也没人把它算回来**：
+      // 治疗/修复只能补到那个小上限，看起来就是"一直在修但血量涨不上去"。
+      // 现在每帧按实际格子自检一次上限（几十个 int 相加，开销可忽略），对不上就纠正；
+      // 只夹上限、不替玩家回血，受损状态照旧保留。
+      syncMaxHealth();
 
       // 整台的热量（含贴着本体的组合节点/连接器送来的那一份），喂给每一格的探针 ->
       // 各格再按原版规则读到"整台的热量"
@@ -1849,6 +2005,19 @@ public class SuperTurret extends Block {
     public void buildConfiguration(arc.scene.ui.layout.Table table) {
       try {
         ensureCells();
+        // 【解体】触摸端入口：点方块弹出的就是这张面板。放回每一格的炮台后拆掉本体，
+        // 想重摆/不用合体了就点它（走 config 通道 → 服务端执行 + 同步）。
+        table.table(top -> {
+          top.left();
+          top.button("[scarlet]解体[]", mindustry.ui.Styles.cleart, () -> {
+            try {
+              configure(DISSOLVE_TAG);
+            } catch (Throwable t) {
+              Log.err("[combine] 超级组合炮台解体请求发送失败", t);
+            }
+          }).height(40f).width(110f).padRight(6f);
+          top.add("[lightgray]把每格的炮台放回原处（想重摆时用）").left();
+        }).left().padBottom(6f).row();
         Seq<Integer> itemCells = new Seq<>();
         for (int i = 0; i < cells.length; i++)
           if (cells[i] instanceof ItemTurret.ItemTurretBuild)
@@ -2033,6 +2202,39 @@ public class SuperTurret extends Block {
       return Math.max(b.itemCapacity, 1);
     }
 
+    /** 本台真正的血量上限 = 里面所有格子的血量之和。 */
+    public float cellHealthSum() {
+      float sum = 0f;
+      for (int i = 0; i < cellBlocks.length; i++) {
+        Block cb = cellBlocks[i];
+        if (cb != null)
+          sum += Math.max(cb.health, 1f);
+      }
+      return Math.max(sum, 1f);
+    }
+
+    /**
+     * 每帧自检血量上限（见 updateTile 里的说明）。
+     *
+     * <p>只纠正上限：原来就是满血的（上限被写小的那一刻它按旧上限算满）跟着新上限算满，
+     * 真受过伤的保持原值、夹到新上限，不替玩家回血。
+     */
+    void syncMaxHealth() {
+      try {
+        if (!cellsReady)
+          return;
+        float want = cellHealthSum();
+        if (Math.abs(want - maxHealth) <= 0.5f)
+          return;
+        float old = maxHealth;
+        boolean wasFull = old <= 0.001f || health >= old - 0.5f;
+        maxHealth = want;
+        health = wasFull ? maxHealth : Math.min(health, maxHealth);
+        healthChanged();
+      } catch (Throwable ignored) {
+      }
+    }
+
     /** 造一格虚拟炮台：原版 build 类 + 一张只属于它的假 Tile（坐标 = 这一格的中心）。 */
     @Nullable
     BaseTurret.BaseTurretBuild makeCell(Block cb, int cx, int cy, float rot) {
@@ -2083,6 +2285,12 @@ public class SuperTurret extends Block {
     @Override
     public void configured(@Nullable mindustry.gen.Unit builder, @Nullable Object value) {
       if (value instanceof String s) {
+        // "解体"：走同一条 config 通道（服务端权威执行 + 转发），触摸端点面板按钮就能用。
+        if (DISSOLVE_TAG.equals(s)) {
+          dissolveCells();
+          super.configured(builder, value);
+          return;
+        }
         // 紧凑串（本模组新格式）和老文本串 "layout|sources" 都认。
         String[] parts = decodeConfig(s);
         applyLayout(parts[0]);
@@ -2126,9 +2334,42 @@ public class SuperTurret extends Block {
         Block want = blockOfToken(cells[i]);
         if (want == null)
           continue; // 空格子
-        Tile t = i < srcs.length ? sourceTile(srcs[i]) : null;
-        if (t != null && t.build != null && t.build.team == team && !t.build.dead()
-            && t.block() instanceof Turret && cellBlock(t.block()) == want) {
+        // 【加炮台】原料是"一整台合体炮台"（坐标以 '!' 开头，见 SuperTurretPlacer.sourcesOf）：
+        // 把它的库存搬进这一台，然后整台拆掉 —— 等于把那台合体并进来。
+        String src = i < srcs.length ? srcs[i] : null;
+        if (src != null && src.startsWith("!")) {
+          Tile ot = sourceTile(src.substring(1));
+          if (ot != null && ot.build instanceof SuperTurretBuild old && old.team == team && !old.dead()) {
+            try {
+              if (old.items != null && items != null)
+                moveItems(old.items, items);
+              if (old.liquids != null && liquids != null)
+                moveLiquids(old.liquids, liquids);
+            } catch (Throwable ignored) {
+            }
+            try {
+              ot.removeNet();
+            } catch (Throwable e) {
+              Log.err("[combine] 合体炮台并体：拆掉被吸收的那台失败（@,@）", ot.x, ot.y, e);
+            }
+          }
+          continue;
+        }
+        Tile t = src == null ? null : sourceTile(src);
+        // 【原地放置】预览盖在被框选的炮台上时，原版会把那些炮台**顶掉**（canReplace 放行），
+        // 这一格现在可能已经归本台、也可能因为"只压住一部分"而整台被顶掉、格子变空 ——
+        // 两种都算"原料确实在那儿过"，保留这一格。
+        // （用户视频：12 台炮台原地合体后只剩 10 台，就是露在预览外的那些空格被当成
+        //  "原料没了"给清掉了。）
+        if (t != null && (t.build == this || (t.build == null && replacedByMe(t, want)))) {
+          continue;
+        }
+        // 【别写 instanceof Turret】点防炮（PointDefenseTurret）和牵引光束炮（TractorBeamTurret）
+        // 继承的是 BaseTurret，不是 Turret —— 以前这条判据对它们恒为 false，于是"这一格"被当成
+        // "原料早没了"清空：用户报的"点防炮/牵引光束炮无法真正合体"就是这个。
+        // 判据改用 cellCapable()（Turret + 点防炮 + 牵引光束炮，和框选/格子那两处同源）。
+        if (t != null && t.build instanceof BaseTurret.BaseTurretBuild && t.build.team == team
+            && !t.build.dead() && cellCapable(t.block()) && cellBlock(t.block()) == want) {
           try {
             t.removeNet(); // 原版的"跨网络同步删格"
             continue;
@@ -2163,6 +2404,131 @@ public class SuperTurret extends Block {
             Integer.parseInt(tok.substring(comma + 1).trim()));
       } catch (Throwable t) {
         return null;
+      }
+    }
+
+    /**
+     * 这台原料炮台是不是**已经被本次放置顶掉了**：它的格子里只要有一格现在归本台，
+     * 就说明原版刚刚把它整台替换掉了（哪怕其中一部分露在预览外面、那几格已经变空）。
+     *
+     * <p>只用来认"原料确实在那儿过"，防止把整台合体炮台的格子清空（见 consumeSources）。
+     */
+    boolean replacedByMe(Tile anchor, Block want) {
+      int s = want == null ? 1 : Math.max(want.size, 1);
+      for (int i = 0; i < s; i++)
+        for (int j = 0; j < s; j++) {
+          Tile c = world.tile(cellTile(anchor.x, s, i), cellTile(anchor.y, s, j));
+          if (c != null && c.build == this)
+            return true;
+        }
+      return false;
+    }
+
+    /**
+     * 解体：把里面每一格的炮台**原样放回它自己的格子**上，然后把本体拆掉。
+     *
+     * <p>和合体正好相反：合体是"吃掉世界里的炮台、装进一台超级炮台"，解体是"把装进去的
+     * 炮台重新变成世界里的独立炮台"。整台的库存交给第一台放回去的炮台 —— 这些炮台本来
+     * 就挨在一起，组合规则会把它们重新并成一组，池子自然回到组里；玩家想怎么重摆都行。
+     *
+     * <p>只在服务端/单机执行（客户端等服务端同步），走 {@code Call.constructFinish /
+     * Tile.removeNet} 两个原版同步接口，联机时所有人看到的一致。
+     */
+    public void dissolveCells() {
+      if (net.client())
+        return; // 客户端等服务端同步
+      String[] tokens = cellTokens(layout);
+      if (tokens.length == 0)
+        return;
+      try {
+        ItemModule keepItems = items;
+        LiquidModule keepLiquids = liquids;
+        // 【先把库存挪到暂存池】本体一拆，它的模块就归"拆掉的那台"处理了（原版会掉一地物品）；
+        // 搬空之后再拆，谁都拿不走这份库存，最后交给放回去的第一台炮台。
+        ItemModule stashItems = new ItemModule();
+        LiquidModule stashLiquids = new LiquidModule();
+        if (keepItems != null)
+          moveItems(keepItems, stashItems);
+        if (keepLiquids != null)
+          moveLiquids(keepLiquids, stashLiquids);
+        Block[] blocks = new Block[side * side];
+        float[] rots = new float[side * side];
+        for (int i = 0; i < side * side; i++) {
+          String token = i < tokens.length ? tokens[i] : "";
+          Block cb = blockOfToken(token);
+          // 放回世界时要用**注册表里的那一个**（组合方块接管了原版名字），cellBlock() 给的是
+          // 替换前的原版实例，直接摆出去会变成"没有组合功能的原版方块"。
+          Block placed = cb == null ? null : content.block(cb.name);
+          blocks[i] = placed != null ? placed : cb;
+          rots[i] = rotOfToken(token);
+        }
+        int tx = tile.x, ty = tile.y;
+        tile.removeNet(); // 先把整台拆掉（每一格都空出来），再逐个放回去
+        Building first = null;
+        int placed = 0;
+        for (int i = 0; i < side * side; i++) {
+          Block pb = blocks[i];
+          if (pb == null)
+            continue;
+          int wx = cellTile(tx, side, i % side), wy = cellTile(ty, side, i / side);
+          // 【用户报"12 台 2x2 合体后解体只剩 3 台"】格子是**按 1 格间距**排的，
+          // 而 2x2 的炮台要占 4 格 —— 直接摆在格子上会互相重叠，只有少数位置放得下。
+          // 所以从这一格的原位置起、由近到远找一块放得下的空地（先试原位置，放不下再往外摊）。
+          int[] spot = findFreeSpot(pb, wx, wy, (byte) Mathf.clamp(Mathf.round(rots[i] / 90f), 0, 3));
+          if (spot == null)
+            continue; // 附近实在没地方（别人手快占了），这一格跳过，别去拆别人
+          int cx = spot[0], cy = spot[1];
+          Tile t = world.tile(cx, cy);
+          if (t == null)
+            continue;
+          try {
+            Call.constructFinish(t, pb, null, (byte) Mathf.clamp(Mathf.round(rots[i] / 90f), 0, 3),
+                team, null);
+          } catch (Throwable e) {
+            Log.err("[combine] 超级组合炮台解体：放回 @ 失败（@,@）", pb.name, cx, cy, e);
+            continue;
+          }
+          if (first == null && t.build != null)
+            first = t.build;
+          placed++;
+        }
+        if (first != null) {
+          if (first.items != null)
+            moveItems(stashItems, first.items);
+          if (first.liquids != null)
+            moveLiquids(stashLiquids, first.liquids);
+        }
+        Log.info("[combine] 超级组合炮台已解体：放回 @ 台炮台", placed);
+      } catch (Throwable t) {
+        Log.err("[combine] 超级组合炮台解体失败", t);
+      }
+    }
+
+    /** 从 (x,y) 起由近到远找一块放得下 {@code b} 的空地，返回放置锚点（放不下返回 null）。 */
+    int[] findFreeSpot(Block b, int x, int y, byte rot) {
+      int size = Math.max(b.size, 1);
+      int ax = x + (size - 1) / 2, ay = y + (size - 1) / 2;
+      if (canPlaceAt(b, ax, ay, rot))
+        return new int[] { ax, ay };
+      for (int r = 1; r <= 14; r++) {
+        for (int dy = -r; dy <= r; dy++) {
+          for (int dx = -r; dx <= r; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) != r)
+              continue; // 只看这一圈的边框
+            if (canPlaceAt(b, ax + dx, ay + dy, rot))
+              return new int[] { ax + dx, ay + dy };
+          }
+        }
+      }
+      return null;
+    }
+
+    /** 原版放置判据（不看单位）。 */
+    boolean canPlaceAt(Block b, int x, int y, byte rot) {
+      try {
+        return mindustry.world.Build.validPlace(b, team, x, y, rot, false);
+      } catch (Throwable t) {
+        return false;
       }
     }
 

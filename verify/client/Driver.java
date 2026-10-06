@@ -189,6 +189,37 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::superTurretPlace, 32f);
                 Timer.schedule(Driver::superTurretStep, 36f, 2f);
                 Timer.schedule(() -> { Log.info("[drv] superturret 模式超时结束"); Core.app.exit(); }, 200f);
+            }else if(mode.equals("align")){
+                // 对照：2x2 原版机器 + 四角 1x1 小方块，量"贴图到底画在哪"
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupAlignScene, 6f);
+                Timer.schedule(Driver::hideDialogs, 9f);
+                Timer.schedule(() -> shot("align_ref"), 11f);
+                Timer.schedule(() -> { Log.info("[drv] align 模式结束"); Core.app.exit(); }, 14f);
+            }else if(mode.equals("factory")){
+                // 组合工厂（合体工厂）：框选多台工厂 → 合成一台 1x1（物品/液体/电力/热量共享）。
+                // 要看的：① 落地后 1x1 方块自己画出来的样子（底板 + 里面几台工厂的图标）；
+                //        ② 点方块弹出的面板（构成列表 + 解体按钮，触摸端入口）排版没被裁掉。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupFactoryScene, 6f);
+                // 客户端的"检查更新"弹窗会在进主界面后自己弹出来，截图前多关几次
+                Timer.schedule(Driver::hideDialogs, 9f);
+                Timer.schedule(Driver::hideDialogs, 10.5f);
+                Timer.schedule(() -> shot("factory_before"), 11f);
+                Timer.schedule(Driver::factoryBoxSelect, 13f);
+                Timer.schedule(Driver::factoryAim, 15f);
+                Timer.schedule(Driver::factoryGhostDiag, 16.5f);
+                Timer.schedule(Driver::hideDialogs, 15f);
+                Timer.schedule(Driver::hideDialogs, 16f);
+                // 虚影（跟着鼠标的那块）：要看的是"每格画的是对应工厂的贴图"，不是占位图标
+                Timer.schedule(() -> shot("factory_ghost"), 17f);
+                // 【串起来，别用一串独立定时器】软渲染一帧 200~400ms，一堆定时器会在同一帧里
+                // 乱序触发 —— 实测出现过 "喂料/开面板" 比 "直接落地" 先跑，于是整段空跑。
+                // 落地 → 喂料 → 截图 → 面板 → 退出 改成上一步做完再排下一步（见下面各方法尾部）。
+                Timer.schedule(Driver::factoryMergeDirect, 19f);
+                Timer.schedule(() -> { Log.info("[drv] factory 超时结束"); Core.app.exit(); }, 120f);
             }else if(mode.equals("mergebtn")){
                 // 用户要求 2026-09-28：把"框选合体"按钮改成**悬浮式**（手机/桌面同一个、可拖动），
                 // 并且不要再改 input。这里搭场景 + 跑检查（悬浮/可点/不挡/拖动/不改 input）+ 截图。
@@ -197,7 +228,9 @@ public class Driver extends Mod{
                 Timer.schedule(Driver::setupSuperTurretScene, 6f);
                 // 悬浮按钮在 update() 里挂，挂完下一帧才排好版；太早查会量到还没布局的尺寸。
                 Timer.schedule(Driver::checkSuperTurretButton, 16f);
-                Timer.schedule(() -> shot("mergebtn_float"), 18f);
+                Timer.schedule(Driver::prepareSubButtonShot, 17f); // 展开两个子按钮（截图用）
+                Timer.schedule(() -> shot("mergebtn_subbuttons"), 18f);
+                Timer.schedule(Driver::toggleMergeSubButtons, 19f); // 收起
                 // 用户要求："炮台缩放到 1*1 后相应的后坐力也要缩放" —— 摆一台带大炮台格子的
                 // 超级炮台，把每格后坐拉满，截图 + 报"缩放前后"的后坐位移。
                 Timer.schedule(Driver::superTurretRecoilShot, 19f);
@@ -3037,6 +3070,559 @@ public class Driver extends Mod{
         }
     }
 
+    // ---------------- 组合工厂（合体工厂） ----------------
+    static int fcOx, fcOy;
+    static Building fcMerged;
+    static int fcFeedTries;
+
+    /** 对照场景：一个 2x2 原版机器 + 四角 1x1 小方块（量贴图和格子的对齐关系）。 */
+    static void setupAlignScene() {
+        try {
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.state.rules.infiniteResources = true;
+            Vars.logic.play();
+            if (Vars.state.isPaused())
+                Vars.state.set(mindustry.core.GameState.State.playing);
+            for (int y = 40; y < 150; y++)
+                for (int x = 30; x < 210; x++) {
+                    Tile t = Vars.world.tile(x, y);
+                    if (t != null && t.block() != Blocks.air)
+                        t.setBlock(Blocks.air);
+                }
+            // 2x2 机器放 (60,60)（覆盖 60..61）；四角放 1x1 的 router 当"格子标尺"
+            Block mixer = Vars.content.block("cryofluid-mixer");
+            Block ruler = Blocks.router;
+            place(mixer, 60, 60);
+            place(ruler, 59, 59);
+            place(ruler, 62, 59);
+            place(ruler, 59, 62);
+            place(ruler, 62, 62);
+            // 同一张图里再摆一个**合体块**（4 台同型号）用同样的四角标尺围着，直接对比对齐
+            Block cf2 = Vars.content.block("super-combine-factory-2");
+            Object cfg = combineCall("combine.production.SuperCombineFactory", "encodeConfig",
+                    new Class<?>[] { String.class, String.class, String[].class },
+                    "cryofluid-mixer@0;cryofluid-mixer@0;cryofluid-mixer@0;cryofluid-mixer@0", "", null);
+            if (cf2 != null) {
+                mindustry.gen.Call.constructFinish(Vars.world.tile(70, 60), cf2, null, (byte) 0,
+                        Team.sharded, cfg);
+                place(ruler, 69, 59);
+                place(ruler, 72, 59);
+                place(ruler, 69, 62);
+                place(ruler, 72, 62);
+            }
+            runLogical(5);
+            Building b = Vars.world.build(60, 60);
+            Log.info("[drv] align: 机器 build.x=@ y=@ offset=@ size=@（世界格 60..61）",
+                    b == null ? -1 : b.x, b == null ? -1 : b.y, mixer.offset, mixer.size);
+            Building m = Vars.world.build(70, 60);
+            Log.info("[drv] align: 合体块 build.x=@ y=@ offset=@ size=@（世界格 70..71）",
+                    m == null ? -1 : m.x, m == null ? -1 : m.y, cf2 == null ? -1 : cf2.offset,
+                    cf2 == null ? -1 : cf2.size);
+            // 3x3 对照：原版 3x3 机器 vs 合体 3x3（5 台），各自四角摆标尺
+            Block press = Vars.content.block("multi-press");
+            if (press != null && press.size == 3) {
+                place(press, 90, 60);
+                place(ruler, 88, 58);
+                place(ruler, 92, 58);
+                place(ruler, 88, 62);
+                place(ruler, 92, 62);
+            }
+            Block cf3 = Vars.content.block("super-combine-factory-3");
+            Object cfg3 = combineCall("combine.production.SuperCombineFactory", "encodeConfig",
+                    new Class<?>[] { String.class, String.class, String[].class },
+                    "cryofluid-mixer@0;cryofluid-mixer@0;cryofluid-mixer@0;cryofluid-mixer@0;cryofluid-mixer@0",
+                    "", null);
+            if (cf3 != null) {
+                mindustry.gen.Call.constructFinish(Vars.world.tile(105, 60), cf3, null, (byte) 0,
+                        Team.sharded, cfg3);
+                place(ruler, 103, 58);
+                place(ruler, 107, 58);
+                place(ruler, 103, 62);
+                place(ruler, 107, 62);
+            }
+            runLogical(5);
+            Log.info("[drv] align 3x3: 原版锚点 build.x=@ 合体块 build.x=@（原版机 90,60 合体 105,60）",
+                    Vars.world.build(90, 60) == null ? -1 : Vars.world.build(90, 60).x,
+                    Vars.world.build(105, 60) == null ? -1 : Vars.world.build(105, 60).x);
+            Core.camera.position.set(97f * 8f, 61f * 8f);
+        } catch (Throwable t) {
+            Log.err("[drv] setupAlignScene failed", t);
+        }
+    }
+
+    static void runLogical(int frames) {
+        for (int i = 0; i < frames; i++) {
+            arc.util.Time.delta = 1f;
+            Vars.logic.update();
+        }
+    }
+    /** 框选那一步生成的虚影配置/位置：后面直接落地用（驱动里不等建造单位慢慢造）。 */
+    static Object fcCfg;
+    static int fcTx, fcTy;
+    /** 框选那一步数到的工厂台数（决定合体块边长）。 */
+    static int fcCount;
+
+    /** 展开/收起浮标旁边那两个子按钮（炮台合体 / 工厂合体）——截图用。 */
+    static void toggleMergeSubButtons() {
+        try {
+            combineCall("combine.turret.SuperTurretPlacer", "toggleSubButtons", null);
+        } catch (Throwable t) {
+            Log.err("[drv] toggleMergeSubButtons failed", t);
+        }
+    }
+
+    /** 截图前把浮标挪到屏幕左半边（子按钮应该在它右边），并把两个子按钮的位置打进日志。 */
+    static void prepareSubButtonShot() {
+        try {
+            Class<?> placer = placerCls();
+            Object btn = getStatic(placer, "button");
+            if (!(btn instanceof arc.scene.Element e) || e.parent == null) {
+                Log.err("[drv] 子按钮截图准备: 找不到浮标");
+                return;
+            }
+            e.setPosition(70f, e.parent.getHeight() / 2f);
+            java.lang.reflect.Method pos = placer.getDeclaredMethod("positionSubButtons");
+            pos.setAccessible(true);
+            // 先确保展开（前面的用例可能点过浮标，把子按钮收起/展开了，状态不定）
+            java.lang.reflect.Method hide = placer.getDeclaredMethod("hideSubButtons");
+            hide.setAccessible(true);
+            java.lang.reflect.Method show = placer.getDeclaredMethod("showSubButtons");
+            show.setAccessible(true);
+            hide.invoke(null);
+            show.invoke(null);
+            pos.invoke(null);
+            arc.scene.Element sT = (arc.scene.Element) getStatic(placer, "turretBtn");
+            arc.scene.Element sF = (arc.scene.Element) getStatic(placer, "factoryBtn");
+            Log.info("[drv] 子按钮截图准备: 浮标=@,@ 炮台子按钮=@,@ 工厂子按钮=@,@ （父=@）",
+                (int) e.x, (int) e.y,
+                sT == null ? -1 : (int) sT.x, sT == null ? -1 : (int) sT.y,
+                sF == null ? -1 : (int) sF.x, sF == null ? -1 : (int) sF.y,
+                e.parent.getClass().getSimpleName());
+        } catch (Throwable t) {
+            Log.err("[drv] prepareSubButtonShot failed", t);
+        }
+    }
+
+    /** 摆三台工厂（硅冶炼厂/石墨压机/窑炉）当合体原料，相机对准它们。 */
+    static void setupFactoryScene() {
+        try {
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.state.rules.infiniteResources = true;
+            Vars.logic.play();
+            if (Vars.state.isPaused())
+                Vars.state.set(mindustry.core.GameState.State.playing);
+            for (int y = 40; y < 150; y++)
+                for (int x = 30; x < 210; x++) {
+                    Tile t = Vars.world.tile(x, y);
+                    if (t != null && t.block() != Blocks.air)
+                        t.setBlock(Blocks.air);
+                }
+            int ox = -1, oy = -1;
+            outer:
+            for (int y = 45; y < 120; y++) {
+                for (int x = 35; x < 170; x++) {
+                    boolean ok = true;
+                    for (int dy = 0; dy < 12 && ok; dy++)
+                        for (int dx = 0; dx < 24; dx++) {
+                            Tile t = Vars.world.tile(x + dx, y + dy);
+                            if (t == null || t.floor() == null || t.floor().isLiquid || t.block() != Blocks.air) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    if (ok) {
+                        ox = x;
+                        oy = y;
+                        break outer;
+                    }
+                }
+            }
+            if (ox < 0) {
+                Log.err("[drv] factory 场景没找到平地");
+                return;
+            }
+            fcOx = ox;
+            fcOy = oy;
+            // 用户报"合体小工厂的 draw 明显画错"的是**冷冻液混合机**：场景就用它（4 台 → 2x2）
+            Block mixer = Vars.content.block("cryofluid-mixer");
+            if (mixer == null)
+                mixer = Vars.content.block("silicon-smelter");
+            Log.info("[drv] factory 场景用方块=@ 尺寸=@（贴图 @x@）", mixer.name, mixer.size,
+                    mixer.region == null ? -1 : mixer.region.width, mixer.region == null ? -1 : mixer.region.height);
+            place(mixer, ox + 3, oy + 7);
+            place(mixer, ox + 9, oy + 7);
+            place(mixer, ox + 15, oy + 7);
+            place(mixer, ox + 21, oy + 7);
+            // 参照物：旁边放一台**原版**冷冻液混合机（不参与合体），截图里直接对比两种 draw
+            place(mixer, ox + 17, oy + 7);
+            Core.camera.position.set((ox + 9) * 8f, (oy + 7) * 8f);
+            Vars.control.input.block = null;
+            Log.info("[drv] factory 场景: 三台工厂摆好，原点 @,@", ox, oy);
+        } catch (Throwable t) {
+            Log.err("[drv] setupFactoryScene failed", t);
+        }
+    }
+
+    /**
+     * 走**真流程**：进框选 → 拖一个框 → 松手（finish()）→ 生成合体虚影（跟着鼠标）。
+     * 虚影就压在原料工厂上（原地合体），下一帧截图看"每格画的是不是对应工厂的贴图"。
+     */
+    static void factoryBoxSelect() {
+        try {
+            ensurePlayerUnit((fcOx + 9) * 8f, (fcOy + 7) * 8f);
+            Class<?> placer = Class.forName("combine.production.FactoryCombiner", true, ml);
+            invokeStatic(placer, "start", null); // 真入口是浮标的"工厂合体"子按钮
+            setStatic(placer, "dragging", true);
+            setStatic(placer, "sx", fcOx);
+            setStatic(placer, "sy", fcOy + 5);
+            setStatic(placer, "ex", fcOx + 25);
+            setStatic(placer, "ey", fcOy + 10);
+            Core.camera.position.set((fcOx + 10) * 8f, (fcOy + 7.5f) * 8f);
+            Object found = combineCall("combine.production.FactoryCombiner", "scan",
+                    new Class<?>[] { Team.class, int.class, int.class, int.class, int.class },
+                    Team.sharded, fcOx, fcOy + 5, fcOx + 20, fcOy + 10);
+            Object cnt = combineCall("combine.production.FactoryCombiner", "count",
+                    new Class<?>[] { Seq.class }, found);
+            fcCount = cnt instanceof Number n ? n.intValue() : 0;
+            Object sideObj = combineCall("combine.production.SuperCombineFactory", "sideFor",
+                    new Class<?>[] { int.class }, cnt instanceof Number n ? n.intValue() : 0);
+            Object blkObj = combineCall("combine.production.SuperCombineFactory", "blockForSide",
+                    new Class<?>[] { int.class }, sideObj instanceof Number n ? n.intValue() : 0);
+            Log.info("[drv] 框里=@ 台 side=@ block=@（builder=@）", cnt, sideObj,
+                    blkObj == null ? "null" : ((Block) blkObj).name,
+                    Vars.player == null ? "-" : Vars.player.isBuilder());
+            invokeStatic(placer, "finish", null); // 松手 → 立刻判断 → 出虚影（finish 是包级可见）
+            var plans = Vars.control.input.selectPlans;
+            Log.info("[drv] 工厂框选: selectPlans=@ 个 还在框选=@", plans.size,
+                    getStatic(placer, "selecting"));
+            for (var p : plans) {
+                p.x = fcOx + 9; // 虚影压在原料上（原地合体）
+                p.y = fcOy + 7;
+            }
+            if (!plans.isEmpty()) {
+                fcCfg = plans.first().config;
+                fcTx = plans.first().x;
+                fcTy = plans.first().y;
+            }
+        } catch (Throwable t) {
+            Log.err("[drv] factoryBoxSelect failed", t);
+        }
+    }
+
+    /** 左键确定位置（原版蓝图那套：flushPlans），落地后贴电源 + 喂料，让格子转起来。 */
+    /** 把虚影钉在原料工厂的原位置：蓝图虚影的位置由 DesktopInput.schematicX/Y 决定，
+     *  那对字段只在鼠标事件里更新，所以每个想截虚影的帧都要按住它。 */
+    static void factoryAim() {
+        try {
+            int tx = fcOx + 9, ty = fcOy + 7;
+            if (Vars.control.input instanceof mindustry.input.DesktopInput di) {
+                di.schematicX = tx;
+                di.schematicY = ty;
+            }
+            for (var p : Vars.control.input.selectPlans) {
+                p.x = tx;
+                p.y = ty;
+            }
+            Core.camera.position.set((tx + 2) * 8f, (ty + 2) * 8f);
+            Log.info("[drv] 虚影定位: 计划数=@ 位置=@,@", Vars.control.input.selectPlans.size, tx, ty);
+        } catch (Throwable t) {
+            Log.err("[drv] factoryAim failed", t);
+        }
+    }
+
+    /** 直接落地（等价于"虚影已经生成、玩家点了左键"）：驱动的世界里单位建造有随机性，
+     *  这里用原版同一条 ConstructFinish 通道把虚影的 config 落到虚影位置上。 */
+    /** 截图前的诊断：虚影到底在不在、在哪个格子。 */
+    static void factoryGhostDiag() {
+        try {
+            var plans = Vars.control.input.selectPlans;
+            StringBuilder sb = new StringBuilder();
+            for (var p : plans)
+                sb.append("(").append(p.x).append(",").append(p.y).append(")");
+            String sch = "-";
+            if (Vars.control.input instanceof mindustry.input.DesktopInput di)
+                sch = di.schematicX + "," + di.schematicY;
+            Log.info("[drv] 虚影诊断: 计划数=@ 位置=@ schematic=@ 鼠标格=@,@",
+                    plans.size, sb, sch,
+                    (int) (Core.input.mouseWorldX() / 8f), (int) (Core.input.mouseWorldY() / 8f));
+        } catch (Throwable t) {
+            Log.err("[drv] factoryGhostDiag failed", t);
+        }
+    }
+
+    static void factoryMergeDirect() {
+        try {
+            if (fcCfg == null) {
+                Log.err("[drv] 没有虚影 config，跳过落地");
+                return;
+            }
+            // 台数 → 边长（别写死 2x2，场景里放了几台就得用几 x 几）
+            int cnt = fcCount;
+            int side = ((Number) combineCall("combine.production.SuperCombineFactory", "sideFor",
+                    new Class<?>[] { int.class }, cnt)).intValue();
+            Block cf = Vars.content.block("super-combine-factory-" + side);
+            Log.info("[drv] 直接落地用 @ 台 → @x@（@）", cnt, side, side, cf == null ? "null" : cf.name);
+            mindustry.gen.Call.constructFinish(Vars.world.tile(fcTx, fcTy), cf, null, (byte) 0,
+                    Team.sharded, fcCfg);
+            Vars.control.input.selectPlans.clear();
+            Vars.control.input.block = null;
+            Log.info("[drv] 直接落地: (@,@) 现在有 @ 台组合工厂", fcTx, fcTy, countMerged());
+            // 下一步：喂料（等 2 秒让方块真正进 world）
+            Timer.schedule(Driver::factoryFeed, 2f);
+        } catch (Throwable t) {
+            Log.err("[drv] factoryMergeDirect failed", t);
+        }
+    }
+
+    static void factoryPlace() {
+        try {
+            // 放置要玩家有建造单位（和超级炮台那一套一样）
+            ensurePlayerUnit((fcOx + 9) * 8f, (fcOy + 7) * 8f);
+            for (var p : Vars.control.input.selectPlans)
+                Log.info("[drv] 计划 @,@ block=@ 可放=@ 那格现有=@ 队伍=@", p.x, p.y, p.block.name,
+                        mindustry.world.Build.validPlace(p.block, Team.sharded, p.x, p.y, p.rotation),
+                        Vars.world.build(p.x, p.y) == null ? "空" : Vars.world.build(p.x, p.y).block.name,
+                        Vars.player == null ? "-" : Vars.player.team().name);
+            if (Vars.player != null && Vars.player.unit() != null
+                    && !Vars.control.input.selectPlans.isEmpty()) {
+                var m = mindustry.input.InputHandler.class.getDeclaredMethod("flushPlans", Seq.class);
+                m.setAccessible(true);
+                m.invoke(Vars.control.input, Vars.control.input.selectPlans);
+                Log.info("[drv] flushPlans 后: 单位计划=@ 世界里的合体方块=@",
+                        Vars.player.unit().plans().size, countMerged());
+            }
+            Vars.control.input.selectPlans.clear();
+            Vars.control.input.block = null;
+        } catch (Throwable t) {
+            Log.err("[drv] factoryPlace failed", t);
+        }
+    }
+
+    static void factoryFeed() {
+        try {
+            // 落地位置以世界里的实际建筑为准（原版 flushPlans 可能把它放在锚点附近）
+            fcMerged = null;
+            for (Building b : mindustry.gen.Groups.build)
+                if (b.block != null && b.block.name != null
+                        && b.block.name.startsWith("super-combine-factory-"))
+                    fcMerged = b;
+            try {
+                var unit = Vars.player == null ? null : Vars.player.unit();
+                var plans = unit == null ? null : unit.plans();
+                Object first = plans == null || plans.isEmpty() ? null : plans.first();
+                Log.info("[drv] 等建造: 单位=@ 位置=@,@ 计划数=@ 计划进度=@ 可放=@ 全球方块=@",
+                        unit == null ? "null" : unit.type.name,
+                        unit == null ? -1 : (int) (unit.x / 8f), unit == null ? -1 : (int) (unit.y / 8f),
+                        plans == null ? -1 : plans.size,
+                        first instanceof mindustry.entities.units.BuildPlan bp ? bp.progress : -1f,
+                        first instanceof mindustry.entities.units.BuildPlan bp2
+                                ? mindustry.world.Build.validPlace(bp2.block, Team.sharded, bp2.x, bp2.y, bp2.rotation)
+                                : "-",
+                        countMerged());
+            } catch (Throwable t) {
+                Log.err("[drv] 等建造诊断失败", t);
+            }
+            if (fcMerged == null) {
+                // 软渲染下 "直接落地" 那一帧可能比这里晚，重试几次
+                fcFeedTries++;
+                if (fcFeedTries <= 8) {
+                    Log.info("[drv] 合体工厂还没出现，1.5s 后重试（第 @ 次）", fcFeedTries);
+                    Timer.schedule(Driver::factoryFeed, 1.5f);
+                } else {
+                    Log.err("[drv] 合体工厂没落地（框选位置 @,@）", fcOx + 9, fcOy + 7);
+                    // 还是要出图（至少能看"没落地"的样子）
+                    Timer.schedule(() -> shot("factory_after"), 2f);
+                    Timer.schedule(Driver::factoryOpenPanel, 4f);
+                }
+                return;
+            }
+            Block ps = Vars.content.block("power-source");
+            if (ps != null)
+                place(ps, fcMerged.tileX() - 1, fcMerged.tileY());
+            // 再贴一个原版 heat-source（不吃料、立刻产热）：让 display 的"热量"条有真实数字
+            try {
+                Block hs = Vars.content.block("heat-source");
+                if (hs != null) {
+                    placeBL(hs, fcMerged.tileX() + 2, fcMerged.tileY());
+                    runLogical(20);
+                    Log.info("[drv] 贴了 heat-source(@)=@ 合体工厂热池=@",
+                            hs.name, fcMerged.tileX() + 2 + "," + fcMerged.tileY(),
+                            fcMerged.getClass().getField("comboTotalHeat").get(fcMerged));
+                }
+            } catch (Throwable t) {
+                Log.err("[drv] 贴合体工厂 heat-source 失败", t);
+            }
+            // 按"整台池子的真实上限"给（别灌成 400/50 那种超容数字，截图里量出来的条才准）
+            int icap = (Integer) combineCall("combine.production.SuperCombineFactory", "itemCapOf",
+                    new Class<?>[] { Building.class }, fcMerged);
+            icap = Math.max(icap, 1);
+            fcMerged.items.add(mindustry.content.Items.sand, Math.max(icap * 3 / 5, 1));
+            fcMerged.items.add(mindustry.content.Items.coal, Math.max(icap / 2, 1));
+            fcMerged.items.add(mindustry.content.Items.lead, Math.max(icap / 4, 1));
+            // 给共享池灌液体：格子里的 DrawLiquidTile / DrawLiquidRegion 只有在池子里有液体时
+            // 才画得出来 —— 截图里"合体块每格有没有在画抽屉（而不是一张死图标）"就看这一步。
+            try {
+                fcMerged.liquids.add(mindustry.content.Liquids.water, 4000f); // 会被 tick 裁到池上限
+                Log.info("[drv] 合体工厂灌水: 池里 water=@ 池液体容量=@", fcMerged.liquids.get(mindustry.content.Liquids.water),
+                        combineCall("combine.production.SuperCombineFactory", "liquidCapOf",
+                                new Class<?>[] { Building.class }, fcMerged));
+            } catch (Throwable t) {
+                Log.err("[drv] 合体工厂灌水失败", t);
+            }
+            // 相机放在"合体块 + 右边那台原版参照机"中间，一张图里直接对比
+            Core.camera.position.set((fcMerged.x + (fcOx + 17) * 8f) / 2f, fcMerged.y + 12f);
+            Log.info("[drv] 合体工厂落地: 格数=@ 位置=@,@", combineCall(
+                    "combine.production.SuperCombineFactory", "loadedCells",
+                    new Class<?>[] { Building.class }, fcMerged),
+                    fcMerged.tileX(), fcMerged.tileY());
+            Object[] arr = (Object[]) fcMerged.getClass().getField("cells").get(fcMerged);
+            Object[] bs = (Object[]) fcMerged.getClass().getField("cellBlocks").get(fcMerged);
+            // 诊断：这一格方块的 drawer 部件都是什么（用户报的 drawer 相关）
+            try {
+                for (Object o : bs) {
+                    if (!(o instanceof Block b))
+                        continue;
+                    Object dr = combineCall("combine.util.ComboReflect", "fieldValue",
+                            new Class<?>[] { Object.class, String.class }, b, "drawer");
+                    Object usable = combineCall("combine.production.SuperCombineFactory", "drawerUsable",
+                            new Class<?>[] { Block.class }, b);
+                    Log.info("[drv] drawer(@)=@ usable=@", b.name,
+                            dr == null ? "null" : dr.getClass().getName(), usable);
+                    Object subs = dr == null ? null : combineCall("combine.util.ComboReflect", "fieldValue",
+                            new Class<?>[] { Object.class, String.class }, dr, "drawers");
+                    if (subs instanceof Object[] psx)
+                        for (Object p : psx)
+                            Log.info("[drv]   部件 @ region=@ liquid=@ rotate=@ main=@",
+                                    p.getClass().getSimpleName(),
+                                    combineCall("combine.util.ComboReflect", "fieldValue",
+                                            new Class<?>[] { Object.class, String.class }, p, "region"),
+                                    combineCall("combine.util.ComboReflect", "fieldValue",
+                                            new Class<?>[] { Object.class, String.class }, p, "liquid"),
+                                    combineCall("combine.util.ComboReflect", "fieldValue",
+                                            new Class<?>[] { Object.class, String.class }, p, "rotateSpeed"),
+                                    b.region);
+                    break;
+                }
+            } catch (Throwable t) {
+                Log.err("[drv] drawer 诊断失败", t);
+            }
+            StringBuilder sb = new StringBuilder();
+            for (Object o : bs) {
+                if (!(o instanceof Block b)) {
+                    sb.append("null,");
+                    continue;
+                }
+                Object k = combineCall("combine.production.SuperCombineFactory", "cellScale",
+                        new Class<?>[] { Block.class }, b);
+                sb.append(b.name).append("(size=").append(b.size)
+                    .append(",region=").append(b.region == null ? -1 : b.region.width)
+                    .append(",k=").append(k).append("),");
+            }
+            Log.info("[drv] 合体工厂 cells=@ blocks=[@]", arr.length, sb.toString());
+            // 原料必须都没了
+            int remain = 0;
+            for (Building bb : mindustry.gen.Groups.build)
+                if (bb.block != null && bb.block.name != null
+                        && !bb.block.name.startsWith("super-combine-factory-")
+                        && Boolean.TRUE.equals(combineCall("combine.production.SuperCombineFactory",
+                                "isFactoryBlock", new Class<?>[] { Block.class }, bb.block)))
+                    remain++;
+            Log.info("[drv] 原地合体后剩下的原料工厂=@ 台（应为 0）", remain);
+            // 多等几秒让里面的格子转起来（工作特效/产物动画），再截图 + 弹面板
+            Timer.schedule(() -> shot("factory_after"), 4f);
+            Timer.schedule(Driver::factoryOpenDisplay, 6f);
+        } catch (Throwable t) {
+            Log.err("[drv] factoryFeed failed", t);
+        }
+    }
+
+    /** 把方块自己的 buildConfiguration 表（点方块弹出的那张）放进对话框截图。 */
+    /** 世界里现在有几台组合工厂（驱动检查用）。 */
+    static int countMerged() {
+        int n = 0;
+        for (Building b : mindustry.gen.Groups.build)
+            if (b.block != null && b.block.name != null
+                    && b.block.name.startsWith("super-combine-factory-"))
+                n++;
+        return n;
+    }
+
+    /** 把方块自己的 display()（信息面板：物品/液体/电力/热量的条）放进对话框截图。 */
+    static void factoryOpenDisplay() {
+        try {
+            if (fcMerged == null || !fcMerged.isValid()) {
+                for (Building b : mindustry.gen.Groups.build)
+                    if (b.block != null && b.block.name != null
+                            && b.block.name.startsWith("super-combine-factory-"))
+                        fcMerged = b;
+            }
+            if (fcMerged == null || !fcMerged.isValid()) {
+                Log.err("[drv] 没有合体工厂，跳过 display 截图");
+                Timer.schedule(Driver::factoryOpenPanel, 1f);
+                return;
+            }
+            Core.camera.position.set(fcMerged.x, fcMerged.y);
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            fcMerged.getClass().getMethod("display", arc.scene.ui.layout.Table.class)
+                    .invoke(fcMerged, panel);
+            var d = new mindustry.ui.dialogs.BaseDialog("组合工厂 display（信息面板的条）");
+            d.cont.add(panel).pad(10f);
+            d.show();
+            Log.info("[drv] 合体工厂 display 已弹出（顶层元素 @ 个）", panel.getChildren().size);
+            Timer.schedule(() -> shot("factory_display"), 3f);
+            Timer.schedule(() -> {
+                try {
+                    d.hide();
+                } catch (Throwable ignored) {
+                }
+                factoryOpenPanel();
+            }, 4f);
+        } catch (Throwable t) {
+            Log.err("[drv] factoryOpenDisplay failed", t);
+            Timer.schedule(Driver::factoryOpenPanel, 1f);
+        }
+    }
+
+    static void factoryOpenPanel() {
+        try {
+            // 兜底：定时器乱序时 fcMerged 可能还没记上，这里直接去世界里找
+            if (fcMerged == null || !fcMerged.isValid()) {
+                for (Building b : mindustry.gen.Groups.build)
+                    if (b.block != null && b.block.name != null
+                            && b.block.name.startsWith("super-combine-factory-"))
+                        fcMerged = b;
+            }
+            if (fcMerged == null || !fcMerged.isValid()) {
+                Log.err("[drv] 没有合体工厂，跳过面板截图");
+                Timer.schedule(() -> shot("factory_panel"), 1f);
+                Timer.schedule(() -> { Log.info("[drv] factory 模式结束"); Core.app.exit(); }, 3f);
+                return;
+            }
+            Core.camera.position.set(fcMerged.x, fcMerged.y);
+            arc.scene.ui.layout.Table panel = new arc.scene.ui.layout.Table();
+            fcMerged.getClass().getMethod("buildConfiguration", arc.scene.ui.layout.Table.class)
+                    .invoke(fcMerged, panel);
+            var d = new mindustry.ui.dialogs.BaseDialog("组合工厂面板（点方块的界面）");
+            d.cont.add(panel).pad(10f);
+            d.show();
+            Log.info("[drv] 合体工厂面板已弹出（构成 @ 台）", panel.getChildren().size);
+            // 等面板排版/数据刷新一帧再截，然后收工
+            Timer.schedule(() -> shot("factory_panel"), 3f);
+            Timer.schedule(() -> { Log.info("[drv] factory 模式结束"); Core.app.exit(); }, 4f);
+        } catch (Throwable t) {
+            Log.err("[drv] factoryOpenPanel failed", t);
+            Timer.schedule(() -> { Log.info("[drv] factory 模式结束"); Core.app.exit(); }, 2f);
+        }
+    }
+
     static void setupSuperTurretScene() {
         try {
             hideDialogs();
@@ -3462,13 +4048,74 @@ public class Driver extends Mod{
                     java.lang.reflect.Field fType = arc.scene.event.InputEvent.class.getField("type");
                     java.lang.reflect.Field fSX = arc.scene.event.InputEvent.class.getField("stageX");
                     java.lang.reflect.Field fSY = arc.scene.event.InputEvent.class.getField("stageY");
-                    boolean wasSel = Boolean.TRUE.equals(getStatic(placer, "selecting"));
+                    // 【用户要求 2026-10-04】点一下浮标 = 展开两个子按钮（炮台合体 / 工厂合体），
+                    // 不再"直接进框选"；再点一次收起。框选进行中时点它才是取消。
                     fireInput(handle, dragTap, el, fType, fSX, fSY, "touchDown", el.x, el.y);
                     fireInput(handle, dragTap, el, fType, fSX, fSY, "touchUp", el.x, el.y);
-                    boolean nowSel = Boolean.TRUE.equals(getStatic(placer, "selecting"));
-                    if (nowSel != wasSel) Log.info("[drv] PASS 点一下悬浮按钮切换框选（@ → @）", wasSel, nowSel);
-                    else Log.err("[drv] FAIL 点一下悬浮按钮没切换框选（@ → @）", wasSel, nowSel);
-                    if (nowSel) placer.getMethod("cancel").invoke(null);
+                    boolean selAfterTap = Boolean.TRUE.equals(getStatic(placer, "selecting"));
+                    arc.scene.Element subT = Core.scene.find("combineSubTurretBtn");
+                    arc.scene.Element subF = Core.scene.find("combineSubFactoryBtn");
+                    if (subT != null && subF != null && !selAfterTap)
+                        Log.info("[drv] PASS 点一下浮标弹出两个子按钮（炮台合体+工厂合体），没有直接进框选");
+                    else
+                        Log.err("[drv] FAIL 点一下浮标的行为不对（炮台子按钮=@ 工厂子按钮=@ 进了框选=@）",
+                            subT != null, subF != null, selAfterTap);
+                    // 【左右摆位】浮标在屏幕左半边 → 子按钮在它右边；右半边 → 在它左边
+                    try {
+                        java.lang.reflect.Method pos = placer.getDeclaredMethod("positionSubButtons");
+                        pos.setAccessible(true);
+                        float halfW = el.parent.getWidth() / 2f;
+                        el.setPosition(10f, el.y);
+                        pos.invoke(null);
+                        arc.scene.Element t1 = Core.scene.find("combineSubTurretBtn");
+                        arc.scene.Element f1 = Core.scene.find("combineSubFactoryBtn");
+                        boolean leftOk = t1 != null && f1 != null
+                            && t1.x >= el.x + el.getWidth() - 1f && f1.x >= el.x + el.getWidth() - 1f
+                            && Math.abs(t1.y - f1.y) >= t1.getHeight() - 1f; // 竖排不许互相盖住
+                        el.setPosition(halfW + 60f, el.y);
+                        pos.invoke(null);
+                        arc.scene.Element t2 = Core.scene.find("combineSubTurretBtn");
+                        arc.scene.Element f2 = Core.scene.find("combineSubFactoryBtn");
+                        boolean rightOk = t2 != null && f2 != null
+                            && t2.x + t2.getWidth() <= el.x + 1f && f2.x + f2.getWidth() <= el.x + 1f
+                            && Math.abs(t2.y - f2.y) >= t2.getHeight() - 1f;
+                        Log.info("[drv] 子按钮换边: 浮标在左半屏→子按钮在右=@（炮台 x=@ 工厂 x=@，浮标 x=@）"
+                            + " 浮标在右半屏→子按钮在左=@",
+                            leftOk, (int) (t1 == null ? -1 : t1.x), (int) (f1 == null ? -1 : f1.x), (int) el.x, rightOk);
+                        if (leftOk && rightOk)
+                            Log.info("[drv] PASS 两个子按钮按浮标所在半边换边（左→右、右→左）");
+                        else
+                            Log.err("[drv] FAIL 子按钮没有按浮标所在半边换边");
+                    } catch (Throwable t) {
+                        Log.err("[drv] 子按钮换边检查失败", t);
+                    }
+                    // 再点一次收起
+                    fireInput(handle, dragTap, el, fType, fSX, fSY, "touchDown", el.x, el.y);
+                    fireInput(handle, dragTap, el, fType, fSX, fSY, "touchUp", el.x, el.y);
+                    boolean hidden = Core.scene.find("combineSubTurretBtn") == null
+                        && Core.scene.find("combineSubFactoryBtn") == null;
+                    if (hidden) Log.info("[drv] PASS 再点一下浮标收起子按钮");
+                    else Log.err("[drv] FAIL 再点一下没收起子按钮");
+                    // 两个子按钮各自接对功能：炮台子按钮 → 炮台框选；工厂子按钮 → 工厂框选
+                    try {
+                        Class<?> fcCls = Class.forName("combine.production.FactoryCombiner", true, ml);
+                        java.lang.reflect.Method onTurret = placer.getDeclaredMethod("onTurretBtn");
+                        onTurret.setAccessible(true);
+                        onTurret.invoke(null);
+                        boolean tSel = Boolean.TRUE.equals(getStatic(placer, "selecting"));
+                        if (tSel) placer.getMethod("cancel").invoke(null);
+                        java.lang.reflect.Method onFactory = placer.getDeclaredMethod("onFactoryBtn");
+                        onFactory.setAccessible(true);
+                        onFactory.invoke(null);
+                        boolean fSel = Boolean.TRUE.equals(getStatic(fcCls, "selecting"));
+                        if (fSel) fcCls.getMethod("cancel").invoke(null);
+                        if (tSel && fSel)
+                            Log.info("[drv] PASS 两个子按钮分别接对：炮台合体→炮台框选、工厂合体→工厂框选");
+                        else
+                            Log.err("[drv] FAIL 子按钮接线不对（炮台=@ 工厂=@）", tSel, fSel);
+                    } catch (Throwable t) {
+                        Log.err("[drv] 子按钮接线检查失败", t);
+                    }
 
                     // 拖动：先挪到屏幕正中（怎么拖都不会被收边），按住拖 (-120,-90) 再抬手
                     el.setPosition(el.parent.getWidth() / 2f, el.parent.getHeight() / 2f);
@@ -3500,7 +4147,18 @@ public class Driver extends Mod{
             try {
                 var procs = Core.input.getInputProcessors();
                 Object ourProc = getStatic(placer, "processor");
-                boolean first = procs != null && !procs.isEmpty() && procs.first() == ourProc;
+                // 现在有两套框选处理器（炮台合体 / 工厂合体），两个都必须在最前面（原版在它们之后）
+                Object ourProc2 = null;
+                try {
+                    ourProc2 = getStatic(Class.forName("combine.production.FactoryCombiner", true, ml), "processor");
+                } catch (Throwable ignored) {
+                }
+                int ourFirst = 0;
+                if (procs != null)
+                    for (int i = 0; i < Math.min(procs.size, 2); i++)
+                        if (procs.get(i) == ourProc || procs.get(i) == ourProc2)
+                            ourFirst++;
+                boolean first = procs != null && !procs.isEmpty() && ourFirst == 2;
                 StringBuilder order = new StringBuilder();
                 for (int i = 0; i < Math.min(procs == null ? 0 : procs.size, 6); i++)
                     order.append(i).append(':').append(procs.get(i).getClass().getSimpleName()).append(' ');

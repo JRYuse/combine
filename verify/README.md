@@ -41,8 +41,10 @@ verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.DetachTest
 verify/run-headless.sh mx /tmp/mp_cj/data   combine.dbg.DetachTest
 verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.FilterTest
 verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.ContentTableTest -Dseed=container
+verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.FactoryCombineTest   # 组合工厂（合体工厂）
 ```
 
+- `FactoryCombineTest`：框选多台工厂 → 合成 side×side（每格一台工厂）的组合工厂：布局/来源/库存编码、拆掉原料、库存并池、**耗电生效**、**耗热生效**、存读档、解体放回
 - `DetachTest`：设置里关掉/打开某建筑组合 → 物品/液体是否立刻拆开、容量与导电性还原、重新打开是否立刻恢复；顺带验列表分类
 - `FilterTest`：`显示可组合 / 显示不可组合` 只列能手动开关的建筑，且和关掉的状态对得上
 - `ContentTableTest`：设置里的手动名单**不能**改动内容表（`-Dseed=<方块名>` 模拟"上次关过它"）
@@ -70,6 +72,9 @@ verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.MultiBuildPerfTest -Dper
 `Node*Test`/`SavePoolAuditTest` 这一套守住。
 
 ## 3. 真客户端截图（UI 改动必跑）
+
+`factory` 模式：摆三台工厂 → 合成一台 1x1 组合工厂 → 截图（世界里那个方块自己画出来的样子）
+→ 再弹出"点方块"的那张面板截图（构成列表 + 解体按钮）。截图在 `~/sd/shots/`。
 
 ### arc 界面输入的兜底（`ComboInputGuard`）
 

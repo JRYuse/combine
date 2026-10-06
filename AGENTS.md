@@ -98,3 +98,21 @@ verify/run-mp.sh official /tmp/mp_cj/data 200 20 80   # 官方服务端 + 真客
   再上全套；真客户端/联机这类几分钟的活单独排）。
 - 报告里写清"跑了几次、每次跑的是什么"：没跑到的（例如超时/数据集不适用）要明确标出来，
   不许把"没跑"写成"过了"。
+
+## 识图：当前模型不支持时用 vision 子 agent 看截图
+
+如果当前会话的模型不支持识图（`view_image` 返回 "you do not support image inputs"），
+跑真客户端截图这类需要人眼核对布局/按钮/文字的验证时，**必须**用支持图片输入的模型逐张核对，
+不能只靠日志文字下结论。核对项包括但不限于：按钮有没有被裁出面板边缘、文字有没有重叠、
+数字排版是否正常、设置列表的开关勾选状态。
+
+本机实测可用的识图通道（2026-10-04，TokenPlan / discovery-api 网关）：
+
+- spawn 子 agent 的 `model` 只收固定 id，实测都不行：`deepseek-flash` 在网关 404；
+  `deepseek-v4-flash-0731` 子 agent 走 responses 协议时网关报 input 格式错。
+- 这个 key 上真正能读图的是 **`deepseek-v4-flash-vision`**（`/v1/models` 里有、
+  响应 usage 里 `multimodal_tokens.image` 非 0），但 `spawn_agent` 不接受这个 id。
+- 所以识图用 `verify/vcheck.py`：拿 intern provider 的 token 直连
+  `https://discovery-api.intern-ai.org.cn/v1/chat/completions`，图片 base64 传 `image_url`；
+  一张（或需要对比的两张放同一请求里）一张地核对，提示词强制"只要结论"
+  （这个模型容易把思考过程写进 content 导致答案被截断）。

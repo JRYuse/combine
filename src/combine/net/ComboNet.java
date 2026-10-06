@@ -136,6 +136,58 @@ public class ComboNet {
         dirty = true;
     }
 
+    /**
+     * 「组合总开关」关掉时调用：把**已经并在一起**的组合体拆回"每台各一份"
+     * （物品/液体按各自容量比例分，总量不变；核心池不拆）。
+     *
+     * <p>为什么必须主动拆：开关只是让分组/并池不再把这些建筑当组合体
+     * （见 {@link combine.util.ComboTeams#playerTeam}），已经共用同一份模块的建筑不会自己分开 ——
+     * 不拆的话玩家看到的是"开关关了、物品照样共享"。
+     *
+     * <p>直接复用"分量之间按容量比例拆"那套（{@link #splitItemsAcrossComponents} /
+     * {@link #splitLiquidsAcrossComponents}）：把每台建筑当成一个独立分量喂进去，
+     * 共用模块就按容量比例分给各台，各自拿一份新模块。
+     */
+    public static void detachAllCombos(){
+        if(world == null || Groups.build == null) return;
+        try{
+            Seq<Building> all = new Seq<>();
+            ObjectSet<Building> seen = new ObjectSet<>();
+            for(Building b : Groups.build){
+                if(b == null || !b.isValid() || b.block == null) continue;
+                if(!ComboReflect.isComboBuild(b)) continue;
+                if(seen.add(b)) all.add(b);
+            }
+            for(CombinedStorageBlock.CombinedStorageBuild sb : CombinedStorageBlock.trackedSet()){
+                if(sb != null && sb.isValid() && seen.add(sb)) all.add(sb);
+            }
+            for(Building cb : CoopCombo.trackedBuildings()){
+                if(cb != null && cb.isValid() && seen.add(cb)) all.add(cb);
+            }
+            Seq<Seq<Building>> comps = new Seq<>();
+            for(Building b : all){
+                Seq<Building> one = new Seq<>();
+                one.add(b);
+                comps.add(one);
+            }
+            splitItemsAcrossComponents(comps);
+            splitLiquidsAcrossComponents(comps);
+            // 每台回到自己的基础容量（并池时把容量算成整组之和了）
+            for(Building b : all){
+                try{
+                    ComboReflect.setItemCap(b, ComboReflect.baseItemCap(b));
+                    ComboReflect.setLiquidCap(b, ComboReflect.baseLiquidCap(b));
+                    ComboReflect.markClean(b);
+                }catch(Throwable ignored){
+                }
+            }
+            invalidateTracked();
+            Log.info("[combine] 组合总开关关闭：已把 @ 台组合建筑拆成各自独立", all.size);
+        }catch(Throwable t){
+            Log.err("[combine] 拆散组合体失败（组合总开关已关闭，但部分池子可能还连着）", t);
+        }
+    }
+
     /** 上一次重建里"属于某张网络"的格子（pos）；用来判断一次格子变化要不要重建网络。 */
     private static final IntSet netMemberPos = new IntSet();
 

@@ -1223,6 +1223,14 @@ public class SuperTurretTest implements arc.ApplicationListener {
 
           int psz = Math.max(pd.size, 1); // 原版 segment 是 2x2，间距要按它自己的尺寸算
           int px = lx + 2, py = ly + 18;
+          // 先把这一小片清干净：框选现在**也会认现成的合体炮台**（加炮台那条路），
+          // 不清的话前面用例留下的合体炮台会被一起框进来。
+          for(int cy2 = py - 1; cy2 <= py + psz; cy2++)
+            for(int cx2 = px - 1; cx2 <= px + psz * 2; cx2++){
+              Tile ct = Vars.world.tile(cx2, cy2);
+              if(ct != null && ct.block() != Blocks.air) ct.setBlock(Blocks.air);
+            }
+          run(3);
           place(pd, px, py, Team.sharded);
           place(pd, px + psz, py, Team.sharded);
           run(20);

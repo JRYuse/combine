@@ -237,6 +237,12 @@ public class ComboBlockList {
     paneW = Mathf.clamp(logicalW - 90f, 300f, 620f);
     colW = Math.max((paneW - 18f) / 3f, 80f);
 
+    // 【组合总开关】关掉 = 所有组合建筑（**含玩家自己队伍**）都不再组合：
+    // 分组停掉、已经并在一起的池子会当场按容量比例拆回每台一份（见 ComboTeams.setEnabled）。
+    table.check("[accent]启用组合[]（关掉 = 所有组合建筑都不组合，包括自己队伍；已并的会立刻拆开）",
+        combine.util.ComboTeams.enabled, combine.util.ComboTeams::setEnabled)
+        .left().padBottom(8f).row();
+
     // 【只和玩家队友组合】总开关：AI 敌人的建筑不再互相组合（玩家队伍照旧）
     table.check("[accent]只和玩家队友组合[]（关掉 = 谁跟谁贴一起都能组合）",
         combine.util.ComboTeams.playersOnly, v -> {

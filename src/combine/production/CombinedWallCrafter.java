@@ -123,9 +123,10 @@ public class CombinedWallCrafter extends WallCrafter {
         public int pendingLeaderPos = -1;
 
         public CombinedWallCrafterBuild leader() {
-            if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null))
+            if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null)) {
                 comboLeader = null;
-                    comboDirty = true; // FIX: 失联后允许重建组合
+                comboDirty = true; // FIX: 失联后允许重建组合
+            }
             return comboLeader == null ? this : comboLeader;
         }
 

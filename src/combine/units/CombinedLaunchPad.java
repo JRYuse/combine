@@ -559,17 +559,33 @@ public class CombinedLaunchPad extends LaunchPad {
                         liquids.remove(l, amt - comboTotalLiquidCap);
                 }
             }
-            if ((launchCounter += edelta()) >= launchTime && items.total() >= comboTotalItemCap) {
+            // 【用户报"大量组合发射台组合后短时间内抽干物资，但真正到达目标区块的不多"】
+            // 旧写法：判据是"整组池子 ≥ 整组容量"，一发射就把**整个池子**塞进一个 payload。
+            // 组合的发射台越多，单次 payload 越大 —— 目标区块一次收不下那么多，超出部分被丢，
+            // 玩家看到的就是"抽走的很多、到账的很少"。
+            // 现在按**一台发射台的容量**发货（等价于 N 台原版发射台各发各的）：
+            // 池子里够一台的量就发一台的量，装多少扣多少，剩下的留给下一次/别的台。
+            int per = Math.max(block.itemCapacity, 1);
+            if ((launchCounter += edelta()) >= launchTime && items.total() >= per) {
                 consume();
                 launchSound.at(x, y, 1f + Mathf.range(launchSoundPitchRand));
                 LaunchPayload entity = LaunchPayload.create();
-                items.each((item, amount) -> entity.stacks.add(new ItemStack(item, amount)));
+                int budget = per;
+                for (Item item : content.items()) {
+                    if (budget <= 0)
+                        break;
+                    int amt = Math.min(items.get(item), budget);
+                    if (amt <= 0)
+                        continue;
+                    entity.stacks.add(new ItemStack(item, amt));
+                    items.remove(item, amt);
+                    budget -= amt;
+                }
                 entity.set(this);
                 entity.lifetime(120f);
                 entity.team(team);
                 entity.add();
                 Fx.launchPod.at(this);
-                items.clear();
                 Effect.shake(3f, 3f, this);
                 launchCounter = 0f;
             }

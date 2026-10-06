@@ -755,18 +755,45 @@ public class CoopPanel {
   /** 整组的弹仓：弹药 → 已装数量（炮塔的弹药存在自己弹仓里，不在共享池）。 */
   public static ObjectIntMap<Item> ammoCounts(Building b) {
     ObjectIntMap<Item> out = new ObjectIntMap<>();
-    for (Building m : turretMembers(b)) {
-      if (!(m instanceof mindustry.world.blocks.defense.turrets.ItemTurret.ItemTurretBuild itb) || itb.ammo == null)
+    Seq<Building> members = turretMembers(b);
+    // 合体炮台：每一格各装各的，整台显示的是各格之和。
+    if (b instanceof combine.turret.SuperTurret.SuperTurretBuild) {
+      for (Building m : members)
+        addAmmo(out, m, false);
+      return out;
+    }
+    // 组合炮台：整组并池到 leader 那一份上，只读 leader 的弹仓。
+    // 以前是把整组里每台炮台的弹仓都累加，而并池后弹药只存在 leader
+    // 那一份上，于是同一池按台数被重复计 N 次，弹仓显示得越大越离谱。
+    // 所以这里先找 leader：找到就只读它一份，直接返回。
+    for (Building m : members) {
+      Building lead = combine.util.ComboReflect.leader(m);
+      if (lead instanceof mindustry.world.blocks.defense.turrets.ItemTurret.ItemTurretBuild) {
+        addAmmo(out, lead, false);
+        return out;
+      }
+    }
+    for (Building m : members)
+      addAmmo(out, m, true);
+    return out;
+  }
+
+  /** 把一台炮台（或合体炮台的一格）的弹仓并进统计表；maxOnly=true 时同种弹药取最大值。 */
+  static void addAmmo(ObjectIntMap<Item> out, Building m, boolean maxOnly) {
+    if (!(m instanceof mindustry.world.blocks.defense.turrets.ItemTurret.ItemTurretBuild itb) || itb.ammo == null)
+      return;
+    for (mindustry.world.blocks.defense.turrets.Turret.AmmoEntry e : itb.ammo) {
+      if (!(e instanceof mindustry.world.blocks.defense.turrets.ItemTurret.ItemEntry ie)) continue;
+
+      if (ie.item == null || ie.amount <= 0)
         continue;
-      for (mindustry.world.blocks.defense.turrets.Turret.AmmoEntry e : itb.ammo) {
-        if (!(e instanceof mindustry.world.blocks.defense.turrets.ItemTurret.ItemEntry ie))
-          continue;
-        if (ie.item == null || ie.amount <= 0)
-          continue;
+      if (maxOnly) {
+        if (ie.amount > out.get(ie.item, 0))
+          out.put(ie.item, ie.amount);
+      } else {
         out.increment(ie.item, ie.amount);
       }
     }
-    return out;
   }
 
   /** 整组能用的弹药种类（并集，顺序跟着 ammoTypes）。 */
