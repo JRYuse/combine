@@ -2201,17 +2201,14 @@ public class ComboNet {
             }
         }catch(Throwable ignored){
         }
-        // ↓ 新增：SuperBlock 的真实容量是"里层每格物品上限之和"
-        if(self instanceof combine.storage.SuperBlock.SuperBlockBuild sb)
-            cap = Math.max(cap, sb.realItemCap);
+
         return Math.max(cap, 1);
     }
 
     public static float panelLiquidCap(Building self){
         float cap = componentLiquidCap(liquidScope(self));
         if(cap <= 0f) cap = ComboReflect.baseLiquidCap(self);
-        if(self instanceof combine.storage.SuperBlock.SuperBlockBuild sb)
-            cap = Math.max(cap, sb.realLiquidCap);
+
         return Math.max(cap, 1f);
     }
 
@@ -2774,11 +2771,6 @@ public class ComboNet {
             if(!m.isValid()) continue;
             if(m instanceof combine.turret.SuperTurret.SuperTurretBuild st){
                 demand += st.heatDemand();
-                continue;
-            }
-            // ↓↓↓ 新增这一段
-            if(m instanceof combine.storage.SuperBlock.SuperBlockBuild sb){
-                demand += sb.heatDemand();   // 里面 N 格需热建筑的需求之和
                 continue;
             }
             // ↑↑↑ 新增这一段

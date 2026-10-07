@@ -1,15 +1,10 @@
 package combine.saves;
+
 import arc.util.io.*;
 import mindustry.io.*;
 import mindustry.io.versions.LegacyRegionSaveVersion;
 import java.io.*;
 
-/**
- * v1-v6 包装器 (LegacyRegionSaveVersion 的四区域顺序).
- * 不覆写 read(): 继承的原版 read() 内部调用全部走运行时(可能被 R8 重命名)的
- * 正确方法名, 只在 readChunk/readLegacyShortChunk 两个点注入缓冲,
- * 从而彻底免疫方法名反射失效问题。
- */
 public class SafeWLegacy extends LegacyRegionSaveVersion {
   public SafeWLegacy(int version) {
     super(version);

@@ -31,10 +31,8 @@ import mindustry.world.Block;
 import mindustry.world.Tile;
 import mindustry.world.blocks.heat.HeatBlock;
 import mindustry.world.blocks.heat.HeatProducer;
+import mindustry.world.blocks.power.PowerGenerator;
 import mindustry.world.blocks.production.GenericCrafter;
-import mindustry.world.consumers.Consume;
-import mindustry.world.consumers.ConsumeItems;
-import mindustry.world.consumers.ConsumePower;
 import mindustry.world.draw.DrawBlock;
 import mindustry.world.meta.BuildVisibility;
 import mindustry.world.modules.ItemModule;
@@ -59,8 +57,9 @@ import static mindustry.Vars.*;
  * 各自跑原版 {@code updateTile()}，只是：
  * <ul>
  *   <li>物品 / 液体模块指向本体那一份（= 整台共用一份库存）；</li>
- *   <li>电力：本体用 {@link FactoryConsumePower} 把各格用电量加总上报电网，电网算出的
- *       满足率再回写给每一格；</li>
+ *   <li>电力：每一格**直接加入本体的真实电网**（{@link PowerGraph#add}），按原版标志自动
+ *       划入 producers / consumers —— 发电机格子天然并网、各格独立结算 status，
+ *       本体只是"并网点"（hasPower + outputsPower），合体后自产自耗、盈余外送；</li>
  *   <li>热量：每格挂一个热量探针（{@link ComboHeatProbe}），整台一个热池、按各格需求分摊；</li>
  *   <li>里面自己的制热机产出的热也进这个池子，供同台其它格子（和整张组合网络）用。</li>
  * </ul>
@@ -105,6 +104,13 @@ public class SuperCombineFactory extends Block {
     hasItems = true;
     hasLiquids = true;
     hasPower = true;
+    // 【电力：格子直接入网】本体本身不耗电不产电（consPower = null、consumesPower = false），只是
+    // hasPower + outputsPower 的"并网点"：让电力节点能连上本体，从而连上里面的格子。
+    // 格子们各自加入 {\@code power.graph}（见 makeCell），由 PowerGraph 统一结算。
+    // ⚠️ Block.consumesPower 默认就是 true，但 add() 分类分支在 outputsPower && consumesPower
+    // 且 consPower == null 时会 NPE（读 consPower.buffered）——本体必须显式关掉。
+    consumesPower = false;
+    outputsPower = true;
     // 【放置即成型】原版会先摆一个 ConstructBlock（施工中：目标方块贴图压暗 + 进度条），
     // 完工才变成真方块。本方块是隐藏的虚拟方块、没有专属贴图，施工那一两秒就是用户报的
     // "放下去先暗一下"。合体本来就该是一次成型，所以标 instantBuild 跳过施工阶段。
@@ -119,7 +125,6 @@ public class SuperCombineFactory extends Block {
     itemCapacity = 1280;
     liquidCapacity = 9999f;
     buildType = SuperCombineFactoryBuild::new;
-    consume(new FactoryConsumePower());
     // 【必须有】原版 `Block.offset`（偶数边长 = tilesize/2，奇数边长 = 0）是在**内容加载收尾**
     // 的 afterPatch 里按 size 算的；本方块是 Mod.init() 里现造的，那一轮早过了 → offset 一直是 0。
     // 后果：原版这边凡是"以方块中心为准"的东西（状态图标 / 选中框 / 悬停 / 剔除矩形 / 蓝图矩形）
@@ -188,11 +193,14 @@ public class SuperCombineFactory extends Block {
   // ==================== 哪些方块算"工厂" ====================
 
   /**
-   * 能合体的"工厂"：{@link GenericCrafter}（含 HeatCrafter / Separator / AttributeCrafter 这些子类）
-   * 和 {@link HeatProducer}（制热机）。钻头 / 泵 / 挖墙钻不算工厂，不在这条合体流程里。
+   * 能合体的"工厂"：{@link GenericCrafter}（含 HeatCrafter / Separator / AttributeCrafter 这些子类）、
+   * {@link HeatProducer}（制热机）和 {@link PowerGenerator}（发电机：地热 / 燃烧 / 蒸汽 / 太阳能 /
+   * 反应堆 / HeaterGenerator 等 —— 反堆类别的 {@code updateTile()} 只写字段不碰 power.graph，
+   * 在假 build 上跑原版逻辑是安全的；发电量用 {@code PowerGenerator.GeneratorBuild.getPowerProduction()}
+   * 读，产出的电先进整台共享池、自产自耗，盈余才对外输出）。钻头 / 泵 / 挖墙钻不算工厂，不在这条合体流程里。
    */
   public static boolean isFactoryBlock(Block b) {
-    return b instanceof GenericCrafter || b instanceof HeatProducer;
+    return b instanceof GenericCrafter || b instanceof HeatProducer || b instanceof PowerGenerator;
   }
 
   /**
@@ -356,7 +364,7 @@ public class SuperCombineFactory extends Block {
     } catch (Throwable ignored) {
     }
     return new String(arc.util.serialization.Base64Coder.encode(buf.toByteArray()))
-        .replace("\n", "").replace("\r", "");
+            .replace("\n", "").replace("\r", "");
   }
 
   /** "i3=7,l1=50" → [kind, id, amount, ...]（kind: 0=物品 1=液体）。 */
@@ -711,7 +719,7 @@ public class SuperCombineFactory extends Block {
   @Override
   public boolean canPlaceOn(Tile tile, mindustry.game.Team team, int rotation) {
     if (tile != null && tile.build != null && isFactoryBlock(tile.block())
-        && !replaceAllowedPos.contains(tile.pos()))
+            && !replaceAllowedPos.contains(tile.pos()))
       return false;
     return super.canPlaceOn(tile, team, rotation);
   }
@@ -737,24 +745,6 @@ public class SuperCombineFactory extends Block {
   @Override
   public void onNewPlan(mindustry.entities.units.BuildPlan plan) {
     FactoryCombiner.markOrdered();
-  }
-
-  // ==================== 电网：把各格用电量加总上报 ====================
-
-  public static class FactoryConsumePower extends ConsumePower {
-    public FactoryConsumePower() {
-      super(0f, 0f, false);
-    }
-
-    @Override
-    public float requestedPower(Building entity) {
-      return entity instanceof SuperCombineFactoryBuild b ? b.cellPowerUse() : 0f;
-    }
-
-    @Override
-    public float efficiency(Building build) {
-      return build == null || build.power == null ? 1f : build.power.status;
-    }
   }
 
   // ==================== 建筑本体 ====================
@@ -829,8 +819,8 @@ public class SuperCombineFactory extends Block {
       members.add(this);
       try {
         for (Building b : ComboReflect.linkedReachable(this,
-            o -> o instanceof SuperCombineFactoryBuild st && st.team == team && st.isValid(),
-            (cur, o) -> true)) {
+                o -> o instanceof SuperCombineFactoryBuild st && st.team == team && st.isValid(),
+                (cur, o) -> true)) {
           if (b != this && b.isValid())
             members.addUnique(b);
         }
@@ -1009,11 +999,11 @@ public class SuperCombineFactory extends Block {
         table.add("[lightgray]组合工厂: [white]" + filledCount() + " 台[]").left();
         table.row();
         table.add(innerSummary()).left()
-            .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap();
+                .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap();
         table.row();
         // 【产物】用户报的"没有产物的 display 信息"：列这台组合工厂能产什么（各格产出去重）
         table.add("[lightgray]产物: [white]" + outputSummary() + "[]").left()
-            .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap();
+                .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap();
         table.row();
         // 【产物条】用户 2026-10-05 要求：物品 / 液体 / 电力 / 热量四条 bar 都要
         buildPoolBars(table);
@@ -1042,9 +1032,9 @@ public class SuperCombineFactory extends Block {
           anyItem = true;
           final int t = amount, c = Math.max(realItemCap, 1);
           table.add(new mindustry.ui.Bar(
-              () -> item.localizedName + ": " + t + "/" + c,
-              () -> item.color,
-              () -> Mathf.clamp((float) t / c))).width(w).height(18f).pad(4f).left().row();
+                  () -> item.localizedName + ": " + t + "/" + c,
+                  () -> item.color,
+                  () -> Mathf.clamp((float) t / c))).width(w).height(18f).pad(4f).left().row();
         }
       }
       if (!anyItem)
@@ -1061,36 +1051,42 @@ public class SuperCombineFactory extends Block {
           anyLiquid = true;
           final float t = amount, c = Math.max(realLiquidCap, 0.001f);
           table.add(new mindustry.ui.Bar(
-              () -> liquid.localizedName + ": " + arc.util.Strings.fixed(t, 1) + "/"
-                  + arc.util.Strings.fixed(c, 1),
-              () -> liquid.barColor != null ? liquid.barColor : liquid.color,
-              () -> Mathf.clamp(t / c))).width(w).height(18f).pad(4f).left().row();
+                  () -> liquid.localizedName + ": " + arc.util.Strings.fixed(t, 1) + "/"
+                          + arc.util.Strings.fixed(c, 1),
+                  () -> liquid.barColor != null ? liquid.barColor : liquid.color,
+                  () -> Mathf.clamp(t / c))).width(w).height(18f).pad(4f).left().row();
         }
       }
       if (!anyLiquid)
         table.add("[gray]（空）[]").left().row();
 
-      // 3) 电力条：整台各格用电之和 × 电网满足率
+      // 3) 电力条：整台各格用电之和 × 电网满足率（含发电机格子时显示净账单）
       final float use = cellPowerUse();
-      final float status = power == null ? 0f : power.status;
+      final float gen = cellPowerProduced();
+      final float req = Math.max(0f, use - gen);
+      final float surplus = powerSurplus();
+      final float status = power == null ? 0f : power.graph.getSatisfaction();
       table.add(new mindustry.ui.Bar(
-          () -> "电力 " + arc.util.Strings.fixed(use * status * 60f, 1) + " / "
-              + arc.util.Strings.fixed(use * 60f, 1) + " ⚡/s",
-          () -> Pal.power,
-          () -> Mathf.clamp(status))).width(w).height(18f).pad(4f).left().row();
+              () -> surplus > 0.001f
+                      ? "发电 +" + arc.util.Strings.fixed(surplus * 60f, 1) + " ⚡/s"
+                        + (req > 0.001f ? "（自耗 " + arc.util.Strings.fixed(req * 60f, 1) + "）" : "")
+                      : "电力 " + arc.util.Strings.fixed(req * status * 60f, 1) + " / "
+                        + arc.util.Strings.fixed(req * 60f, 1) + " ⚡/s",
+              () -> Pal.power,
+              () -> surplus > 0.001f ? 1f : Mathf.clamp(status))).width(w).height(18f).pad(4f).left().row();
 
       // 4) 热量条：整台热池 / 里面每一台需热合计（只产热不耗热时显示产热）
       final float demand = heatDemand();
       table.add(new mindustry.ui.Bar(
-          () -> demand > 0.001f
-              ? "热量 " + arc.util.Strings.fixed(comboTotalHeat, 1) + " / "
-                  + arc.util.Strings.fixed(demand, 1)
-              : "热量 " + arc.util.Strings.fixed(Math.max(comboTotalHeat, producedHeat), 1),
-          () -> Pal.lightOrange,
-          () -> demand > 0.001f
-              ? Mathf.clamp(comboTotalHeat / demand)
-              : (Math.max(comboTotalHeat, producedHeat) > 0.001f ? 1f : 0f)))
-          .width(w).height(18f).pad(4f).left().row();
+                      () -> demand > 0.001f
+                              ? "热量 " + arc.util.Strings.fixed(comboTotalHeat, 1) + " / "
+                                + arc.util.Strings.fixed(demand, 1)
+                              : "热量 " + arc.util.Strings.fixed(Math.max(comboTotalHeat, producedHeat), 1),
+                      () -> Pal.lightOrange,
+                      () -> demand > 0.001f
+                              ? Mathf.clamp(comboTotalHeat / demand)
+                              : (Math.max(comboTotalHeat, producedHeat) > 0.001f ? 1f : 0f)))
+              .width(w).height(18f).pad(4f).left().row();
     }
 
     /** 这台组合工厂能产什么（把里面每一格的产物并集去重，物品 + 液体）。 */
@@ -1110,6 +1106,8 @@ public class SuperCombineFactory extends Block {
               for (LiquidStack st : gc.outputLiquids)
                 if (st != null && st.liquid != null && seen.add("l" + st.liquid.id))
                   appendName(sb, st.liquid.localizedName);
+          } else if (b instanceof PowerGenerator pg && pg.getDisplayedPowerProduction() > 0f && seen.add("⚡")) {
+            appendName(sb, "⚡电力");
           }
         } catch (Throwable ignored) {
         }
@@ -1126,8 +1124,8 @@ public class SuperCombineFactory extends Block {
     }
 
     public String innerSummary() {
-        StringBuilder sb = new StringBuilder();
-        for (Block b : cellBlocks) {
+      StringBuilder sb = new StringBuilder();
+      for (Block b : cellBlocks) {
         if (b == null)
           continue;
         if (sb.length() > 0)
@@ -1190,15 +1188,15 @@ public class SuperCombineFactory extends Block {
           top.add("[lightgray]把每台工厂放回原处（想重摆时用）").left();
         }).left().padBottom(6f).row();
         table.add("[accent]组合工厂 " + side + "x" + side + "（" + filledCount() + " 台）[]："
-            + "物品/液体/电力/热量整台共用").left().row();
+                + "物品/液体/电力/热量整台共用").left().row();
         // 【产物】能产什么
         table.add("[lightgray]产物: [white]" + outputSummary() + "[]").left()
-            .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap().row();
+                .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap().row();
         // 【产物条】物品 / 液体 / 电力 / 热量（用户 2026-10-05 要求四类都要）
         buildPoolBars(table);
         table.add(innerSummary()).left().width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap().row();
         table.add("[lightgray]想再往里加工厂：点右上角浮标 → 工厂合体 → 把这台和要加的工厂一起框上").left()
-            .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap();
+                .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap();
       } catch (Throwable t) {
         Log.err("[combine] 组合工厂面板构建失败", t);
       }
@@ -1272,8 +1270,10 @@ public class SuperCombineFactory extends Block {
           c.items = items;
         if (c.liquids != liquids)
           c.liquids = liquids;
-        if (c.power != null && power != null)
-          c.power.status = power.status;
+        // 【电网落入/合并兜底】本体被电力节点连接、或图被合并/重置后，格子可能还挂在旧图上：
+        // 每帧只做一次引用比较，发现不一致就重新把格子签进本体的图（PowerGraph.add 幂等）。
+        if (c.power != null && power != null && (c.power.graph != power.graph || !c.power.init))
+          power.graph.add(c);
         // 【工作特效】原版 GenericCrafter.updateTile() 里那条 "wasVisible && chance(updateEffectChance)"
         // 是给渲染器每帧标过的；格子不在渲染循环里，wasVisible 永远是 false →
         // updateEffect/烟雾/火花全都不生成（用户报的"没有特效"）。这里手动标成可见。
@@ -1300,7 +1300,7 @@ public class SuperCombineFactory extends Block {
         } catch (Throwable t) {
           if (cellBroken.add(i))
             Log.err("[combine] 组合工厂第 @ 格（@）更新出错，已停用这一格", i,
-                cellBlocks[i] == null ? "?" : cellBlocks[i].name, t);
+                    cellBlocks[i] == null ? "?" : cellBlocks[i].name, t);
           cells[i] = null;
           continue;
         } finally {
@@ -1335,9 +1335,45 @@ public class SuperCombineFactory extends Block {
       return sum;
     }
 
+    /** 各格的发电量合计（发电机格子：原版 updateTile 推进状态后读 getPowerProduction()）。 */
+    public float cellPowerProduced() {
+      float sum = 0f;
+      for (Building c : cells) {
+        if (c == null || c.dead() || c.block == null || !(c instanceof PowerGenerator.GeneratorBuild g))
+          continue;
+        try {
+          sum += Math.max(0f, g.getPowerProduction());
+        } catch (Throwable ignored) {
+        }
+      }
+      return sum;
+    }
+
+    /**
+     * 对外产电 = 整台净盈余（各格发电 − 各格消耗），只在有盈余时上报；
+     * 真网 PowerGraph.update() 会遍历 producers 调这个方法，把本台当生产者。
+     *
+     * <p>【直接入网后不需要了】格子们各自进 producers/consumers，本体不中转电力；
+     * 这个值只用于信息面板的展示口径。
+     */
+    public float powerSurplus() {
+      return Math.max(0f, cellPowerProduced() - cellPowerUse());
+    }
+
     /** 这一格自己产的热（制热机的 heat）。 */
     float cellProducedHeat(Building c) {
-      if (c == null || c.block == null || !(c.block instanceof HeatProducer))
+      if (c == null || c.block == null)
+        return 0f;
+      try {
+        // HeaterGenerator 是 PowerGenerator + HeatBlock，不走 {@code heat} 字段
+        if (c instanceof HeatBlock hb) {
+          float h = hb.heat();
+          if (h > 0f)
+            return h;
+        }
+      } catch (Throwable ignored) {
+      }
+      if (!(c.block instanceof HeatProducer))
         return 0f;
       Float v = ComboReflect.getFloat(c, "heat");
       return v == null ? 0f : Math.max(0f, v);
@@ -1506,6 +1542,9 @@ public class SuperCombineFactory extends Block {
       for (Building c : cells)
         if (c != null)
           try {
+            // 先把格子从电网摘下来，再拆格子本体（不然残留的 producers/consumers 会继续报产报耗）
+            if (c.power != null && c.power.graph != null)
+              c.power.graph.remove(c);
             c.remove();
           } catch (Throwable ignored) {
           }
@@ -1562,7 +1601,7 @@ public class SuperCombineFactory extends Block {
       float oldMax = maxHealth;
       maxHealth = Math.max(healthSum, 1f);
       if (placedFullHealth || oldMax <= 0.001f || health <= 0.5f || health >= oldMax - 0.5f
-          || health <= block.health + 0.5f)
+              || health <= block.health + 0.5f)
         health = maxHealth;
       else
         health = Math.min(health, maxHealth);
@@ -1647,6 +1686,10 @@ public class SuperCombineFactory extends Block {
         c.enabled = true;
         c.checkAllowUpdate();
         c.created();
+        // 【格子直接入网】加入本体的 PowerGraph：add() 会按 block.outputsPower/consumesPower
+        // 自动把它划进 producers / consumers，并把它带进后续的电网合并。
+        if (c.power != null && power != null && c.power.graph != power.graph)
+          power.graph.add(c);
         return c;
       } catch (Throwable t) {
         if (cellBroken.add(-6))
@@ -1717,7 +1760,7 @@ public class SuperCombineFactory extends Block {
           // 【加工厂】原料是"一整台组合工厂"：把它的库存搬进来，然后整台拆掉
           Tile ot = sourceTile(src.substring(1));
           if (ot != null && ot.build instanceof SuperCombineFactoryBuild old && old.team == team
-              && !old.dead()) {
+                  && !old.dead()) {
             try {
               if (old.items != null && items != null)
                 moveItems(old.items, items);
@@ -1743,7 +1786,7 @@ public class SuperCombineFactory extends Block {
           continue;
         }
         if (t != null && t.build != null && t.build.team == team && !t.build.dead()
-            && isFactoryBlock(t.block()) && cellBlock(t.block()) == want) {
+                && isFactoryBlock(t.block()) && cellBlock(t.block()) == want) {
           try {
             // 原料工厂里已经攒着的货并进本台（不然连它的库存一起吃掉了）
             if (t.build.items != null && items != null)
@@ -1780,7 +1823,7 @@ public class SuperCombineFactory extends Block {
         return null;
       try {
         return world.tile(Integer.parseInt(tok.substring(0, comma).trim()),
-            Integer.parseInt(tok.substring(comma + 1).trim()));
+                Integer.parseInt(tok.substring(comma + 1).trim()));
       } catch (Throwable t) {
         return null;
       }
@@ -1923,34 +1966,45 @@ public class SuperCombineFactory extends Block {
     public boolean acceptItem(Building source, Item item) {
       if (items == null || item == null || items.get(item) >= realItemCap)
         return false;
-      // 只有"某一格会吃 / 会产这种物品"才收（免得传送带把没用的东西堆进来堵死）
-      for (Block b : cellBlocks) {
-        if (b == null)
+      // 过滤层：只有"某一格会吃 / 会产这种物品"才收（免得传送带把没用的东西堆进来堵死）；
+      // 判定层：委托给那一格自己的 acceptItem()（原版语义，自定义方块也自动兼容），
+      // 容量口径按**整台共享池**临时抬到 realItemCap（格子自己那点容量早就满了）。
+      for (int i = 0; i < cells.length; i++) {
+        Building c = cells[i];
+        Block cb = i < cellBlocks.length ? cellBlocks[i] : null;
+        if (c == null || cb == null)
           continue;
         try {
-          if (blockConsumesItem(b, item))
+          if (!cb.consumesItem(item) && !producesItem(cb, item))
+            continue;
+          if (cellAcceptsItem(c, cb, item, realItemCap, source))
             return true;
-          if (b instanceof GenericCrafter gc && gc.outputItems != null)
-            for (mindustry.type.ItemStack st : gc.outputItems)
-              if (st != null && st.item == item)
-                return true;
         } catch (Throwable ignored) {
         }
       }
       return false;
     }
 
-    static boolean blockConsumesItem(Block b, Item item) {
-      if (b == null || b.consumers == null)
+    /** 这个方块会不会产这种物品（成品方向，传送带回填用的）。 */
+    static boolean producesItem(Block b, Item item) {
+      if (!(b instanceof GenericCrafter gc) || gc.outputItems == null)
         return false;
-      for (Consume c : b.consumers) {
-        if (c instanceof ConsumeItems ci && ci.items != null) {
-          for (mindustry.type.ItemStack st : ci.items)
-            if (st != null && st.item == item)
-              return true;
-        }
-      }
+      for (ItemStack st : gc.outputItems)
+        if (st != null && st.item == item)
+          return true;
       return false;
+    }
+
+    /** 用格子自己的 acceptItem() 判定，容量临时按整台池子算。 */
+    static boolean cellAcceptsItem(Building c, Block cb, Item item, int sharedCap, Building source) {
+      int old = cb.itemCapacity;
+      try {
+        if (cb.itemCapacity < sharedCap)
+          cb.itemCapacity = sharedCap;
+        return c.acceptItem(source, item);
+      } finally {
+        cb.itemCapacity = old;
+      }
     }
 
     @Override
@@ -1985,11 +2039,33 @@ public class SuperCombineFactory extends Block {
     public boolean acceptLiquid(Building source, Liquid liquid) {
       if (liquids == null || liquid == null || liquids.get(liquid) >= realLiquidCap - 0.001f)
         return false;
-      for (Building c : cells) {
-        if (c != null && c.block != null && c.block.hasLiquids && c.block.consumesLiquid(liquid))
-          return true;
+      // 同 acceptItem：过滤（这一格会不会喝这种液体） + 委托给格子自己的 acceptLiquid()
+      for (int i = 0; i < cells.length; i++) {
+        Building c = cells[i];
+        Block cb = i < cellBlocks.length ? cellBlocks[i] : null;
+        if (c == null || cb == null || !cb.hasLiquids)
+          continue;
+        try {
+          if (!cb.consumesLiquid(liquid))
+            continue;
+          if (cellAcceptsLiquid(c, cb, liquid, realLiquidCap, source))
+            return true;
+        } catch (Throwable ignored) {
+        }
       }
       return false;
+    }
+
+    /** 用格子自己的 acceptLiquid() 判定，容量临时按整台池子算。 */
+    static boolean cellAcceptsLiquid(Building c, Block cb, Liquid liquid, float sharedCap, Building source) {
+      float old = cb.liquidCapacity;
+      try {
+        if (cb.liquidCapacity < sharedCap)
+          cb.liquidCapacity = sharedCap;
+        return c.acceptLiquid(source, liquid);
+      } finally {
+        cb.liquidCapacity = old;
+      }
     }
 
     @Override
