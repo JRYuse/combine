@@ -58,7 +58,12 @@ import static mindustry.Vars.*;
  */
 public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnitComboBlock {
     /** 是否允许跨方块类型成组（true = 工厂可与重构厂互通成组） */
-    public boolean allowCrossTypeCombo = true;
+  // 【单位生产族内部互通】组装厂 ↔ 重构厂 ↔ 构筑器 相邻就并成一台（这是本模组为单位链
+  // 设计的例外，见 IUnitCombo.IUnitComboBlock）。36e0c49 把它一起关成了 false，
+  // 于是"Reconstructor 和 UnitFactory 的组合没了"（用户报的）。这里改回 true。
+  // 注意：跨类型边要求**两边**都是 true，所以只有这个单位族内部互通，
+  // 不会顺带把组合工厂/组合钻头又拉回来（它们仍是 false）。
+  public boolean allowCrossTypeCombo = true;
 
     @Override
     public boolean allowCrossTypeCombo() {
@@ -319,6 +324,7 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          if (!ComboUi.detail()) { super.display(table); return; }
           // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
           ComboUi.safe("combinedunitfactory:display", () -> displayInner(table));
         }

@@ -237,6 +237,12 @@ public class ComboBlockList {
     paneW = Mathf.clamp(logicalW - 90f, 300f, 620f);
     colW = Math.max((paneW - 18f) / 3f, 80f);
 
+    // 【组合总开关】关掉 = 所有组合建筑（**含玩家自己队伍**）都不再组合：
+    // 分组停掉、已经并在一起的池子会当场按容量比例拆回每台一份（见 ComboTeams.setEnabled）。
+    table.check("[accent]启用组合[]（关掉 = 所有组合建筑都不组合，包括自己队伍；已并的会立刻拆开）",
+        combine.util.ComboTeams.enabled, combine.util.ComboTeams::setEnabled)
+        .left().padBottom(8f).row();
+
     // 【只和玩家队友组合】总开关：AI 敌人的建筑不再互相组合（玩家队伍照旧）
     table.check("[accent]只和玩家队友组合[]（关掉 = 谁跟谁贴一起都能组合）",
         combine.util.ComboTeams.playersOnly, v -> {
@@ -251,6 +257,23 @@ public class ComboBlockList {
     // 【点击非己方建筑也弹悬浮面板】关掉之后只对自己队伍的方块弹面板
     table.check("[accent]点击非己方建筑也显示悬浮面板[]（关掉 = 只对自己队伍的方块弹面板）",
         combine.coop.CoopPanel.showForeign, v -> combine.coop.CoopPanel.setShowForeign(v))
+        .left().padBottom(8f).row();
+
+    // 【悬浮信息面板】总开关：关掉之后点组合体不再弹那个大面板（只走原版/display 那套）
+    table.check("[accent]显示悬浮信息面板[]（点组合体时弹出的那个大面板：构成 + 物品池 + 液体池）",
+        combine.util.ComboUi.panel(), combine.util.ComboUi::setPanel)
+        .left().padBottom(8f).row();
+
+    // 【组合体共享面板】总开关：点**自己队伍**的组合体时弹出的"组合体共享"小面板
+    //（勾选 物品/液体/电力/热量）。默认开；关掉就完全不出（敌方建筑本来就不弹）。
+    table.check("[accent]显示组合体共享面板[]（点自己的组合体时弹出的小面板：勾选 物品/液体/电力/热量）",
+        combine.util.ComboUi.sharePanel(), combine.util.ComboUi::setSharePanel)
+        .left().padBottom(8f).row();
+
+    // 【display 详细信息】关掉 = 组合建筑的信息面板退回原版（super.display(table)）；
+    // 开 = 画组合体构成 + 整组物品池/液体池/电力条。
+    table.check("[accent]信息面板显示详细信息[]（关掉 = 用原版面板）",
+        combine.util.ComboUi.detail(), combine.util.ComboUi::setDetail)
         .left().padBottom(8f).row();
 
     final String[] query = {searchText};
@@ -315,7 +338,9 @@ public class ComboBlockList {
     field.changed(() -> {
       searchText = field.getText();
       query[0] = field.getText();
-      rebuild[0].run();
+      // 【别在事件派发里清表】TextField 的 changed 也可能落在输入派发过程中，
+      // 直接重画会在"点击/输入还在派发"时把这张表里的元素摘掉（同 defer 的说明）。
+      defer(rebuild);
     });
     table.add(field).width(paneW).left().row();
 

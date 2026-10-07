@@ -1,5 +1,14 @@
 # 规则：这个仓库（组合工厂 / combine）
 
+## 省流量 / 省 token：不做没必要的截屏、不重复跑验证
+
+- **headless 能验的就别开真客户端**。真客户端截图（`verify/run-client.sh`，~1.5min + 软渲染）
+  只在**改动真的动了 UI / 面板 / 布局 / 绘制**时跑；纯逻辑（分组、并池、容量、热量、存档、
+  液体混输之类）一律用 `verify/run-headless.sh` 写/跑回归用例，**不要为省事去截屏**。
+- 输出**只打关键数字**，不要把整段 `[drv]`/对象树刷屏；诊断用一次性用例，结论写进报告后**删掉临时用例**。
+- 同一份代码、同一套数据、同一个测试**不重复跑**（跑第二遍没有信息量，见下面的"验证次数上限"）。
+  先用最小、最准的目标测试（先 `ErekirBugsTest`/`DetachTest`，再上全套），一次只跑一个验证进程。
+
 ## 写完 / 改完必须跑验证器
 
 **不要只靠读代码就下结论**，改完按下面顺序跑（细节见 `verify/README.md`）：
@@ -24,7 +33,9 @@
    verify/run-client.sh mx      /tmp/mp_coop/data list   # 再用 MindustryX 跑一遍
    ```
 
-   截图在 `~/sd/shots/`（自动建目录、按 001_ 002_ 连续编号），用看图工具确认（例如按钮有没有被裁掉、数字有没有变）。
+  截图在 `~/sd/shots/`（自动建目录、按 001_ 002_ 连续编号），用看图工具确认（例如按钮有没有被裁掉、数字有没有变）。
+  本机是 **Windows**：没有 Xvfb（那是 X11 的），直接跑原生桌面客户端 ——
+  `verify/run-client.ps1 -Game vanilla -Data <数据目录> -Mode list`，截图同样落**桌面** `shots\`。
 
 4. 报告结论时给**证据**：跑的是哪个 jar / 哪套模组、关键数字（容量、数量、id 顺序）、截图文件路径。
 
@@ -43,7 +54,7 @@
   1. 用**兼容安卓的编译命令**：`./gradlew --offline deploy`
      （`deploy` = desktop + android 合并，产物里有 `classes.dex`；只跑 `./gradlew jar` 出来的是纯桌面包，安卓端装不上）
   2. 交付前**删掉所有调试日志/探针**（`[dbg]`、`dbgTicks`、`System.out.print`、驱动用的 print 之类），脚本会 grep 检查
-  3. 编译产物放 `~/sd`：只放 `~/sd/combine.jar`
+  3. 编译产物放**桌面**：只放 `~/Desktop/combine.jar`
      （**不要**另外生成带版本号的名字，使用者自己改名字）
   4. 不要动mod.hjson
 - 提交信息用中文，说清"根因 + 改法"。
@@ -89,3 +100,21 @@ verify/run-mp.sh official /tmp/mp_cj/data 200 20 80   # 官方服务端 + 真客
   再上全套；真客户端/联机这类几分钟的活单独排）。
 - 报告里写清"跑了几次、每次跑的是什么"：没跑到的（例如超时/数据集不适用）要明确标出来，
   不许把"没跑"写成"过了"。
+
+## 识图：当前模型不支持时用 vision 子 agent 看截图
+
+如果当前会话的模型不支持识图（`view_image` 返回 "you do not support image inputs"），
+跑真客户端截图这类需要人眼核对布局/按钮/文字的验证时，**必须**用支持图片输入的模型逐张核对，
+不能只靠日志文字下结论。核对项包括但不限于：按钮有没有被裁出面板边缘、文字有没有重叠、
+数字排版是否正常、设置列表的开关勾选状态。
+
+本机实测可用的识图通道（2026-10-04，TokenPlan / discovery-api 网关）：
+
+- spawn 子 agent 的 `model` 只收固定 id，实测都不行：`deepseek-flash` 在网关 404；
+  `deepseek-v4-flash-0731` 子 agent 走 responses 协议时网关报 input 格式错。
+- 这个 key 上真正能读图的是 **`deepseek-v4-flash-vision`**（`/v1/models` 里有、
+  响应 usage 里 `multimodal_tokens.image` 非 0），但 `spawn_agent` 不接受这个 id。
+- 所以识图用 `verify/vcheck.py`：拿 intern provider 的 token 直连
+  `https://discovery-api.intern-ai.org.cn/v1/chat/completions`，图片 base64 传 `image_url`；
+  一张（或需要对比的两张放同一请求里）一张地核对，提示词强制"只要结论"
+  （这个模型容易把思考过程写进 content 导致答案被截断）。

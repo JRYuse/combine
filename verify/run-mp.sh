@@ -18,7 +18,7 @@ SERVER_JAR="${SERVER_JAR:-$HOME/sd/server-release.jar}"
 MINDUSTRY_JAR="${MINDUSTRY_JAR:-$HOME/Mindustry/desktop/build/libs/Mindustry.jar}"
 NATIVE="${NATIVE:-$HERE/native/libsdl-arcarm64.so}"
 DISPLAY_NUM="${DISPLAY_NUM:-:99}"
-DRV_OUT="${DRV_OUT:-$HOME/sd/shots}"
+DRV_OUT="${DRV_OUT:-$HOME/Desktop/shots}"
 
 if [ $# -lt 2 ]; then
   echo "用法: $0 <mx|vanilla|jar路径> <数据目录> [延迟ms] [丢包%] [脚本秒数]" >&2

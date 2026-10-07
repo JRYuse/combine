@@ -223,6 +223,7 @@ public class CombinedLogicProcessor extends LogicBlock {
 
     @Override
     public void display(Table table) {
+      if (!ComboUi.detail()) { super.display(table); return; }
       // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
       ComboUi.safe("combinedlogicprocessor:display", () -> displayInner(table));
     }

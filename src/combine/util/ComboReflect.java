@@ -40,16 +40,37 @@ import static mindustry.Vars.world;
  */
 public class ComboReflect {
 
+  /**
+   * 「这栋建筑是不是组合建筑」里**只跟类有关**的那部分判定结果缓存。
+   *
+   * 【性能】rebuild 里"每栋建筑 × 每趟循环"都要问一次 isComboBuild（超大基地 1 万+ 栋、
+   * 每次放置还要重来一遍），原来每次都走两三张 ConcurrentHashMap（hasField）——
+   * 现在按建筑类缓存成一个布尔，热路径只剩一次查表。
+   *
+   * 注意**不缓存** {@code CoopCombo.eligible(...)}：那条判定依赖能在设置界面里实时改的
+   * 黑名单（它自己也有缓存，名单变了会 clear），不能在这里固化。
+   */
+  private static final java.util.concurrent.ConcurrentHashMap<Class<?>, Boolean> isComboBuildCache =
+      new java.util.concurrent.ConcurrentHashMap<>();
+
   public static boolean isComboBuild(Building b){
         if(b == null) return false;
-        if(b.block instanceof CombinedStorageBlock) return true;
-        // 被替换出来的组合墙等功能方块：自己维护分组（IComboGrouped），
-        // 也要能被组合节点/连接器接起来（用户要求：接上就该有完整组合功能，比如墙共享血量）。
-        if(b instanceof IComboGrouped) return true;
+        Boolean cached = isComboBuildCache.get(b.getClass());
+        if(cached != null){
+            if(cached) return true;
+        }else{
+            // 结构性的三条：组合仓库/容器；自己维护分组的功能方块（组合墙等，IComboGrouped）；
+            // 以及各 Combined* 方块自己写的 comboGroup/comboLeader 字段约定。
+            boolean r = b.block instanceof CombinedStorageBlock
+                || b instanceof IComboGrouped
+                || hasField(b, "comboGroup") || hasField(b, "comboLeader");
+            isComboBuildCache.put(b.getClass(), r);
+            if(r) return true;
+        }
         // 协作组合（继承原版类、自己写了新功能的 js/java 方块）也当成组合方块：
         // 这样 ComboNet 的池子合并/拆分、连接器/节点、信息面板都能一视同仁。
-        if(CoopCombo.eligible(b.block)) return true;
-        return hasField(b, "comboGroup") || hasField(b, "comboLeader");
+        // 这条依赖运行时可改的黑名单，不进上面的缓存。
+        return CoopCombo.eligible(b.block);
     }
 
     /**
@@ -128,9 +149,13 @@ public class ComboReflect {
         ObjectSet<Building> seenLinkers = new ObjectSet<>();
         queue.addLast(start);
         visited.add(start);
+        // 【性能】节点名单只快照一次：以前这里在 BFS 的**每个节点**上都要
+        // `CoopCombo.trackedNodesCopy()`（新建一个 Seq + 拷一遍全部节点），
+        // 组一大就是 O(组成员 × 节点数)，每次放置都能卡一下。
+        Seq<Building> nodeSnapshot = CoopCombo.trackedNodesCopy();
         // 跨距离的组合节点：links 里直接写了 start 的节点也是跳板（节点不在邻格里，发现不了"有人连我"）
         try{
-            for(Building nb : CoopCombo.trackedNodesCopy()){
+            for(Building nb : nodeSnapshot){
                 if(nb instanceof ComboNodeBuild node && node.links != null && node.links.contains(start.pos()))
                     walkLinkers(node, memberTest, edgeAllowed, seenLinkers, visited, queue, start);
             }
@@ -152,7 +177,7 @@ public class ComboReflect {
                 }
             }
             try{
-                for(Building nb : CoopCombo.trackedNodesCopy()){
+                for(Building nb : nodeSnapshot){
                     if(nb instanceof ComboNodeBuild node && node.links != null && node.links.contains(cur.pos()))
                         walkLinkers(node, memberTest, edgeAllowed, seenLinkers, visited, queue, cur);
                 }

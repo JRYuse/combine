@@ -22,6 +22,7 @@ import mindustry.game.Team;
 import mindustry.gen.Building;
 import mindustry.graphics.Pal;
 import mindustry.type.Item;
+import mindustry.type.Liquid;
 import mindustry.ui.Bar;
 import mindustry.world.Block;
 import mindustry.world.Tile;
@@ -36,8 +37,10 @@ import static mindustry.Vars.*;
  * 每台切割自己面前的墙，产出进入共享池，由全体成员向外输出。
  */
 public class CombinedWallCrafter extends WallCrafter {
-    public boolean allowCrossTypeCombo = true;
+    public boolean allowCrossTypeCombo = false;
     public float itemCapacityMultiplier = 1f;
+    /** 单台液容（记在 init 第一次，之后 liquidCapacity 被抬成 9999 假容量）。 */
+    public float baseLiquidCapacity = 10f;
 
     public Seq<Item> cachedItems = new Seq<>();
 
@@ -53,6 +56,11 @@ public class CombinedWallCrafter extends WallCrafter {
     public void init() {
         super.init();
         hasItems = true;
+        // 【组合液池】把 liquidCapacity 抬到 9999（和别的组合建筑一个口径），
+        // 否则共享池一超过单台液容(10)，原版管道就判定"满了"彻底断流 —— 组里其它台永远没氢可用。
+        if (combine.util.ComboReflect.captureBaseLiquidCapOnce(this))
+            baseLiquidCapacity = liquidCapacity;
+        liquidCapacity = 9999f;
         cachedItems.clear();
         conductivePower = true;
         if (output != null)
@@ -115,9 +123,10 @@ public class CombinedWallCrafter extends WallCrafter {
         public int pendingLeaderPos = -1;
 
         public CombinedWallCrafterBuild leader() {
-            if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null))
+            if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null)) {
                 comboLeader = null;
-                    comboDirty = true; // FIX: 失联后允许重建组合
+                comboDirty = true; // FIX: 失联后允许重建组合
+            }
             return comboLeader == null ? this : comboLeader;
         }
 
@@ -140,7 +149,7 @@ public class CombinedWallCrafter extends WallCrafter {
             // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
             for (Building b : ComboReflect.linkedReachable(this,
                     o -> o instanceof CombinedWallCrafterBuild other && other.team == team && other.isValid(),
-                    (cur, o) -> cur.block == o.block
+                    (cur, o) -> cur.block.getClass() == o.block.getClass()
                     || ((CombinedWallCrafter) cur.block).allowCrossTypeCombo
                     || ((CombinedWallCrafter) o.block).allowCrossTypeCombo)) {
                 if (b != this)
@@ -165,9 +174,17 @@ public class CombinedWallCrafter extends WallCrafter {
             for (CombinedWallCrafterBuild b : newGroup)
                 if (b.isValid())
                     totalItemCap += b.block.itemCapacity;
+            float totalLiquidCap = 0f;
             for (CombinedWallCrafterBuild b : newGroup)
                 if (b.isValid())
-                    b.comboTotalItemCap = totalItemCap;
+                    totalLiquidCap += b.liquidCapacityForCombo();
+            for (CombinedWallCrafterBuild b : newGroup)
+                if (b.isValid()) {
+                    // 【不共享物品】面板上"物品"没勾 = 每台各留各的模块，容量也只算自己那份
+                    b.comboTotalItemCap = combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.ITEMS)
+                            ? totalItemCap : Math.max(ComboReflect.baseItemCap(b), 1);
+                    b.comboTotalLiquidCap = totalLiquidCap;
+                }
 
             if (oldGroup.size > newGroup.size)
                 splitAssets(oldGroup, newGroup);
@@ -179,8 +196,14 @@ public class CombinedWallCrafter extends WallCrafter {
                     old.comboGroup = new Seq<>();
                     old.comboDirty = true;
                     old.comboTotalItemCap = 0;
+                    old.comboTotalLiquidCap = 0f;
                 }
             }
+        }
+
+        /** 单台液容（block.liquidCapacity 被抬成 9999 假容量，这里取 init 记下的基础值）。 */
+        public float liquidCapacityForCombo() {
+            return ((CombinedWallCrafter) block).baseLiquidCapacity;
         }
 
         public void splitAssets(Seq<CombinedWallCrafterBuild> oldGroup,
@@ -198,7 +221,9 @@ public class CombinedWallCrafter extends WallCrafter {
             // 【池子可能不只本组在用】核心库存 / 组合节点接过来的别的组合体也在引用它时，
             // 本地拆分一律不动这口池子（退出成员拿空模块，由 ComboNet 按网络重新分配）。
             // 否则就是从核心库存里搬东西给退出的工厂 —— 用户报的"拆工厂时核心里的东西全没了"。
-            boolean poolOurs = !ComboReflect.itemPoolSharedOutside(poolItems, oldGroup);
+            // 【不共享物品】没有"公共池"：谁也别并进来、退出成员也别被换成空模块（否则等于丢物品）
+            boolean localShareItems = combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.ITEMS);
+            boolean poolOurs = localShareItems && !ComboReflect.itemPoolSharedOutside(poolItems, oldGroup);
             for (CombinedWallCrafterBuild b : oldGroup) {
                 if (!b.isValid())
                     continue;
@@ -261,8 +286,14 @@ public class CombinedWallCrafter extends WallCrafter {
                 for (CombinedWallCrafterBuild b : newGroup)
                     if (b.isValid())
                         b.items = oldItems;
-            for (int i = 0; i < kicked.size; i++)
-                kicked.get(i).items = newItemMods[i];
+            for (int i = 0; i < kicked.size; i++) {
+                if (poolOurs) kicked.get(i).items = newItemMods[i];
+                // 拆出去的成员拿一口空液池：液体留在组池里（和物品"留在组里"同一口径），
+                // 避免它继续 alias 组池后被后续独立运行搬空/重复写档。
+                // 【不共享液体】没有"组池"这回事：它自己那份液池留着，别换成空的（等于丢液体）。
+                if (combine.net.ComboShare.shares(newLeader, combine.net.ComboShare.LIQUIDS))
+                    kicked.get(i).liquids = new LiquidModule();
+            }
         }
 
         public void shareModules(CombinedWallCrafterBuild leader) {
@@ -279,9 +310,11 @@ public class CombinedWallCrafter extends WallCrafter {
             //（核心没动、工厂也多一份同样的物品），网络层随后把这多出来的一份并回核心 —— 库存凭空翻倍。
             ObjectSet<ItemModule> sharedItemPools = ComboReflect.itemPoolsSharedOutside(group());
             ItemModule sharedItems = sharedItemPools.isEmpty() ? null : sharedItemPools.first();
-            if (sharedItems != null) leader.items = sharedItems;
+            // 【不共享物品】没勾"物品"时谁也别并谁（拆开由 ComboNet 按单台粒度做，见 perMemberGroups）
+            boolean localShareItems = combine.net.ComboShare.shares(leader, combine.net.ComboShare.ITEMS);
+            if (localShareItems && sharedItems != null) leader.items = sharedItems;
             ObjectSet<ItemModule> processedItems = new ObjectSet<>();
-            if (leader.items != null) {
+            if (localShareItems && leader.items != null) {
                 processedItems.add(leader.items);
                 for (CombinedWallCrafterBuild m : group()) {
                     if (m != leader && m.isValid() && m.items != null && !processedItems.contains(m.items)
@@ -299,6 +332,38 @@ public class CombinedWallCrafter extends WallCrafter {
                     if (m.isValid())
                         m.items = leader.items;
                 if (leader.items != null) leader.items.stopFlow(); // 组内搬池子不算流量（见 ComboNet.moveItems）
+            }
+
+            // ---- 液体池同理：整组共用一份 liquids（去重后每口池子只写一份）----
+            if (leader.liquids == null) {
+                for (CombinedWallCrafterBuild m : group())
+                    if (m.liquids != null) {
+                        leader.liquids = m.liquids;
+                        break;
+                    }
+            }
+            ObjectSet<LiquidModule> sharedLiquidPools = ComboReflect.liquidPoolsSharedOutside(group());
+            LiquidModule sharedLiquids = sharedLiquidPools.isEmpty() ? null : sharedLiquidPools.first();
+            boolean localShareLiquids = combine.net.ComboShare.shares(leader, combine.net.ComboShare.LIQUIDS);
+            if (localShareLiquids && sharedLiquids != null) leader.liquids = sharedLiquids;
+            ObjectSet<LiquidModule> processedLiquids = new ObjectSet<>();
+            if (localShareLiquids && leader.liquids != null) {
+                processedLiquids.add(leader.liquids);
+                for (CombinedWallCrafterBuild m : group()) {
+                    if (m != leader && m.isValid() && m.liquids != null && !processedLiquids.contains(m.liquids)
+                            && !sharedLiquidPools.contains(m.liquids)) {
+                        processedLiquids.add(m.liquids);
+                        for (Liquid liquid : content.liquids()) {
+                            float amt = m.liquids.get(liquid);
+                            if (amt > 0f)
+                                leader.liquids.add(liquid, amt); // 全额并入
+                        }
+                    }
+                }
+                for (CombinedWallCrafterBuild m : group())
+                    if (m.isValid())
+                        m.liquids = leader.liquids;
+                leader.liquids.stopFlow(); // 组内搬池子不算流量
             }
         }
 
@@ -337,6 +402,16 @@ public class CombinedWallCrafter extends WallCrafter {
                     if (shared)
                         items = new ItemModule();
                 }
+                if (liquids != null) {
+                    boolean shared = false;
+                    for (CombinedWallCrafterBuild m : members)
+                        if (m != this && m.isValid() && m.liquids == this.liquids) {
+                            shared = true;
+                            break;
+                        }
+                    if (shared)
+                        liquids = new LiquidModule();
+                }
             }
             if (wasLeader) {
                 Seq<CombinedWallCrafterBuild> survivors = new Seq<>();
@@ -374,10 +449,12 @@ public class CombinedWallCrafter extends WallCrafter {
                 for (int i = 0; i < survivors.size; i++) {
                     CombinedWallCrafterBuild b = survivors.get(i);
                     b.items = itemMods[i];
+                    b.liquids = new LiquidModule(); // 液体整池留在原组长那一份，幸存者各自空池
                     b.comboLeader = null;
                     b.comboGroup = new Seq<>();
                     b.comboDirty = true;
                     b.comboTotalItemCap = 0;
+                    b.comboTotalLiquidCap = 0f;
                 }
             } else {
                 CombinedWallCrafterBuild leader = leader();
@@ -394,7 +471,39 @@ public class CombinedWallCrafter extends WallCrafter {
         // -------------------- 核心逻辑 --------------------
         @Override
         public boolean acceptItem(Building source, Item item) {
-            return false; // 产出型方块，不接受外部物品
+            // 【石墨强化】原版 WallCrafter 的 itemConsumer（高级墙壁粉碎机 = consumeItem(graphite).boost()）
+            // 是"吃物品加速"的，必须能收进来。以前一律 false，石墨永远进不去（用户报的）。
+            // 和原版 Building.acceptItem 同款：只收本机/本组用得到的物品，且不超过整组物品上限。
+            return block.hasItems && block.consumesItem(item)
+                    && items != null && items.get(item) < getMaximumAccepted(item);
+        }
+
+        @Override
+        public boolean acceptLiquid(Building source, Liquid liquid) {
+            if (!block.hasLiquids || liquid == null)
+                return false;
+            // 只收本机真正消费的液体（高级墙壁粉碎机 = 氢气）；纯产出的墙切割机仍然拒收。
+            return block.consumesLiquid(liquid)
+                    && liquids != null && liquids.get(liquid) < Math.max(comboTotalLiquidCap, 1f) - 0.01f;
+        }
+
+        @Override
+        public void handleLiquid(Building source, Liquid liquid, float amount) {
+            if (amount <= 0.001f)
+                return;
+            float room = Math.max(comboTotalLiquidCap, 0f) - liquids.get(liquid);
+            if (room <= 0f)
+                return;
+            super.handleLiquid(source, liquid, Math.min(amount, room));
+        }
+
+        @Override
+        public void dumpLiquid(Liquid liquid, float scaling, int outputDir) {
+            // 池子是整组的，管道要按整组液容算填充度，否则共享池超过单台液容就断流。
+            float oldCap = block.liquidCapacity;
+            block.liquidCapacity = Math.max(comboTotalLiquidCap, 1f);
+            super.dumpLiquid(liquid, scaling, outputDir);
+            block.liquidCapacity = oldCap;
         }
 
         @Override
@@ -472,6 +581,7 @@ public class CombinedWallCrafter extends WallCrafter {
         // -------------------- 显示 --------------------
         @Override
         public void display(Table table) {
+          if (!ComboUi.detail()) { super.display(table); return; }
           // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
           ComboUi.safe("combinedwallcrafter:display", () -> displayInner(table));
         }

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 跑**真客户端**（离屏 Xvfb + Mesa 软渲染），自动截图。UI / 面板 / 绘制这类改动必须这么验。
+# （Linux/Termux 版；本机是 Windows → 用 verify/run-client.ps1，**不需要 Xvfb**，直接跑原生桌面客户端）
 #
 #   verify/run-client.sh <mx|vanilla|jar路径> <数据目录> [list|coop|gen]
 #     list → 开设置→点进"组合工厂"页→截图（看列表/按钮布局）
@@ -17,7 +18,7 @@ MINDUSTRY_JAR="${MINDUSTRY_JAR:-$HOME/Mindustry/desktop/build/libs/Mindustry.jar
 MINDX_JAR="${MINDX_JAR:-/root/sd/x.jar}"
 NATIVE="${NATIVE:-$HERE/native/libsdl-arcarm64.so}"
 DISPLAY_NUM="${DISPLAY_NUM:-:99}"
-DRV_OUT="${DRV_OUT:-$HOME/sd/shots}"   # 截图统一放 ~/sd/shots（按 001_ 002_ 序号排）
+DRV_OUT="${DRV_OUT:-$HOME/Desktop/shots}"   # 截图统一放桌面 shots（按 001_ 002_ 序号排）
 
 if [ $# -lt 3 ]; then
   echo "用法: $0 <mx|vanilla|jar路径> <数据目录> [list|coop]" >&2

@@ -41,15 +41,58 @@ verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.DetachTest
 verify/run-headless.sh mx /tmp/mp_cj/data   combine.dbg.DetachTest
 verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.FilterTest
 verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.ContentTableTest -Dseed=container
+verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.FactoryCombineTest   # 组合工厂（合体工厂）
 ```
 
+- `FactoryCombineTest`：框选多台工厂 → 合成 side×side（每格一台工厂）的组合工厂：布局/来源/库存编码、拆掉原料、库存并池、**耗电生效**、**耗热生效**、存读档、解体放回
 - `DetachTest`：设置里关掉/打开某建筑组合 → 物品/液体是否立刻拆开、容量与导电性还原、重新打开是否立刻恢复；顺带验列表分类
 - `FilterTest`：`显示可组合 / 显示不可组合` 只列能手动开关的建筑，且和关掉的状态对得上
 - `ContentTableTest`：设置里的手动名单**不能**改动内容表（`-Dseed=<方块名>` 模拟"上次关过它"）
 
 写法：`combine.dbg.*` 的自定义类放进 `verify/tests/`，`run-headless.sh` 会一起编译。
 
+### 组合网络的性能回归（"新建/拆除组合建筑卡一下"）
+
+一次放置/拆除会连着触发「本地组合体重建」和「整张组合网络重建」。重建里最容易退化的是
+**"组合相关建筑"名单**和**建图**这两步，回归时用这两个测试量：
+
+```bash
+verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.MultiBuildPerfTest -Dperf.block=wall -Dperf.net=1
+verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.MultiBuildPerfTest -Dperf.block=conv
+```
+
+判定（都是 `[MP]` 行）：**建造中平均 / 峰值**。当前基线（2026-09-28 优化后，headless 软跑）：
+组合墙 2.16ms/tick、峰值 19.8ms；传送带 0.35ms/tick、峰值 4.4ms（优化前分别是 4.10/59.4 与 2.32/27.7）。
+
+优化要点（都在 `ComboNet`）：①`allComboBuildings()` 改成**增量登记表**（只在造/拆时更新，
+不再每次重建都扫一遍全图建筑；换图/读档/开关变化时 `invalidateTracked()` 全量重扫兜底）；
+②没有连接件、也没有跨类型可连的顶点时（绝大多数时刻）**不建整张图**，直接按本地组合体给单点分量；
+③合并/拆分阶段先做一次便宜的早退（分量之间没有共用模块就直接返回）；
+④按建筑类缓存 `isComboBuild()`。判定不变的部分由 `CoreCapacityTest`/`NewBuildAfterLoadTest`/
+`Node*Test`/`SavePoolAuditTest` 这一套守住。
+
 ## 3. 真客户端截图（UI 改动必跑）
+
+`factory` 模式：摆三台工厂 → 合成一台 1x1 组合工厂 → 截图（世界里那个方块自己画出来的样子）
+→ 再弹出"点方块"的那张面板截图（构成列表 + 解体按钮）。截图在**桌面** `shots/`。
+
+`veil` 模式：走**原版左键落地**（`flushPlans` → `SuperCombineFactory.onNewPlan`）把工厂放下去，
+落地后 +0.4s / +1.6s / +3.2s 各拍一张，看新工厂有没有被"残留虚影的黑底"压暗（用户报的
+"放置后两秒内盖一层暗滤镜、过两秒才亮回来"）。日志里 `排队计划仍在 selectPlans=false` 且
+`selectPlans=0` = `drawGhost` 不会再画黑板；截图也在**桌面** `shots/`。
+
+### arc 界面输入的兜底（`ComboInputGuard`）
+
+`combine.util.ComboInputGuard` 把客户端的 `Scene` 在**输入派发链**里换成一层代理：**只**捕获并吞掉
+"UI 元素在触摸派发过程中被摘掉 → `Element.notify` 读 `getScene()` 拿到 null"这条 arc 已知 NPE
+（打一条 `[combine] 界面输入被 arc 的已知空指针打断` 警告），别的异常照旧抛；触摸事件被消费
+（本来就点在 UI 上），按键/滚轮/移动不消费，照常往下传。
+
+本模组自己的界面已经改成"延后一帧再重画"（`ComboBlockList.defer`、`UnitComboBind` 的待重建标记）——
+那才是根治；这层代理是给**别的模组**（或原版）踩同一颗雷时兜底，别让一次点击把存档崩回主菜单。
+
+回归：`verify/run-client.sh mx /tmp/mp_coop/data inputguard`（3 条 PASS：代理已就位 Scene 不重复派发 /
+普通点击照旧生效 / 复现现场被吞掉并消费）+ headless 的 `combine.dbg.InputGuardTest`。
 
 ```bash
 verify/run-client.sh vanilla /tmp/mp_coop/data list    # 设置→组合工厂 那一页
@@ -57,7 +100,7 @@ verify/run-client.sh vanilla /tmp/mp_coop/data coop    # CoopPanel 实时刷新
 verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑一遍
 ```
 
-截图落在 `~/sd/shots/`（脚本会自动建目录；文件名带跨次运行的连续序号 001_、002_…，多次跑不会互相覆盖）：
+截图落在**桌面** `shots/`（脚本会自动建目录；文件名带跨次运行的连续序号 001_、002_…，多次跑不会互相覆盖）：
 
 | 文件 | 内容 |
 |---|---|
@@ -67,7 +110,7 @@ verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑�
 
 原理：`Xvfb` 提供离屏 X，`SDL_VIDEODRIVER=offscreen` 让 SDL 走 EGL，Mesa 软渲染（llvmpipe）出画面；
 截图由 `verify/client/Driver.java`（一个驱动 mod）用 `ScreenUtils.saveScreenshot` 自己抓。
-驱动 mod 的参数：`-Ddrv.mode=list|coop|gen|status|conn|bp|wall|rebuild|rep|pwr|tech|tech2|technode|mega|pool|userpanel`、`-Ddrv.out=<目录>`
+驱动 mod 的参数：`-Ddrv.mode=list|coop|factory|veil|gen|status|conn|bp|wall|rebuild|rep|pwr|tech|tech2|technode|mega|pool|userpanel`、`-Ddrv.out=<目录>`
 （`tech` = 主菜单直接开科技树；`tech2` = 进图后再开、并把每棵根树的树页都切一遍截图；`technode` = 把镜头居中到组合连接器/液体卸载器节点再截图，用来核对节点在不在两棵树上、图标对不对）
 （`gen` = 核反应堆 + 一台容量 10 万的发电机，看燃料条/发电效率；`status` = 方块状态菱形 + 容器面板；
 `conn` = 两台组合工厂 + 一串组合连接器，看连接器贴图/连线与信息面板；
@@ -113,7 +156,7 @@ curl -L -o /tmp/mind160.jar   https://github.com/Anuken/Mindustry/releases/downl
 ## 5. 交付
 
 ```bash
-verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 jar 放到 ~/sd/combine.jar
+verify/deliver.sh        # = 兼容安卓编译 + 检查调试残留 + 只把 jar 放到 桌面/combine.jar
 ```
 带版本号的文件名由使用者自己改，脚本不生成。
 
@@ -128,7 +171,7 @@ verify/run-mp.sh official /tmp/mp_coop/data 200 20 80
 ```
 
 三个进程：官方 headless **专用服务器**（`~/sd/server-release.jar`，用 FIFO 喂 `host` 命令）、
-`verify/lagnet.py`（socket 代理，加延迟/抖动/UDP 丢包）、**真客户端**（Xvfb + 软渲染，边跑边截图到 `~/sd/shots/`）。
+`verify/lagnet.py`（socket 代理，加延迟/抖动/UDP 丢包）、**真客户端**（Xvfb + 软渲染，边跑边截图到**桌面** `shots/`）。
 服务端按剧本 造单位 → 融合成组合巨兽 → 解体 → 再融合，客户端每秒记录自己看到的世界；
 脚本最后比对"服务端每个**阶段边界**出现过的状态，客户端是不是都看到过"（漏了 = 没同步 / 幽灵 / 看不见），
 截图路径和线程数峰值都会打印出来。单次约 4~5 分钟（客户端软渲染加载就要 1.5~2 分钟）。
@@ -199,6 +242,7 @@ verify/lagnet-selftest.py --count 3000 --rate 150 --latency 200   # 压更狠一
 | `combine.dbg.TurretClientAmmoTest` | 任意（有炮塔+容器+组合节点） | 用户报"客户端视角内炮台弹药时常归零然后恢复"：服务端炮塔组囤弹 → 取成员的 `writeSync` 字节（= 服务端发的 block snapshot）→ 在另一台炮塔上 `readSync`（= 客户端收快照做的事）→ 客户端看到的弹量必须和服务端**完全一致**。旧行为：原版 `ItemTurretBuild.read` 按**单台** maxAmmo 夹 + 用 short 存数量，3 台 duo 囤到 90 客户端只读出 30，囤到 40000 客户端读出 **-25536**（弹药条直接归零） |
 | `combine.dbg.MultiBuildPerfTest` | 任意（有铜墙/核心/传送带） | 用户报"服务端和客户端使用多线程建造后帧率下降十分明显"：量"空闲 / 多线程建造中 / 建造后"的每 tick 耗时（真实 delta 1/60），`-Dperf.block=wall\|conv` 选建组合墙还是传送带、`-Dperf.net=1` 打开 ComboNet 分段计时。修前：传送带 2.32ms/tick（峰值 27.7ms）、组合墙 4.10ms/tick（峰值 59.4ms）；修后：0.14ms / 1.29ms（峰值 1.8ms / 19.9ms） |
 | `combine.dbg.WallReplaceTest` | 任意（有铜墙/铅墙/核心） | 用户报"在墙上覆盖新的墙建造的时候多线程建造武器不工作"：8 面铜墙铺好后排 8 个"盖成铅墙"的计划（原版允许同类同尺寸墙互相覆盖，`Block.canReplace`），真实 delta 跑，要求核心机 1 秒内全部盖完、且不比摘掉建造武器的对照组慢。修前：挂座一个都不认领这种计划，只有单位自己一秒一格 → 实测 476 帧（7.9 秒，比对照组 229 帧还慢）；修后 9 帧（0.15 秒） |
+| `combine.dbg.InputGuardTest` | 任意 | 用户 2026-09-29 崩溃 `arc.scene.Element.notify → getScene().addTouchFocus(...)` NPE（触屏 PC/安卓都出过）：arc 的 `Element.fire` 先把祖先链快照下来，任何监听器在派发途中把一个**祖先**从场景里摘掉（典型：点击回调里 `clearChildren()` / `dialog.hide()` 立刻 remove），轮到这个祖先 notify 时它已经没有 Scene，而 arc 照样无条件 `getScene().addTouchFocus(...)`。本测试用纯 arc 类**现场复现**这条 NPE（不需要 GL/窗口），再验证 `ComboInputGuard` 的判定：这条 NPE 吞掉并消费、别的异常原样抛。修前 3 项 FAIL（复现原样报错），修后 4/4 PASS。真客户端另跑 `verify/run-client.sh mx /tmp/mp_coop/data inputguard`（输入代理真的装进输入链、Scene 不重复派发；普通点击照旧 `clicked=true`；复现现场被吞掉并打出 `[combine] 界面输入被 arc 的已知空指针打断` 警告） |
 | `combine.dbg.BuildWeaponNetSyncTest` | 任意（有传送带/核心机） | 用户报"**联机时服务端和客户端拐角处水管/传送带方向对不上**"（并提示"可能是多线程建造没有正确发送建造的网络通信包"）：本仓库的建造武器原先直接调 `Build.beginPlace / Build.beginBreak`（只改本机世界），而原版 `BuilderComp` 走 `Call.beginPlace / Call.beginBreak`（服务端执行 + 转发给所有客户端）—— 武器挂座在**客户端也会跑**，于是两端各自就地改世界；原地改方向(quickRotate)/修废墟这类计划原版"当场完成、不生成施工格"，没有任何后续快照能纠正 → 方向永久对不上。本测试摆一排传送带 + 一条"原地改方向"计划，分别以**服务端身份**和**客户端身份**各跑 30 tick：服务端必须把这一格转过去（对照组），客户端**本机必须一动不动**（等服务端转发的包）。修前客户端那一跑会把本机传送带转过去（FAIL），修后 PASS |
 | `combine.dbg.TurretCoolantTest` | `liquid-maker`（java 测试模组） | 冷却液选择：空选自动取效果最好的、手选生效、没货回退 |
 | `combine.dbg.SaveRoundTripTest` | 任意 | 核心+容器 存读档物品不翻倍 |

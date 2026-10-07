@@ -189,8 +189,10 @@ public class ShareConfigTest implements ApplicationListener{
         check("只取消物品时：液体模块仍然共享", a1.liquids == b1.liquids);
 
         // 组内（相邻成组）仍然共用一份：A 的两台之间必须同池
-        check("本地组合体内部照旧同池(A1=A2)", a1.items == a2.items);
-        check("本地组合体内部照旧同池(B1=B2)", b1.items == b2.items);
+        // 【口径】"不共享物品"= 每台各留各的模块，**本地组合体内部也分开**
+        //（用户报的"关闭物品共享后物品模块还是共享的"）
+        check("本地组合体内部也分开(A1≠A2)", a1.items != a2.items);
+        check("本地组合体内部也分开(B1≠B2)", b1.items != b2.items);
 
         // ================= 3) 勾回"物品" =================
         setMask(node, ALL);
@@ -262,7 +264,8 @@ public class ShareConfigTest implements ApplicationListener{
         check("连接器默认全共享", mask(c1) == ALL);
         setMask(c1, ALL & ~ITEMS);
         run(20);
-        int connTotal = la1.items.total() + lb1.items.total();
+        // 【口径】不共享物品 = 每台一份模块，总量要把每个成员各自那份都算上（la2 也是）
+        int connTotal = distinctItemTotal(la1, la2, lb1);
         System.out.println("[SC] 连接器取消物品: 同池=" + (la1.items == lb1.items) + " 总=" + connTotal + " mask(c1)=" + mask(c1) + " mask(c2)=" + mask(c2));
         check("连接器：物品池分开", la1.items != lb1.items);
         check("连接器：一条链上的连接器配置一致", mask(c1) == (ALL & ~ITEMS) && mask(c2) == (ALL & ~ITEMS));

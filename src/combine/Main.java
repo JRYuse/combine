@@ -17,13 +17,15 @@ import combine.production.CombinedGenerator;
 import combine.production.CombinedPump;
 import combine.production.CombinedSolidPump;
 import combine.production.CombinedWallCrafter;
+import combine.production.CombinedVariableReactor;
+import combine.production.SuperCombineFactory;
+import combine.production.FactoryCombiner;
 import combine.saves.SafeW11;
 import combine.saves.SafeWLegacy;
 import combine.saves.SafeWShort;
 import combine.saves.SafeWVer;
 import combine.storage.CombinedStorageBlock;
 import combine.storage.LiquidUnloader;
-import combine.storage.SuperBlock;
 import combine.turret.CombinedContinuousLiquidTurret;
 import combine.turret.CombinedItemTurret;
 import combine.turret.CombinedLiquidTurret;
@@ -92,6 +94,7 @@ import mindustry.world.blocks.production.BurstDrill;
 import mindustry.world.blocks.production.Drill;
 import mindustry.world.blocks.production.GenericCrafter;
 import mindustry.world.blocks.production.HeatCrafter;
+import mindustry.world.blocks.power.VariableReactor;
 import mindustry.world.blocks.production.Incinerator;
 import mindustry.world.blocks.production.Fracker;
 import mindustry.world.blocks.production.Pump;
@@ -114,6 +117,7 @@ public class Main extends Mod {
   public static ComboConnector comboConnector;
   public static ComboNode comboNode;
   public static LiquidUnloader liquidUnloader;
+  public static SuperCombineFactory superCombineFactory;
 
   static JsonReader reader = new JsonReader();
   static JsonValue json;
@@ -152,17 +156,24 @@ public class Main extends Mod {
     });
 
     // 读档窗口：WorldLoadBegin → 读档语义合并（去重）；结束前不做运行期相加
-    Events.on(mindustry.game.EventType.WorldLoadBeginEvent.class, e -> ComboNet.beginWorldLoad());
+    Events.on(mindustry.game.EventType.WorldLoadBeginEvent.class, e -> {
+      // 换图：上一张图的"组合体共享配置"不能带到新图（新档里读到本块会再装回来）
+      combine.saves.ComboShareState.onWorldLoadBegin();
+      ComboNet.beginWorldLoad();
+    });
     // 【读**存档**只会发 SaveLoadEvent，不会发 WorldLoadBegin/WorldLoad】那两条是"读地图"才发的。
     // 读存档（战役区块 / 存档槽）走 SaveIO.load → SaveLoadEvent，于是"读档去重窗口"以前从来没开过：
     // 每台建筑手里那份"同一口池子的副本"被按运行期语义相加，一轮存读物品就翻好几倍
     // （用户报的"物品数量异常增长"，实测 14.7M → 32.6M → 69M）。
     // 这里在读档末尾把窗口打开 + 立刻按去重语义合并一次（之后头几帧也按去重算）。
     Events.on(SaveLoadEvent.class, e -> {
+      // 【必须在 beginWorldLoad 之前】读档末尾补一次"没读到本块就清空"（见 ComboShareState）
+      combine.saves.ComboShareState.onLoadFinished();
       ComboNet.beginWorldLoad();
       ComboNet.rebuildLoading();
     });
     Events.on(WorldLoadEvent.class, e -> {
+      combine.saves.ComboShareState.onLoadFinished();
       // 联机入服时 rules 是刚按名字反查出来的（researched/bannedBlocks 可能装着被替换掉的原版实例），
       // 必须在任何 UI/建造校验读到它之前纠正，否则客户端建造菜单里组合建筑会全部消失。
       Replacer.remapStaleContent();
@@ -191,6 +202,10 @@ public class Main extends Mod {
 
     // 跨组合体网络（连接器/节点）：每帧最多重建一次，避免放一个连接器就重建 5~10 遍
     ComboNet.register();
+
+    // 【arc 输入兜底】只吞掉"UI 元素在触摸派发过程中被摘掉 → Element.notify 读 getScene() 为 null"
+    // 那条 arc 已知 NPE（别的异常照旧抛），别让一次点击把整个存档崩回主菜单。详见 ComboInputGuard。
+    combine.util.ComboInputGuard.register();
 
     // 组合墙分组：同样每帧最多重算一遍（放一格墙会触发 placed + 四周 proximity，
     // 原先每一遍都整组 BFS 一次 —— 多线程建造刷墙时就是"帧率下降十分明显"的大头）
@@ -229,9 +244,9 @@ public class Main extends Mod {
 
     // 超级组合炮台：快捷键/按钮 → 框选炮台 → 按数量生成对应边长的组合体（纯客户端交互）
     combine.turret.SuperTurretPlacer.register();
-    // 手机/桌面都把"框选合体"按钮做进**原版放置 UI**（buildPlacementUI 那一行）
-    installInputHandler();
-    combine.storage.SuperBlockPlacer.register();
+    combine.production.FactoryCombiner.register();
+    // 【用户要求 2026-09-28】不再改 input：入口是 SuperTurretPlacer 自己挂的"框选合体"悬浮按钮
+    // （手机/桌面同一个，可拖动，见 SuperTurretPlacer#ensureButton），输入处理器保持原版。
 
 //    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
     // 客户端在这之后才把蓝图库从磁盘读进来（assets.load(schematics)），再兜一次键；
@@ -379,6 +394,21 @@ public class Main extends Mod {
         mindustry.io.SaveVersion w;
         if (v instanceof mindustry.io.versions.Save11) {
           w = new SafeW11();
+        } else if (v instanceof mindustry.io.versions.LegacySaveVersion
+            || v instanceof mindustry.io.versions.LegacySaveVersion2) {
+          // 【不能换】v1-v5（Save1..Save5，都继承 LegacySaveVersion / LegacySaveVersion2）
+          // **各自覆写了 readMap / readEntities**，语义和"通用 LegacyRegion 包装器"不一样：
+          //   · Save1/Save2/Save3 的 readEntities 是老式"跳过所有实体"（Save3 还自己读一遍
+          //     队伍计划），Save1/Save2 连计划都没有；
+          //   · Save4 的 readEntities 是 `readTeamBlocks + readWorldEntities(idMap)`，
+          //     **不读 entity ID 映射段**（这个版本根本没写映射）；
+          //   · Save1/Save2/Save3 的 readMap 还在 legacy chunk 里**混用 stream 和 chunkReads**。
+          // 以前把它们统一换成 SafeWLegacy（= 通用 LegacyRegion）：readEntities 退回
+          // "先读 entity 映射再读队伍计划"，于是 v4 的老地图一读就错位 ——
+          // 用户报的"部分地图加载报 Unknown object type / Error reading region entities"。
+          // 这些老版本本来也不需要"实体块容错"（它们的地图区是短块、模组建筑读法不同），
+          // 直接保留原版读取器最安全。
+          continue;
         } else if (v instanceof mindustry.io.versions.LegacyRegionSaveVersion) {
           w = new SafeWLegacy(v.version);
         } else if (v instanceof mindustry.io.versions.ShortChunkSaveVersion) {
@@ -398,6 +428,8 @@ public class Main extends Mod {
     // 关掉模组后原版读档时这些字段整块跳过，组合建筑干净地变回原版建筑
     // （详见 combine.saves.ComboSaved / ComboSaveState）
     combine.saves.ComboSaveState.register();
+    // 组合体自己的"共享哪些部分"配置（按 pos 存在 ComboShare 里，见 ComboShareState）
+    combine.saves.ComboShareState.register();
 
     try {
       getWhiteList();
@@ -412,11 +444,11 @@ public class Main extends Mod {
       // 造价表必须在 content.load() 之后现造（Items.* 是 load() 阶段才赋值的静态字段）
       initRequirementTables();
       createLinkBlocks();
+      createSuperCombineFactory();
       createLiquidBlocks();
       // 跨距离传热用的探针（组合节点/连接器把热喂给"连线接进来的"需热建筑；和超级炮台开关无关）
       combine.util.ComboHeatProbe.create();
       createSuperTurrets();
-      createSuperBlocks();
       for (var entry : Replacer.replaced) {
         postInit(entry.value);
       }
@@ -449,46 +481,6 @@ public class Main extends Mod {
   /** 客户端才有的贴图/图标环境（专用服务器 Core.atlas 为 null）。 */
   static boolean visuals() {
     return !Vars.headless && arc.Core.atlas != null;
-  }
-
-  /**
-   * 把 InputHandler 换成"只重写 buildPlacementUI"的子类（手机 {@link combine.input.ComboMobileInput}、
-   * 桌面 {@link combine.input.ComboDesktopInput}），这样"框选合体"按钮就长在原版放置 UI 的那一行里
-   * （手机 = 复制键右边；桌面 = 蓝图/粘贴键右边）。
-   *
-   * <p>走原版 {@code Control.setInput()}：它会保留当前选中的方块、把老处理器的输入处理器与 UI 摘掉，
-   * 再调 {@code add()}（内部会重新调 {@code buildPlacementUI}），所以按钮立刻就位。
-   *
-   * <p>只替换**恰好是原版那两个类**的处理器：别的模组换了自己的子类就不动（宁可少个按钮，
-   * 也不能把别人的输入行为顶掉），这种情况保留 HUD 上的兜底按钮。
-   */
-  static void installInputHandler() {
-    if (Vars.headless)
-      return;
-    Events.on(ClientLoadEvent.class, e -> {
-      try {
-        if (Vars.control == null || Vars.control.input == null)
-          return;
-        mindustry.input.InputHandler cur = Vars.control.input;
-        String cn = cur.getClass().getName();
-        if (cn.equals("combine.input.ComboMobileInput") || cn.equals("combine.input.ComboDesktopInput"))
-          return;
-        if (cn.equals("mindustry.input.MobileInput")) {
-          Vars.control.setInput(new combine.input.ComboMobileInput());
-        } else if (cn.equals("mindustry.input.DesktopInput")) {
-          Vars.control.setInput(new combine.input.ComboDesktopInput());
-        } else {
-          // 别的模组/别的客户端换了自己的输入处理器：不替换，HUD 按钮继续当兜底
-          Log.info("[combine] 输入处理器是 @（不是原版那两个），框选合体按钮仍挂在 HUD 上", cn);
-          return;
-        }
-        combine.turret.SuperTurretPlacer.useHudButton = false;
-        Log.info("[combine] 框选合体按钮已挂进原版放置 UI（@）",
-            cn.equals("mindustry.input.MobileInput") ? "手机" : "桌面");
-      } catch (Throwable t) {
-        Log.err("[combine] 换输入处理器失败（框选合体按钮仍在 HUD 上）", t);
-      }
-    });
   }
 
   void getWhiteList() {
@@ -662,6 +654,47 @@ public class Main extends Mod {
     comboNode.alwaysUnlocked = !onTree;
   }
 
+  /**
+   * 组合工厂（合体工厂）：框选多台工厂 → 合成一台 side×side（每格一台工厂）、物品/液体/电力/热量共享的方块
+   * （入口是 HUD 浮标里的"工厂合体"子按钮，见 combine.production.FactoryCombiner）。
+   *
+   * <p>和其它"方块在 Mod.init() 里现造"的情况一样：v8 不会替这一步注册的方块调
+   * init()/postInit()/loadIcon()，必须自己补，否则 buildType / 图标是空的。
+   * 方块本身不显示在建造菜单里（buildVisibility=hidden + isVisible()=false），
+   * 但放置流程要合法（isPlaceable() 单独放行）。
+   */
+  void createSuperCombineFactory() {
+    if (SuperCombineFactory.bySide[SuperCombineFactory.MIN_SIDE] != null)
+      return;
+    // 每种边长一个方块（和超级组合炮台一样）：N 台工厂 → ceil(sqrt(N)) × ceil(sqrt(N))，
+    // 每格一台工厂（缩到 1x1）。台数不够铺满的格子留空。
+    for (int side = SuperCombineFactory.MIN_SIDE; side <= SuperCombineFactory.MAX_SIDE; side++) {
+      SuperCombineFactory f = new SuperCombineFactory("super-combine-factory-" + side, side);
+      try {
+        f.localizedName = "组合工厂 " + side + "x" + side;
+        f.description = "多台工厂合体成 " + side + "x" + side + " 的组合工厂：每格一台工厂（缩到 1x1），"
+            + "物品/液体/电力/热量整台共享，可以继续往里加工厂，也能解体拆回每一台。"
+            + "入口：屏幕上的浮标 →「工厂合体」→ 框选要合体的工厂。";
+        f.health = 320 * side;
+        // 【必须用 hidden】以前写成 requirements(Category, ItemStack.with())：那个重载会把
+        // buildVisibility 覆盖成 shown，于是这个 0 造价的方块直接进了建造菜单（用户可见的 bug）。
+        f.requirements(Category.production, BuildVisibility.hidden, new ItemStack[0]);
+        f.init();
+        f.postInit();
+        // 血量/液体产物的信息条：原版是在 afterPatch 里建的，我们现造的方块要自己调一次
+        f.setBars();
+      } catch (Throwable t) {
+        Log.err("[combine] 组合工厂 @x@ 装配失败（已兜底，不会带崩建造菜单）", side, side, t);
+      } finally {
+        ensureIcons(f);
+      }
+      SuperCombineFactory.bySide[side] = f;
+    }
+    superCombineFactory = SuperCombineFactory.bySide[SuperCombineFactory.MIN_SIDE];
+    Log.info("[combine] 组合工厂：@ 种边长已装配（2x2 .. @x@）",
+        SuperCombineFactory.MAX_SIDE - SuperCombineFactory.MIN_SIDE + 1, SuperCombineFactory.MAX_SIDE);
+  }
+
   void createLiquidBlocks() {
     if (liquidUnloader != null)
       return;
@@ -743,7 +776,14 @@ public class Main extends Mod {
             + "每格一台炮台、不够的格子留空；物品/液体/电力整台共用，各格各自开火、各自冷却。"
             + "虚影跟着鼠标走，左键确定位置，右键/Q/Esc 取消。";
         st.alwaysUnlocked = true;
-        st.shownPlanets.addAll(Vars.content.planets());
+        // 【不要往 shownPlanets 里加星球】原版 UnlockableContent.isOnPlanet() 是
+        // "planet == null || shownPlanets.isEmpty() || shownPlanets.contains(planet)" ——
+        // 一旦写进了 {塞普罗, 埃里克尔}，**别的星球（含模组星球）就会被过滤掉**。
+        // 卡住的是放置那一步：Build.validPlaceIgnoreUnits 里的 type.environmentBuildable()
+        // （原版 Block.environmentBuildable() 就是 isOnPlanet(state.getPlanet())）——
+        // 框选、虚影都正常，点下去却什么也不发生，表现就是用户报的
+        // "在其他星球的地图上合体炮台无法建造"。
+        // 空集合 = 所有星球都能用，这里什么都不用加。
         st.init();
         st.postInit();
       } catch (Throwable t) {
@@ -755,53 +795,6 @@ public class Main extends Mod {
     }
     Log.info("[combine] 超级组合炮台：@ 种边长已装配",
         combine.turret.SuperTurret.MAX_SIDE - combine.turret.SuperTurret.MIN_SIDE + 1);
-  }
-
-  // 和方法定义：
-  void createSuperBlocks() {
-    if (!SuperBlock.enabled) {
-      Log.info("[combine] 超级组合方块当前停用（SuperBlock.enabled=false）");
-      return;
-    }
-    if (SuperBlock.bySide[SuperBlock.MIN_SIDE] != null) return;
-
-    // 热量探针
-    try {
-      SuperBlock.heatProbe = new SuperBlock.HeatProbe("super-block-heat");
-      SuperBlock.heatProbe.init();
-      SuperBlock.heatProbe.postInit();
-      if (visuals()) {
-        arc.graphics.g2d.TextureRegion reg = arc.Core.atlas.find("heat-source",
-                arc.Core.atlas.find("error"));
-        SuperBlock.heatProbe.region = reg;
-        SuperBlock.heatProbe.fullIcon = reg;
-        SuperBlock.heatProbe.uiIcon = reg;
-      }
-    } catch (Throwable t) {
-      Log.err("[combine] 超级组合方块热量探针装配失败", t);
-    }
-
-    for (int side = SuperBlock.MIN_SIDE; side <= SuperBlock.MAX_SIDE; side++) {
-      SuperBlock sb = new SuperBlock("super-block-" + side, side);
-      try {
-        sb.requirements(Category.effect, BuildVisibility.shown, new ItemStack[0]);
-        sb.localizedName = "超级组合方块 " + side + "x" + side;
-        sb.description = "在建造菜单里点它（或按快捷键 H）= 框选非炮台建筑："
-                + "按框里的建筑数量生成对应边长的一台，每格一台建筑、不够的格子留空；"
-                + "物品/液体/电力/热量整台共用。虚影跟着鼠标走，左键确定位置，右键/Q/Esc 取消。";
-        sb.alwaysUnlocked = true;
-        sb.shownPlanets.addAll(Vars.content.planets());
-        sb.init();
-        sb.postInit();
-      } catch (Throwable t) {
-        Log.err("[combine] 超级组合方块 @x@ 装配失败", side, side, t);
-      } finally {
-        ensureIcons(sb);
-      }
-      SuperBlock.bySide[side] = sb;
-    }
-    Log.info("[combine] 超级组合方块：@ 种边长已装配",
-            SuperBlock.MAX_SIDE - SuperBlock.MIN_SIDE + 1);
   }
 
   /**
@@ -1063,6 +1056,10 @@ public class Main extends Mod {
       boolean isGenerator = isExact(b, ConsumeGenerator.class)
           || isExact(b, ImpactReactor.class)
           || isExact(b, NuclearReactor.class) || isExact(b, HeaterGenerator.class);
+      // 通量反应堆（flux-reactor, Erekir VariableReactor）：既不是 ConsumeGenerator 也不是
+      // 上面几种，以前完全没被接管 → "通量反应堆无法组合"（用户报的）。单独走
+      // CombinedVariableReactor（继承原版，存/读档和原版一致）。
+      boolean isFlux = isExact(b, VariableReactor.class);
       boolean isLaunchPad = isExact(b, LaunchPad.class);
       // 接收台（campaign LandingPad）：组合类 CombinedLandingPad 一直写好了但**从没接进来**，
       // 于是"接收台"从来没被组合过（用户报的"CombinedLandingPad 的组合怎么没了"）。
@@ -1108,7 +1105,7 @@ public class Main extends Mod {
           && !isLogic && !isContLiquidTurret && !isLiquidTurret && !isItemTurret
           && !isPowerTurret && !isLaserTurret
           && !isPump && !isSolidPump && !isFracker && !isWallCrafter
-          && !isUnitFactory && !isReconstructor)
+          && !isUnitFactory && !isReconstructor && !isFlux)
         continue;
 
       // 防止重复处理已转换类型
@@ -1124,11 +1121,14 @@ public class Main extends Mod {
           || b instanceof CombinedFracker
           || b instanceof CombinedWallCrafter
           || b instanceof CombinedUnitFactory
-          || b instanceof CombinedReconstructor)
+          || b instanceof CombinedReconstructor
+          || b instanceof CombinedVariableReactor)
         continue;
 
       Block combo;
-      if (isFactory || isHeatCrafter || isHeatProducer || isSeparator || isAttribute) {
+      if (isFlux) {
+        combo = createCombo(b, CombinedVariableReactor.class);
+      } else if (isFactory || isHeatCrafter || isHeatProducer || isSeparator || isAttribute) {
         CombinedCrafter cc = createCombo(b, CombinedCrafter.class);
         if (isExact(b, HeatProducer.class))
           cc.mode = CombinedCrafter.Mode.heatproducer;

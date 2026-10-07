@@ -163,29 +163,111 @@ public class ComboSaveState implements SaveFileReader.CustomChunk{
   // 于是这 M 份变成 M 个**不同的**模块，世界物品总量直接 ×M；再存一次又 ×M……
   // （用户存档实测：一轮存读 14.7M → 32.6M → 69M，池子里出现 100 万 / 500 万这种数字。）
   //
-  // 现在按"池子的身份"去重：同一份模块对象在一次存档里只有第一台写真实数据，
+  // 现在按"池子的身份"去重：同一份模块对象在一次存档里只有一台写真实数据，
   // 其余一律写空模块（读档时它们本来就会被并回那一份）。联机快照不走这条路（见 writingSave）。
   private static final ObjectSet<mindustry.world.modules.ItemModule> seenItems = new ObjectSet<>();
   private static final ObjectSet<mindustry.world.modules.LiquidModule> seenLiquids = new ObjectSet<>();
 
-  /** 这台建筑该不该把**物品池**写成真实数据（一次存档里同一份池子只有第一台写）。 */
+  /**
+   * 一次存档里，每口池子该由**哪一台**写真实数据。
+   *
+   * <p>【用户报的"所有存档读写后组合建筑物品都会丢失"的根因】以前这里按"谁先被写到"
+   * 决定（MapIO 扫格子的顺序是**先 y 后 x**），而读档并池时留下的是
+   * **pos 最小的那一台**手里的模块（{@code pos = x<<16|y}，本地组长
+   * {@code trueLeader} 与网络目标 {@code ComboNet.moduleOfFirst} 都是这个口径）。
+   * 两边选中的不是同一台时：组长读回来的是**空模块**，而真正那份库存挂在另一台身上 ——
+   * 本地并池把成员手里的池子并进组长（只并 {@code cachedItems}、还按容量夹），
+   * 随后 {@code member.items = leader.items} 把那份真数据当"多余副本"丢掉，
+   * 于是"读写一遍，组合建筑的物品就没了"。
+   *
+   * <p>所以写真数据的那一台必须和读档时**留下的那一台**对齐：核心池归核心，
+   * 其余归 pos 最小的持有者。这样读档时组长手里拿到的就是真数据，谁也丢不了。
+   */
+  private static final ObjectMap<mindustry.world.modules.ItemModule, Building> itemOwner = new ObjectMap<>();
+  private static final ObjectMap<mindustry.world.modules.LiquidModule, Building> liquidOwner = new ObjectMap<>();
+
+  /** 这台建筑该不该把**物品池**写成真实数据（一次存档里同一口池子只有它主人写）。 */
   public static boolean firstItemPool(Building self){
     if(!writingSave()){
-      seenItems.clear();
-      seenLiquids.clear();
+      clearPoolCaches();
       return true;
     }
-    return self.items == null || seenItems.add(self.items);
+    if(self.items == null)
+      return true;
+    Building owner = itemOwner.get(self.items);
+    if(owner == null){
+      buildPoolOwners();
+      owner = itemOwner.get(self.items);
+    }
+    // 认不出主人（极端情况：建筑不在 Groups.build 里）就退回"第一台写"
+    boolean first = owner == null ? seenItems.add(self.items) : owner == self;
+    return first;
   }
 
   /** 液体池版。 */
   public static boolean firstLiquidPool(Building self){
     if(!writingSave()){
-      seenItems.clear();
-      seenLiquids.clear();
+      clearPoolCaches();
       return true;
     }
-    return self.liquids == null || seenLiquids.add(self.liquids);
+    if(self.liquids == null)
+      return true;
+    Building owner = liquidOwner.get(self.liquids);
+    if(owner == null){
+      buildPoolOwners();
+      owner = liquidOwner.get(self.liquids);
+    }
+    return owner == null ? seenLiquids.add(self.liquids) : owner == self;
+  }
+
+  static void clearPoolCaches(){
+    seenItems.clear();
+    seenLiquids.clear();
+    itemOwner.clear();
+    liquidOwner.clear();
+  }
+
+  /** 谁的池子：核心池归核心，其余归 pos 最小的那台（pos = x&lt;&lt;16|y）。 */
+  private static Building pickOwner(Building a, Building b, boolean items){
+    if(a == null) return b;
+    if(b == null) return a;
+    boolean ca = isCorePool(a, items), cb = isCorePool(b, items);
+    if(ca != cb) return ca ? a : b;
+    return a.pos() <= b.pos() ? a : b;
+  }
+
+  private static boolean isCorePool(Building b, boolean items){
+    try{
+      if(Vars.state == null || b.team == null) return false;
+      for(Building core : b.team.data().cores){
+        if(core == null) continue;
+        if(items ? core.items == b.items : core.liquids == b.liquids) return true;
+      }
+    }catch(Throwable ignored){}
+    return false;
+  }
+
+  /** 全图扫一遍，记下每口池子的"主人"（一次存档只需算一次，认不出来会重算）。 */
+  static void buildPoolOwners(){
+    itemOwner.clear();
+    liquidOwner.clear();
+    try{
+      for(Building b : Groups.build){
+        if(b == null || !b.isValid()) continue;
+        if(b.items != null){
+          Building old = itemOwner.get(b.items);
+          Building best = pickOwner(old, b, true);
+          if(best != old) itemOwner.put(b.items, best);
+        }
+        if(b.liquids != null){
+          Building old = liquidOwner.get(b.liquids);
+          Building best = pickOwner(old, b, false);
+          if(best != old) liquidOwner.put(b.liquids, best);
+        }
+      }
+    }catch(Throwable t){
+      Log.err("[combine] 统计池子归属失败（退回“第一台写”）", t);
+    }
   }
 
   /** 现在是不是在写存档（而不是在写联机同步快照）。 */

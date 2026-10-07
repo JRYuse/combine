@@ -176,7 +176,13 @@ public class CombinedStorageBlock extends StorageBlock {
     // 【别让空转的一轮把去重语义吃掉】读档时可能先来一轮"仓库还没登记/还没接上核心"的重算，
     // 那轮什么都没处理却把 dedupeOnce 用掉了；下一轮真正合并时按"相加"处理，
     // 每台仓库手里的核心库存副本就被当成真货加进去 —— 物品补满（用户报的）。
-    if (dedupe && !sawStorage)
+    // 【但必须有界】以前这里只判 !sawStorage 就重新置位：地图里**没有核心/仓库**的时候
+    // （或核心被拆掉之后）sawStorage 永远是 false，dedupeOnce 就一直被重新装上 ——
+    // ComboNet 的 loadPhase 读的就是它，于是"读档去重"语义永久生效，之后每一次并池都按
+    // "内容相同的副本只留一份"合并。玩家看到的是"把共享取消再勾上，物品少一半"
+    // （BodyShareTest / ShareConfigTest 实测 40 → 20）。只在**读档窗口内**兜：
+    // 窗口由 ComboNet 的 loadDedupeFrames 限定（读档后 20 帧、世界一被改动就结束）。
+    if (dedupe && !sawStorage && ComboNet.pendingLoadDedupe())
       dedupeOnce = true;
   }
 
@@ -465,6 +471,8 @@ public class CombinedStorageBlock extends StorageBlock {
       if (s.pos() < leader.pos())
         leader = s;
     }
+    // 【不共享物品】面板上"物品"没勾 = 每台仓库各留各的模块（不并仓），容量也只算自己那台
+    boolean shareItems = combine.net.ComboShare.shares(leader, combine.net.ComboShare.ITEMS);
     ItemModule pool = leader.items != null ? leader.items : new ItemModule();
 
     // 连了组合连接器/节点时，容量和池子都按"整张网络"算：整组报告网络合计容量，
@@ -484,11 +492,11 @@ public class CombinedStorageBlock extends StorageBlock {
       }
     }
     ItemModule netPool = ComboNet.poolModuleFor(leader);
-    if (netPool != null)
+    if (shareItems && netPool != null)
       pool = netPool;
 
     for (CombinedStorageBuild s : comp) {
-      if (s.items != null && s.items != pool) {
+      if (shareItems && s.items != null && s.items != pool) {
         if (dedupe)
           mergeCopyMax(pool, s.items);
         else
@@ -496,9 +504,10 @@ public class CombinedStorageBlock extends StorageBlock {
       }
     }
     for (CombinedStorageBuild s : comp) {
-      s.items = pool;
+      if (shareItems)
+        s.items = pool;
       s.linkedCore = null;
-      s.comboStorageCap = groupCap;
+      s.comboStorageCap = shareItems ? groupCap : Math.max(ComboReflect.baseItemCap(s), 1);
       // 面板上的"x N"就是本组仓库台数；网络里接过来的工厂之类由 extraNetworkText 单独报名字
       s.comboGroupSize = comp.size;
     }

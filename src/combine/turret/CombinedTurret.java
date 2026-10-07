@@ -1,5 +1,4 @@
 package combine.turret;
-import arc.struct.*;
 import combine.net.ComboNet;
 import combine.production.CombinedCrafter;
 import combine.util.ComboReflect;
@@ -11,6 +10,12 @@ import arc.math.Angles;
 import arc.math.Mathf;
 import arc.scene.ui.Image;
 import arc.scene.ui.layout.Table;
+import arc.struct.IntSet;
+import arc.struct.ObjectIntMap;
+import arc.struct.ObjectMap;
+import arc.struct.ObjectSet;
+import arc.struct.Queue;
+import arc.struct.Seq;
 import arc.util.Log;
 import arc.util.Nullable;
 import arc.util.Strings;
@@ -66,7 +71,7 @@ public class CombinedTurret extends Turret {
   /** LaserTurret.shootDuration：光束维持时长（帧） */
   public float shootDuration = 100f;
 
-  public boolean allowCrossTypeCombo = true;
+  public boolean allowCrossTypeCombo = false;
   public float baseLiquidCapacity = 10f;
   public float displayLiquid;
   public boolean baseCapCaptured = false;
@@ -135,18 +140,24 @@ public class CombinedTurret extends Turret {
   @Override
   public void setStats() {
     super.setStats();
-    if (shootType != null) {
-      stats.add(Stat.ammo, StatValues.ammo(ObjectMap.of(this, shootType)));
-    }
-
     stats.remove(Stat.liquidCapacity);
     stats.add(Stat.liquidCapacity, displayLiquid, StatUnit.liquidUnits);
-
+    // 【子弹信息】原版 PowerTurret.setStats 会把 shootType 作为"弹药"列出来
+    // （BulletType 的伤害/射速/穿透/溅射…），LaserTurret 继承它也一样有。
+    // 本类直接 extends Turret（单继承方案，见类注释），super.setStats() 走的是
+    // Turret.setStats —— 里面**没有**这一项，于是组合炮塔的信息面板缺了子弹那一段
+    // （用户报的"CombineTurret 的 setStat 里没有子弹的信息"）。这里按原版口径补回来。
+    if (shootType != null) {
+      ObjectMap<Block, BulletType> ammo = new ObjectMap<>();
+      ammo.put(this, shootType);
+      stats.add(Stat.ammo, StatValues.ammo(ammo));
+    }
+    // LaserTurret.setStats：冷却液显示为输入而非 booster
     if (mode == Mode.laser) {
       stats.remove(Stat.booster);
       if (coolant != null)
         stats.add(Stat.input,
-                StatValues.boosters(reload, coolant.amount, coolantMultiplier, false, this::consumesLiquid));
+            StatValues.boosters(reload, coolant.amount, coolantMultiplier, false, this::consumesLiquid));
     }
   }
 
@@ -204,6 +215,9 @@ public class CombinedTurret extends Turret {
     public Seq<CombinedTurretBuild> comboGroup = new Seq<>();
     public boolean comboDirty = true;
     public float comboTotalLiquidCap = 0f;
+    /** 整组可得的组合热量池（与 CombinedCrafter.availableHeat 同一口径）。 */
+    public float comboPooledHeat = 0f;
+    public float lastPooledHeatTime = -1f;
     /** laser 模式：维持中的光束（复刻 LaserTurretBuild.bullets） */
     public Seq<BulletEntry> bullets = new Seq<>();
 
@@ -250,6 +264,57 @@ public class CombinedTurret extends Turret {
       return l.comboGroup;
     }
 
+    /**
+     * 【组合热量共享】整组可得的需热池。
+     *
+     * <p>原版 {@code TurretBuild.updateTile} 只按 {@code calculateHeat(proximity)} 取"贴着"的热源，
+     * 于是组合体里只有贴到产热机的那一台有热、其余全是 0（用户报的"热量相关炮台/劫难/魔灵
+     * 无法共享热量"）。这里和 {@link CombinedCrafter} 的 {@code availableHeat} 用同一口径：
+     * 逐台把【直接相邻】的外部热源汇进来（组合发电机/组合工厂按整组产量、去重），
+     * 再加跨距离的组合网络热量 —— 但绝不调用其它建筑的 heat() 递归。
+     */
+    public float pooledHeatAvailable() {
+      CombinedTurretBuild l = leader();
+      if (l.lastPooledHeatTime != Time.time) {
+        l.lastPooledHeatTime = Time.time;
+        float sum = 0f;
+        ObjectSet<Object> counted = new ObjectSet<>();
+        for (CombinedTurretBuild member : l.group()) {
+          if (!member.isValid())
+            continue;
+          for (Building b : member.proximity) {
+            if (b == null || !b.isValid() || b.team != team)
+              continue;
+            if (b instanceof combine.production.CombinedGenerator.CombinedGeneratorBuild gb) {
+              // 发电机簇（电制热机/核反应堆）：贴到任意一台即读整簇共享热量
+              if (counted.add(gb.leader()))
+                sum += gb.getComboHeat();
+            } else if (b instanceof CombinedCrafter.CombinedCrafterBuild other) {
+              CombinedCrafter ob = (CombinedCrafter) other.block;
+              if (ob.mode == CombinedCrafter.Mode.heatproducer) {
+                if (counted.add(other.leader()))
+                  for (CombinedCrafter.CombinedCrafterBuild p : other.group())
+                    if (p.isValid())
+                      sum += p.producerHeat;
+              } else if (ob.heatOutput > 0) {
+                if (counted.add(other.leader()))
+                  sum += other.getComboHeat();
+              }
+            } else if (b instanceof mindustry.world.blocks.heat.HeatBlock hb
+                && !(b instanceof CombinedCrafter.CombinedCrafterBuild)
+                && !(b instanceof combine.production.CombinedGenerator.CombinedGeneratorBuild)
+                && b != this) {
+              // 原版热源（原版电热器、热路由器等）
+              sum += hb.heat();
+            }
+          }
+        }
+        sum += ComboNet.heatFor(l);
+        l.comboPooledHeat = sum;
+      }
+      return l.comboPooledHeat;
+    }
+
     public void rebuildCombo() {
       Seq<CombinedTurretBuild> oldGroup = comboGroup != null ? new Seq<>(comboGroup) : new Seq<>();
       comboGroup = new Seq<>();
@@ -257,7 +322,7 @@ public class CombinedTurret extends Turret {
             // 分组 BFS 穿过组合节点/连接器：被节点连上 = 效果相当于直接组合（同 LinkWall 语义）
             for (Building b : ComboReflect.linkedReachable(this,
                     o -> o instanceof CombinedTurretBuild other && other.team == team && other.isValid(),
-                    (cur, o) -> cur.block == o.block
+                    (cur, o) -> cur.block.getClass() == o.block.getClass()
                     || ((CombinedTurret) cur.block).allowCrossTypeCombo
                     || ((CombinedTurret) o.block).allowCrossTypeCombo)) {
                 if (b != this)
@@ -669,7 +734,7 @@ public class CombinedTurret extends Turret {
       // ComboNet 已把整张网络的热量按各组需求比例分配到组 leader（与组合工厂同一个池），
       // 这里每帧并取最大值：贴着连接件时原版路径已经算过、远程时由网络分配补上。
       if (heatRequirement > 0) {
-        heatReq = Math.max(heatReq, ComboNet.heatFor(leader()));
+        heatReq = Math.max(heatReq, pooledHeatAvailable());
       }
     }
 
@@ -832,6 +897,7 @@ public class CombinedTurret extends Turret {
 
     @Override
     public void display(Table table) {
+      if (!ComboUi.detail()) { super.display(table); return; }
       // 面板每帧都会被调用：绝不能让异常抛回游戏（否则整个游戏崩，且面板只画一半）
       ComboUi.safe("combinedturret:display", () -> displayInner(table));
     }
