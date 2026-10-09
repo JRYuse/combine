@@ -32,6 +32,22 @@ def read_token():
                 in_intern = False
             elif in_intern and s.startswith("experimental_bearer_token"):
                 tok = s.split("=", 1)[1].strip().strip('"')
+    # config.toml 现在指向 deepseek provider、没有 intern 段：退回 profile 里的那份额度。
+    if not tok:
+        profile = "/root/.codex/profiles/intern/provider.toml"
+        try:
+            with open(profile) as f:
+                in_intern = False
+                for line in f:
+                    s = line.strip()
+                    if s.startswith("[model_providers.intern]"):
+                        in_intern = True
+                    elif s.startswith("["):
+                        in_intern = False
+                    elif in_intern and s.startswith("experimental_bearer_token"):
+                        tok = s.split("=", 1)[1].strip().strip('"')
+        except OSError:
+            pass
     if not tok:
         sys.exit("找不到 intern provider 的 token（/root/.codex/config.toml）")
     return tok
