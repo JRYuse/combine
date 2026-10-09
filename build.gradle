@@ -34,13 +34,12 @@ java {
 }
 
 
-ext {
-    // Mindustry version to depend on.
+ext {    // Mindustry version to depend on.
     // Valid values:
     // - latest: depend on the latest release of mindustry
     // - be: depend on the very latest commit of mindustry
     // - v<number>: depend on a specific commit
-    mindustryVersion = "v160.1"
+    mindustryVersion = "v160.7"
     isWindows = System.getProperty("os.name").toLowerCase().contains("windows")
     sdkRoot = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
 }
