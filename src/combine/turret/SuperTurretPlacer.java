@@ -72,7 +72,7 @@ public class SuperTurretPlacer {
   /** HUD 上的悬浮入口按钮（用户要求：手机/桌面都用悬浮式按钮触发框选，别再改 input）。 */
   static @Nullable Element button;
   /** 点开后出现的三个子按钮：炮台合体 + 工厂合体 + 矿物阴影。 */
-  static @Nullable Element turretBtn, factoryBtn, productionBtn;
+  static @Nullable Element turretBtn, factoryBtn, generatorBtn, productionBtn;
   static boolean subButtonsShown;
   /** 悬浮按钮边长（像素，乘 Scl）。 */
   static final float BUTTON_SIDE = 48f;
@@ -182,6 +182,11 @@ public class SuperTurretPlacer {
   static void onFactoryBtn() {
     hideSubButtons();
     combine.production.FactoryCombiner.start();
+  }
+
+  static void onGeneratorBtn() {
+    hideSubButtons();
+    combine.production.GeneratorCombiner.start();
   }
 
   /** 矿物阴影子按钮被点：启动"框矿物地板"流程。 */
@@ -657,6 +662,15 @@ public class SuperTurretPlacer {
     Core.scene.root.addChild(fb);
     factoryBtn = fb;
 
+    ImageButton gb = new ImageButton(mindustry.gen.Icon.power, mindustry.ui.Styles.clearTogglei);
+    gb.name = "combineSubGeneratorBtn";
+    gb.setSize(subSize, subSize);
+    gb.resizeImage(subSize * 0.55f);
+    gb.addListener(Tooltip.Tooltips.getInstance().create("框选发电机合体", false));
+    gb.clicked(SuperTurretPlacer::onGeneratorBtn);
+    Core.scene.root.addChild(gb);
+    generatorBtn = gb;
+
     ImageButton pb = new ImageButton(mindustry.gen.Icon.production, mindustry.ui.Styles.clearTogglei);
     pb.name = "combineSubProductionBtn";
     pb.setSize(subSize, subSize);
@@ -684,6 +698,13 @@ public class SuperTurretPlacer {
       } catch (Throwable ignored) {
       }
       factoryBtn = null;
+    }
+    if (generatorBtn != null) {
+      try {
+        generatorBtn.remove();
+      } catch (Throwable ignored) {
+      }
+      generatorBtn = null;
     }
     if (productionBtn != null) {
       try {
@@ -715,12 +736,14 @@ public class SuperTurretPlacer {
     float gap = Scl.scl(4f);
     boolean onLeft = mainX + mainW / 2f < p.getWidth() / 2f;
     float x = onLeft ? mainX + mainW + gap : mainX - subW - gap;
-    // 竖排一列、整体垂直居中于主按钮（上 = 炮台合体，中 = 工厂合体，下 = 矿物阴影）
-    int n = productionBtn == null ? 2 : 3;
+    // 竖排一列、整体垂直居中于主按钮（上 = 炮台合体，中 = 工厂/发电机合体，下 = 矿物阴影）
+    int n = productionBtn == null ? 3 : 4;
     float bottom = mainY + mainH / 2f - (subH * n + gap * (n - 1)) / 2f;
     if (productionBtn != null)
       productionBtn.setPosition(x, bottom);
-    factoryBtn.setPosition(x, bottom + subH + gap);
+    if (generatorBtn != null)
+      generatorBtn.setPosition(x, bottom + subH + gap);
+    factoryBtn.setPosition(x, bottom + (subH + gap) * 2);
     turretBtn.setPosition(x, bottom + (subH + gap) * (n - 1));
   }
 

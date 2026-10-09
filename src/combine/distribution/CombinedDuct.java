@@ -50,12 +50,13 @@ public class CombinedDuct extends Duct {
 
     @Override
     public int layers() {
-      return layers;
+      // 读取按设置上限夹紧：设置下调时，已叠层数立即按新上限算速度/绘制
+      return Math.min(layers, ConveyorOverlay.maxLayers(block));
     }
 
     @Override
     public void layers(int value) {
-      int next = Mathf.clamp(Math.max(layers, value), 1, maxLayers);
+      int next = Mathf.clamp(Math.max(layers, value), 1, ConveyorOverlay.maxLayers(block));
       if (next == layers)
         return;
       layers = next;

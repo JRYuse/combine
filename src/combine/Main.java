@@ -19,7 +19,9 @@ import combine.production.CombinedSolidPump;
 import combine.production.CombinedWallCrafter;
 import combine.production.CombinedVariableReactor;
 import combine.production.SuperCombineFactory;
+import combine.production.SuperCombineGenerator;
 import combine.production.FactoryCombiner;
+import combine.production.GeneratorCombiner;
 import combine.saves.SafeW11;
 import combine.saves.SafeWLegacy;
 import combine.saves.SafeWShort;
@@ -113,6 +115,7 @@ public class Main extends Mod {
   public static ComboNode comboNode;
   public static LiquidUnloader liquidUnloader;
   public static SuperCombineFactory superCombineFactory;
+  public static SuperCombineGenerator superCombineGenerator;
 
   static JsonReader reader = new JsonReader();
   static JsonValue json;
@@ -121,6 +124,7 @@ public class Main extends Mod {
   public void init() {
     Settings.load();
     MultiBuildList.init();
+    combine.distribution.ConveyorOverlay.loadLayers();
     // 施工替换：残留的旧实例引用（其他模组静态字段等）→ 组合实例。
     Events.on(BlockBuildBeginEvent.class, e -> {
       if (e.breaking)
@@ -247,6 +251,7 @@ public class Main extends Mod {
     // 超级组合炮台：快捷键/按钮 → 框选炮台 → 按数量生成对应边长的组合体（纯客户端交互）
     combine.turret.SuperTurretPlacer.register();
     combine.production.FactoryCombiner.register();
+    combine.production.GeneratorCombiner.register();
     // 矿物阴影：框选矿物地板 → 画一层阴影 → 阴影上放钻头会缩到 1x1
     combine.production.OreShadow.register();
     // 【必须】框选流程本体（输入 + 拖框那层高亮/边框 + 自动取消）的注册：
@@ -459,6 +464,7 @@ public class Main extends Mod {
       initRequirementTables();
       createLinkBlocks();
       createSuperCombineFactory();
+      createSuperCombineGenerator();
       createLiquidBlocks();
       // 跨距离传热用的探针（组合节点/连接器把热喂给"连线接进来的"需热建筑；和超级炮台开关无关）
       combine.util.ComboHeatProbe.create();
@@ -722,6 +728,35 @@ public class Main extends Mod {
     superCombineFactory = SuperCombineFactory.bySide[SuperCombineFactory.MIN_SIDE];
     Log.info("[combine] 组合工厂：@ 种边长已装配（2x2 .. @x@）",
         SuperCombineFactory.MAX_SIDE - SuperCombineFactory.MIN_SIDE + 1, SuperCombineFactory.MAX_SIDE);
+  }
+
+  /** 与组合工厂同构的**发电机合体**方块（入口：浮标 →「发电机合体」，见 GeneratorCombiner）。 */
+  void createSuperCombineGenerator() {
+    if (SuperCombineGenerator.bySide[SuperCombineGenerator.MIN_SIDE] != null)
+      return;
+    for (int side = SuperCombineGenerator.MIN_SIDE; side <= SuperCombineGenerator.MAX_SIDE; side++) {
+      SuperCombineGenerator g = new SuperCombineGenerator("super-combine-generator-" + side, side);
+      try {
+        g.localizedName = "组合发电机 " + side + "x" + side;
+        g.description = "多台发电机合体成 " + side + "x" + side + " 的组合发电机：每格一台发电机（缩到 1x1），"
+            + "物品/液体/电力/热量整台共享，可以继续往里加发电机，也能解体拆回每一台。"
+            + "入口：屏幕上的浮标 →「发电机合体」→ 框选要合体的发电机。";
+        g.health = 320 * side;
+        g.requirements(Category.power, BuildVisibility.hidden, new ItemStack[0]);
+        g.alwaysUnlocked = true;
+        g.init();
+        g.postInit();
+        g.setBars();
+      } catch (Throwable t) {
+        Log.err("[combine] 组合发电机 @x@ 装配失败（已兜底，不会带崩建造菜单）", side, side, t);
+      } finally {
+        ensureIcons(g);
+      }
+      SuperCombineGenerator.bySide[side] = g;
+    }
+    superCombineGenerator = SuperCombineGenerator.bySide[SuperCombineGenerator.MIN_SIDE];
+    Log.info("[combine] 组合发电机：@ 种边长已装配（2x2 .. @x@）",
+        SuperCombineGenerator.MAX_SIDE - SuperCombineGenerator.MIN_SIDE + 1, SuperCombineGenerator.MAX_SIDE);
   }
 
   /**
@@ -1191,8 +1226,8 @@ public class Main extends Mod {
       }
     }
     if (count > 0)
-      Log.info("[combine] 组合传送带：@ 种传送带/管道已装配（可覆盖叠层，最多 @ 层）",
-          count, combine.distribution.ConveyorOverlay.MAX_LAYERS);
+      Log.info("[combine] 组合传送带：@ 种传送带/管道已装配（可覆盖叠层，最多 @ 层，可在设置里调）",
+          count, combine.distribution.ConveyorOverlay.settingMaxLayers());
   }
 
   void processModBlocks() {

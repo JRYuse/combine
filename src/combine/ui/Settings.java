@@ -21,6 +21,7 @@ public class Settings {
         if (Vars.headless || Vars.ui == null || Vars.ui.settings == null) return;
         Vars.ui.settings.addCategory("组合工厂设置", Icon.settings, table -> {
             table.sliderPref(maxBuild, 5, 0, 50, 1,i -> i > 0 ? "" + i : "自动");
+            table.sliderPref(combine.distribution.ConveyorOverlay.SETTING_MAX_LAYERS, 5, 1, 10, 1, i -> "" + i);
             table.checkPref(buildBoost, false);
             table.pref(new SettingsMenuDialog.SettingsTable.Setting(openList) {
                 @Override
@@ -43,6 +44,19 @@ public class Settings {
                         dialog.addCloseButton();
                         SettingsMenuDialog.SettingsTable content = new SettingsMenuDialog.SettingsTable();
                         MultiBuildList.build(content);
+                        dialog.cont.pane(content).grow().scrollX(false);
+                        dialog.show();
+                    }).growX().height(50f).padTop(10f).row();
+                }
+            });
+            table.pref(new SettingsMenuDialog.SettingsTable.Setting(openList) {
+                @Override
+                public void add(SettingsMenuDialog.SettingsTable table) {
+                    table.button("组合传送带堆叠配置", Icon.move, () -> {
+                        BaseDialog dialog = new BaseDialog("组合传送带堆叠配置");
+                        dialog.addCloseButton();
+                        SettingsMenuDialog.SettingsTable content = new SettingsMenuDialog.SettingsTable();
+                        ConveyorLayerList.build(content);
                         dialog.cont.pane(content).grow().scrollX(false);
                         dialog.show();
                     }).growX().height(50f).padTop(10f).row();

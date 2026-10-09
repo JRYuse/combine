@@ -96,13 +96,14 @@ public class CombinedConveyor extends Conveyor {
 
     @Override
     public int layers() {
-      return layers;
+      // 读取按设置上限夹紧：设置下调时，已叠层数立即按新上限算速度/绘制
+      return Math.min(layers, ConveyorOverlay.maxLayers(block));
     }
 
     @Override
     public void layers(int value) {
-      // 只增不减 + 夹上限：客户端乐观叠层与服务端转发的同一个值会各生效一次，这样是幂等的
-      int next = Mathf.clamp(Math.max(layers, value), 1, maxLayers);
+      // 只增不减 + 夹上限（上限走设置）：客户端乐观叠层与服务端转发的同一个值会各生效一次，这样是幂等的
+      int next = Mathf.clamp(Math.max(layers, value), 1, ConveyorOverlay.maxLayers(block));
       if (next == layers)
         return;
       layers = next;

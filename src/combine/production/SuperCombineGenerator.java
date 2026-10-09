@@ -35,6 +35,7 @@ import mindustry.world.Tile;
 import mindustry.world.blocks.heat.HeatBlock;
 import mindustry.world.blocks.heat.HeatProducer;
 import mindustry.world.blocks.production.GenericCrafter;
+import mindustry.world.blocks.power.PowerGenerator;
 import mindustry.world.blocks.production.Separator;
 import mindustry.world.consumers.ConsumePower;
 import mindustry.world.draw.DrawBlock;
@@ -49,12 +50,12 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 
 /**
- * 超级组合工厂（合体工厂）：把框里的多台工厂合成 **一台 side×side 的方块**（每格一台工厂、缩到 1 格），
+ * 超级组合发电机（合体工厂）：把框里的多台工厂合成 **一台 side×side 的方块**（每格一台工厂、缩到 1 格），
  * 物品 / 液体 / 电力 / 热量整台共享，可以继续往里加工厂，也能解体拆回去。
  *
  * <p>【命名/结构】用户 2026-10-04 要求：这套合体机制要**独立成一个新方块类**
- * （和"超级组合炮台 = {@code SuperTurret}"对仗），不去改动那些把原版工厂替换成组合工厂的类
- * （{@code CombinedCrafter} 等）。所以这里自成一个 {@code SuperCombineFactory} +
+ * （和"超级组合炮台 = {@code SuperTurret}"对仗），不去改动那些把原版工厂替换成组合发电机的类
+ * （{@code CombinedCrafter} 等）。所以这里自成一个 {@code SuperCombineGenerator} +
  * 同名 build，方块名 {@code super-combine-factory}，是**只在合体流程里出现的隐藏方块**：
  * 不进建造菜单、不参与任何原版方块的替换。
  *
@@ -74,14 +75,14 @@ import java.lang.reflect.Modifier;
  * <p>本方块带 {@code comboGroup/comboLeader/comboDirty} 这套约定字段 + 实现
  * {@link IComboGrouped}，所以组合连接器 / 组合节点 / 别的组合体都能把它接成一张网络。
  */
-public class SuperCombineFactory extends Block {
+public class SuperCombineGenerator extends Block {
   /**
    * 【用户要求 2026-10-04】"每个工厂变成 1x1，不是全部加起来变成 1x1 大小" ——
    * 所以每种边长一个方块实例（下标 = 边长），台数 → ceil(sqrt(台数)) × ceil(sqrt(台数))，
    * 每一格摆一台（缩放到 1 格）工厂，和超级组合炮台（{@code SuperTurret.bySide}）同一套做法。
    */
   public static final int MIN_SIDE = 2, MAX_SIDE = 8;
-  public static final SuperCombineFactory[] bySide = new SuperCombineFactory[MAX_SIDE + 1];
+  public static final SuperCombineGenerator[] bySide = new SuperCombineGenerator[MAX_SIDE + 1];
 
   /** 紧凑配置串前缀：'~' + base64(二进制)，理由见 {@link #pack64}。 */
   public static final String CONFIG_TAG = "~";
@@ -92,12 +93,12 @@ public class SuperCombineFactory extends Block {
    * 同步给所有客户端），触摸端也有入口。布局里的方块名只可能是 {@code [a-z0-9-]}，不会撞。
    */
   public static final String DISSOLVE_TAG = "!dissolve";
-  /** 一台组合工厂最多装多少台工厂。 */
+  /** 一台组合发电机最多装多少台工厂。 */
   public static final int MAX_FACTORIES = MAX_SIDE * MAX_SIDE;
   /** 本台的边长（占 side × side 格）。 */
   public final int side;
 
-  public SuperCombineFactory(String name, int side) {
+  public SuperCombineGenerator(String name, int side) {
     super(name);
     this.side = side;
     size = side;
@@ -111,20 +112,25 @@ public class SuperCombineFactory extends Block {
     hasItems = true;
     hasLiquids = true;
     hasPower = true;
+    // 【电力：本体净账中转】本体用 FactoryConsumePower 上报"各格消耗 - 各格发电"的净需求，
+    // 盈余通过 override getPowerProduction() 报给电网：outputsPower 让本体进 producers 表。
+    // ⚠️ 不能把 consumesPower 置 false：add() 的分类分支在 outputsPower && consumesPower
+    // 且 consPower == null 时会 NPE（读 consPower.buffered）——FactoryConsumePower 常驻保住非 null。
+    outputsPower = true;
     // 【放置即成型】原版会先摆一个 ConstructBlock（施工中：目标方块贴图压暗 + 进度条），
     // 完工才变成真方块。本方块是隐藏的虚拟方块、没有专属贴图，施工那一两秒就是用户报的
     // "放下去先暗一下"。合体本来就该是一次成型，所以标 instantBuild 跳过施工阶段。
     instantBuild = true;
     // 能被超速投影/超频加速（和超级组合炮台同一口径，本体加速后逐格同步 timeScale）
     canOverdrive = true;
-    category = mindustry.type.Category.production;
+    category = mindustry.type.Category.power;
     // 建造菜单里**不出现**（入口只有 HUD 上那个"工厂合体"子按钮，见 FactoryCombiner）。
     // 图标/贴图由 Main.ensureIcons 兜底，绝不留 null。
     buildVisibility = BuildVisibility.hidden;
-    // 容量按"各格之和"现算（见 SuperCombineFactoryBuild.buildCells），这里只是网络记账用的估值
+    // 容量按"各格之和"现算（见 SuperCombineGeneratorBuild.buildCells），这里只是网络记账用的估值
     itemCapacity = 1280;
     liquidCapacity = 9999f;
-    buildType = SuperCombineFactoryBuild::new;
+    buildType = SuperCombineGeneratorBuild::new;
     consume(new FactoryConsumePower());
     // 【必须有】原版 `Block.offset`（偶数边长 = tilesize/2，奇数边长 = 0）是在**内容加载收尾**
     // 的 afterPatch 里按 size 算的；本方块是 Mod.init() 里现造的，那一轮早过了 → offset 一直是 0。
@@ -146,7 +152,7 @@ public class SuperCombineFactory extends Block {
    * 原版默认注册的那几条分子分母全不对 —— 物品条的分母是方块上那个静态估算
    * {@code itemCapacity=1280}、液体条是 {@code liquidCapacity=9999} 的假容量（合体后真正的上限
    * 是每台之和，写在 {@code realItemCap/realLiquidCap} 里）。所以这里把默认的物品/液体/电力条
-   * 摘掉，四条池子条统一由 {@code SuperCombineFactoryBuild#buildPoolBars} 按整台共享池的口径画。
+   * 摘掉，四条池子条统一由 {@code SuperCombineGeneratorBuild#buildPoolBars} 按整台共享池的口径画。
    */
   @Override
   public void setBars() {
@@ -156,7 +162,7 @@ public class SuperCombineFactory extends Block {
       removeBar("liquid");
       removeBar("power");
     } catch (Throwable t) {
-      Log.err("[combine] 组合工厂信息面板的默认条精简失败（沿用原版默认条）", t);
+      Log.err("[combine] 组合发电机信息面板的默认条精简失败（沿用原版默认条）", t);
     }
   }
 
@@ -169,7 +175,7 @@ public class SuperCombineFactory extends Block {
   }
 
   /** 边长对应的方块实例（内容还没装配时返回 null）。 */
-  public static @Nullable SuperCombineFactory blockForSide(int side) {
+  public static @Nullable SuperCombineGenerator blockForSide(int side) {
     if (side < MIN_SIDE || side > MAX_SIDE)
       return null;
     return bySide[side];
@@ -194,23 +200,21 @@ public class SuperCombineFactory extends Block {
   // ==================== 哪些方块算"工厂" ====================
 
   /**
-   * 能合体的"工厂"：{@link GenericCrafter}（含 HeatCrafter / AttributeCrafter 这些子类）、
-   * {@link Separator}（分离机）和 {@link HeatProducer}（制热机）。钻头 / 泵 / 挖墙钻不算工厂，
-   * 不在这条合体流程里。
+   * 能合体的"发电机"：{@link PowerGenerator} 及其子类 —— 地热 / 燃烧 / 蒸汽 / 太阳能 /
+   * 冲击 / 裂变反应堆 / HeaterGenerator（发电 + 产热）。钻头 / 泵 / 挖墙钻不算，不在这条合体流程里。
    *
-   * <p>【用户报的"Separator 为什么无法合体"】旧口径只认 {@code GenericCrafter}，注释还写着
-   * "Separator 是它的子类" —— 那是老版本的事；本机跑的 160.x 里 {@code Separator} 直接继承
-   * {@link Block}（不是 GenericCrafter），于是分离机永远被判成"不是工厂"、框选时被跳过、
-   * {@link #cellBlock} 也返回 null。这里显式补上分离机。
+   * <p>发电机格子的 {@code updateTile()} 只写字段、不碰 {@code power.graph}（v160 里产出
+   * 由电网主动问 {@code getPowerProduction()} 收），在假 build 上跑原版逻辑是安全的；
+   * 产的电进整台共享电网，盈余通过本体的 {@code getPowerProduction()} 上报给真实电网。
    */
   public static boolean isFactoryBlock(Block b) {
-    return b instanceof GenericCrafter || b instanceof Separator || b instanceof HeatProducer;
+    return b instanceof PowerGenerator;
   }
 
   /**
    * 世界里的方块 → 拿来当"格子工厂"的方块（组合方块换回它替换前的原版实例）。
    *
-   * <p>格子跑的是**原版**逻辑：组合工厂自己负责并池，格子再套一层组合逻辑会互相打架。
+   * <p>格子跑的是**原版**逻辑：组合发电机自己负责并池，格子再套一层组合逻辑会互相打架。
    */
   public static @Nullable Block cellBlock(Block worldBlock) {
     if (worldBlock == null || !isFactoryBlock(worldBlock))
@@ -289,7 +293,7 @@ public class SuperCombineFactory extends Block {
         keep--;
       return CONFIG_TAG + pack64(joinCells(toks, keep), "", null);
     } catch (Throwable t) {
-      Log.err("[combine] 组合工厂：配置串编码失败（改用逐格文本）", t);
+      Log.err("[combine] 组合发电机：配置串编码失败（改用逐格文本）", t);
       return layout == null ? "" : layout;
     }
   }
@@ -311,7 +315,7 @@ public class SuperCombineFactory extends Block {
     try {
       String[] toks = cellTokens(layout);
       String[] src = (sources == null || sources.isEmpty()) ? new String[0] : sources.split(";");
-      // 格式 2 = sources 每项带一个"整台"标志（加工厂：把一整台组合工厂并进来）
+      // 格式 2 = sources 每项带一个"整台"标志（加工厂：把一整台组合发电机并进来）
       boolean flagged = false;
       for (String s : src)
         if (s != null && s.startsWith("!"))
@@ -525,7 +529,7 @@ public class SuperCombineFactory extends Block {
       }
       return out;
     } catch (Throwable t) {
-      Log.err("[combine] 组合工厂：配置串解码失败（按空布局处理）", t);
+      Log.err("[combine] 组合发电机：配置串解码失败（按空布局处理）", t);
       return out;
     }
   }
@@ -743,7 +747,7 @@ public class SuperCombineFactory extends Block {
    */
   @Override
   public void onNewPlan(mindustry.entities.units.BuildPlan plan) {
-    FactoryCombiner.markOrdered();
+    GeneratorCombiner.markOrdered();
   }
 
   // ==================== 电网：把各格用电量加总上报 ====================
@@ -755,7 +759,8 @@ public class SuperCombineFactory extends Block {
 
     @Override
     public float requestedPower(Building entity) {
-      return entity instanceof SuperCombineFactoryBuild b ? b.cellPowerUse() : 0f;
+      // 对外需求 = 各格消耗 − 各格发电（发电机合体后自产自功耗先抵）
+      return entity instanceof SuperCombineGeneratorBuild b ? Math.max(0f, b.cellPowerUse() - b.cellPowerProduced()) : 0f;
     }
 
     @Override
@@ -766,11 +771,11 @@ public class SuperCombineFactory extends Block {
 
   // ==================== 建筑本体 ====================
 
-  public class SuperCombineFactoryBuild extends Building implements IComboGrouped, HeatBlock {
+  public class SuperCombineGeneratorBuild extends Building implements IComboGrouped, HeatBlock {
     // ---- 布局与格子 ----
     /** 布局串（';' 分隔 "方块名@朝向"，空格子 = 空串）。 */
     public String layout = "";
-    /** 被框选进来的工厂坐标（"x,y"，前面带 '!' = 一整台组合工厂）——落地后要把它们吃掉。 */
+    /** 被框选进来的工厂坐标（"x,y"，前面带 '!' = 一整台组合发电机）——落地后要把它们吃掉。 */
     public String sources = "";
     /** 每个来源"当时装着的货"（只在来源被预览顶掉时才用到，见 encodeConfig 的说明）。 */
     public String[] carry = new String[0];
@@ -798,7 +803,7 @@ public class SuperCombineFactory extends Block {
     /** 建格失败（第三方方块不认这套）的格子，只报一次日志。 */
     public ObjectSet<Integer> cellBroken = new ObjectSet<>();
     // ---- 组合网络约定字段（ComboReflect 按名字反射找） ----
-    public SuperCombineFactoryBuild comboLeader;
+    public SuperCombineGeneratorBuild comboLeader;
     public Seq<Building> comboGroup = new Seq<>();
     public boolean comboDirty = true;
     public int comboTotalItemCap;
@@ -807,7 +812,7 @@ public class SuperCombineFactory extends Block {
     // ==================== 分组（组合网络） ====================
 
     @Override
-    public SuperCombineFactoryBuild leader() {
+    public SuperCombineGeneratorBuild leader() {
       if (comboLeader != null && (!comboLeader.isValid() || comboLeader.tile == null))
         comboLeader = null;
       return comboLeader == null ? this : comboLeader;
@@ -819,7 +824,7 @@ public class SuperCombineFactory extends Block {
 
     @Override
     public Seq<Building> group() {
-      SuperCombineFactoryBuild l = leader();
+      SuperCombineGeneratorBuild l = leader();
       if (l.comboGroup == null)
         l.comboGroup = new Seq<>();
       return l.comboGroup;
@@ -830,25 +835,25 @@ public class SuperCombineFactory extends Block {
       comboDirty = true;
     }
 
-    /** 邻接 + 穿过组合连接器/节点可达的同队组合工厂算一组。 */
+    /** 邻接 + 穿过组合连接器/节点可达的同队组合发电机算一组。 */
     public void rebuildCombo() {
       Seq<Building> members = new Seq<>();
       members.add(this);
       try {
         for (Building b : ComboReflect.linkedReachable(this,
-            o -> o instanceof SuperCombineFactoryBuild st && st.team == team && st.isValid(),
+            o -> o instanceof SuperCombineGeneratorBuild st && st.team == team && st.isValid(),
             (cur, o) -> true)) {
           if (b != this && b.isValid())
             members.addUnique(b);
         }
       } catch (Throwable t) {
-        Log.err("[combine] 组合工厂分组失败（只算自己）", t);
+        Log.err("[combine] 组合发电机分组失败（只算自己）", t);
       }
 
-      SuperCombineFactoryBuild ldr = this;
+      SuperCombineGeneratorBuild ldr = this;
       for (Building b : members)
         if (b.isValid() && b.pos() < ldr.pos())
-          ldr = (SuperCombineFactoryBuild) b;
+          ldr = (SuperCombineGeneratorBuild) b;
 
       int itemCap = 0;
       float liquidCap = 0f;
@@ -860,7 +865,7 @@ public class SuperCombineFactory extends Block {
       }
 
       for (Building b : members) {
-        SuperCombineFactoryBuild s = (SuperCombineFactoryBuild) b;
+        SuperCombineGeneratorBuild s = (SuperCombineGeneratorBuild) b;
         s.comboGroup = members;
         s.comboLeader = s == ldr ? null : ldr;
         s.comboTotalItemCap = Math.max(itemCap, 1);
@@ -873,8 +878,8 @@ public class SuperCombineFactory extends Block {
         sharePools(ldr, members);
     }
 
-    /** 本地组合体并池：相邻 / 连线接起来的组合工厂共用一份物品、液体模块。 */
-    public void sharePools(SuperCombineFactoryBuild ldr, Seq<Building> members) {
+    /** 本地组合体并池：相邻 / 连线接起来的组合发电机共用一份物品、液体模块。 */
+    public void sharePools(SuperCombineGeneratorBuild ldr, Seq<Building> members) {
       boolean dedupe = ComboNet.pendingLoadDedupe();
 
       ItemModule itemPool = ldr.items;
@@ -923,7 +928,7 @@ public class SuperCombineFactory extends Block {
           m.liquids = liquidPool;
       }
       for (Building m : members)
-        if (m instanceof SuperCombineFactoryBuild cf)
+        if (m instanceof SuperCombineGeneratorBuild cf)
           cf.syncCellModules();
     }
 
@@ -1013,7 +1018,7 @@ public class SuperCombineFactory extends Block {
       try {
         table.row();
         // 台数按"真的装了工厂的格子"数（cells 数组按边长² 开，空槽不算）
-        table.add("[lightgray]组合工厂: [white]" + filledCount() + " 台[]").left();
+        table.add("[lightgray]组合发电机: [white]" + filledCount() + " 台[]").left();
         table.row();
         // 【用户 2026-10-06】display 里不再列"所有建筑的名字"和"产出的物品、液体"（太长、太占地方）：
         // 只留台数 + 物品 / 液体 / 电力 / 热量四条池子。
@@ -1072,14 +1077,20 @@ public class SuperCombineFactory extends Block {
       if (!anyLiquid)
         table.add("[gray]（空）[]").left().row();
 
-      // 3) 电力条：整台各格用电之和 × 电网满足率
+      // 3) 电力条：整台各格用电之和 × 电网满足率（发电机格子多时显示净账单）
       final float use = cellPowerUse();
+      final float gen = cellPowerProduced();
+      final float req = Math.max(0f, use - gen);
+      final float surplus = Math.max(0f, gen - use);
       final float status = power == null ? 0f : power.status;
       table.add(new mindustry.ui.Bar(
-          () -> "电力 " + arc.util.Strings.fixed(use * status * 60f, 1) + " / "
-              + arc.util.Strings.fixed(use * 60f, 1) + " ⚡/s",
+          () -> surplus > 0.001f
+              ? "发电 +" + arc.util.Strings.fixed(surplus * 60f, 1) + " ⚡/s"
+                  + (req > 0.001f ? "（自耗 " + arc.util.Strings.fixed(req * 60f, 1) + "）" : "")
+              : "电力 " + arc.util.Strings.fixed(req * status * 60f, 1) + " / "
+                  + arc.util.Strings.fixed(req * 60f, 1) + " ⚡/s",
           () -> Pal.power,
-          () -> Mathf.clamp(status))).width(w).height(18f).pad(4f).left().row();
+          () -> surplus > 0.001f ? 1f : Mathf.clamp(status))).width(w).height(18f).pad(4f).left().row();
 
       // 4) 热量条：整台热池 / 里面每一台需热合计（只产热不耗热时显示产热）
       final float demand = heatDemand();
@@ -1095,7 +1106,7 @@ public class SuperCombineFactory extends Block {
           .width(w).height(18f).pad(4f).left().row();
     }
 
-    /** 这台组合工厂能产什么（把里面每一格的产物并集去重，物品 + 液体）。 */
+    /** 这台组合发电机能产什么（把里面每一格的产物并集去重，物品 + 液体）。 */
     public String outputSummary() {
       StringBuilder sb = new StringBuilder();
       ObjectSet<String> seen = new ObjectSet<>();
@@ -1186,12 +1197,12 @@ public class SuperCombineFactory extends Block {
             try {
               configure(DISSOLVE_TAG);
             } catch (Throwable t) {
-              Log.err("[combine] 组合工厂解体请求发送失败", t);
+              Log.err("[combine] 组合发电机解体请求发送失败", t);
             }
           }).height(40f).width(110f).padRight(6f);
           top.add("[lightgray]把每台工厂放回原处（想重摆时用）").left();
         }).left().padBottom(6f).row();
-        table.add("[accent]组合工厂 " + side + "x" + side + "（" + filledCount() + " 台）[]："
+        table.add("[accent]组合发电机 " + side + "x" + side + "（" + filledCount() + " 台）[]："
             + "物品/液体/电力/热量整台共用").left().row();
         // 【用户 2026-10-06】这块"点方块弹出的悬浮面板"里也不再列"所有建筑的名字"和"产出的物品、液体"
         // （和 display 同一口径：只留台数 + 四条池子）。
@@ -1200,7 +1211,7 @@ public class SuperCombineFactory extends Block {
         table.add("[lightgray]想再往里加工厂：点右上角浮标 → 工厂合体 → 把这台和要加的工厂一起框上").left()
             .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap();
       } catch (Throwable t) {
-        Log.err("[combine] 组合工厂面板构建失败", t);
+        Log.err("[combine] 组合发电机面板构建失败", t);
       }
     }
 
@@ -1211,7 +1222,7 @@ public class SuperCombineFactory extends Block {
         ensureCells();
       } catch (Throwable t) {
         if (cellBroken.add(-1))
-          Log.err("[combine] 组合工厂 ensureCells 每 tick 抛异常（前半段被跳过）", t);
+          Log.err("[combine] 组合发电机 ensureCells 每 tick 抛异常（前半段被跳过）", t);
       }
       // 满血初始化：原版 constructFinish 会在 created() 之后用方块静态血量再盖一次
       if (healthFixPending && cellsReady) {
@@ -1227,7 +1238,7 @@ public class SuperCombineFactory extends Block {
           rebuildCombo();
       } catch (Throwable t) {
         if (cellBroken.add(-2))
-          Log.err("[combine] 组合工厂 rebuildCombo 每 tick 抛异常", t);
+          Log.err("[combine] 组合发电机 rebuildCombo 每 tick 抛异常", t);
       }
       syncMaxHealth();
       syncCellModules();
@@ -1299,7 +1310,7 @@ public class SuperCombineFactory extends Block {
           c.update();
         } catch (Throwable t) {
           if (cellBroken.add(i))
-            Log.err("[combine] 组合工厂第 @ 格（@）更新出错，已停用这一格", i,
+            Log.err("[combine] 组合发电机第 @ 格（@）更新出错，已停用这一格", i,
                 cellBlocks[i] == null ? "?" : cellBlocks[i].name, t);
           cells[i] = null;
           continue;
@@ -1335,9 +1346,43 @@ public class SuperCombineFactory extends Block {
       return sum;
     }
 
+    /** 各格的发电量合计（发电机格子：原版 updateTile 推进状态后读 getPowerProduction()）。 */
+    public float cellPowerProduced() {
+      float sum = 0f;
+      for (Building c : cells) {
+        if (c == null || c.dead() || c.block == null || !(c instanceof PowerGenerator.GeneratorBuild g))
+          continue;
+        try {
+          sum += Math.max(0f, g.getPowerProduction());
+        } catch (Throwable ignored) {
+        }
+      }
+      return sum;
+    }
+
+    /**
+     * 对外产电 = 整台净盈余（各格发电 − 各格消耗），只在有盈余时上报；
+     * 真网 PowerGraph.update() 会遍历 producers 调这个方法，把本台当生产者。
+     */
+    @Override
+    public float getPowerProduction() {
+      return Math.max(0f, cellPowerProduced() - cellPowerUse());
+    }
+
     /** 这一格自己产的热（制热机的 heat）。 */
     float cellProducedHeat(Building c) {
-      if (c == null || c.block == null || !(c.block instanceof HeatProducer))
+      if (c == null || c.block == null)
+        return 0f;
+      try {
+        // HeaterGenerator 是 PowerGenerator + HeatBlock，不走 {@code heat} 字段
+        if (c instanceof HeatBlock hb) {
+          float h = hb.heat();
+          if (h > 0f)
+            return h;
+        }
+      } catch (Throwable ignored) {
+      }
+      if (!(c.block instanceof HeatProducer))
         return 0f;
       Float v = ComboReflect.getFloat(c, "heat");
       return v == null ? 0f : Math.max(0f, v);
@@ -1617,7 +1662,7 @@ public class SuperCombineFactory extends Block {
         return p;
       } catch (Throwable t) {
         if (cellBroken.add(-5))
-          Log.err("[combine] 组合工厂：热量探针创建失败（需热工厂会退回只能贴着的原版行为）", t);
+          Log.err("[combine] 组合发电机：热量探针创建失败（需热工厂会退回只能贴着的原版行为）", t);
         return null;
       }
     }
@@ -1650,7 +1695,7 @@ public class SuperCombineFactory extends Block {
         return c;
       } catch (Throwable t) {
         if (cellBroken.add(-6))
-          Log.err("[combine] 组合工厂：@ 不能作为格子工厂（已留空）", cb.name, t);
+          Log.err("[combine] 组合发电机：@ 不能作为格子工厂（已留空）", cb.name, t);
         return null;
       }
     }
@@ -1704,7 +1749,7 @@ public class SuperCombineFactory extends Block {
         return;
       String[] cellsTok = cellTokens(layout);
       String[] srcs = sources.split(";");
-      ObjectSet<String> absorbed = new ObjectSet<>(); // 同一台现成组合工厂在 sources 里会出现多次
+      ObjectSet<String> absorbed = new ObjectSet<>(); // 同一台现成组合发电机在 sources 里会出现多次
       boolean changed = false;
       for (int i = 0; i < cellsTok.length; i++) {
         Block want = blockOfToken(cellsTok[i]);
@@ -1714,9 +1759,9 @@ public class SuperCombineFactory extends Block {
         if (src != null && src.startsWith("!")) {
           if (!absorbed.add(src))
             continue; // 这台已经被并进来了，重复项直接跳过（库存也只搬一次）
-          // 【加工厂】原料是"一整台组合工厂"：把它的库存搬进来，然后整台拆掉
+          // 【加工厂】原料是"一整台组合发电机"：把它的库存搬进来，然后整台拆掉
           Tile ot = sourceTile(src.substring(1));
-          if (ot != null && ot.build instanceof SuperCombineFactoryBuild old && old.team == team
+          if (ot != null && ot.build instanceof SuperCombineGeneratorBuild old && old.team == team
               && !old.dead()) {
             try {
               if (old.items != null && items != null)
@@ -1728,10 +1773,10 @@ public class SuperCombineFactory extends Block {
             try {
               ot.removeNet();
             } catch (Throwable e) {
-              Log.err("[combine] 组合工厂并体：拆掉被吸收的那台失败（@,@）", ot.x, ot.y, e);
+              Log.err("[combine] 组合发电机并体：拆掉被吸收的那台失败（@,@）", ot.x, ot.y, e);
             }
           } else {
-            // 那台现成组合工厂被预览顶掉了：库存只能从 config 里带过来的那份补
+            // 那台现成组合发电机被预览顶掉了：库存只能从 config 里带过来的那份补
             applyCarry(this, i < carry.length ? carry[i] : null);
           }
           continue;
@@ -1766,7 +1811,7 @@ public class SuperCombineFactory extends Block {
             sb.append(';');
           sb.append(cellsTok[i]);
         }
-        Log.warn("[combine] 组合工厂：有一格的原料工厂已经不在（多半是重复合体/蓝图复制），该格已清空");
+        Log.warn("[combine] 组合发电机：有一格的原料工厂已经不在（多半是重复合体/蓝图复制），该格已清空");
         applyLayout(sb.toString());
       }
     }
@@ -1837,7 +1882,7 @@ public class SuperCombineFactory extends Block {
           try {
             mindustry.gen.Call.constructFinish(t, placedBlock, null, rot, team, null);
           } catch (Throwable e) {
-            Log.err("[combine] 组合工厂解体：放回 @ 失败（@,@）", placedBlock.name, spot[0], spot[1], e);
+            Log.err("[combine] 组合发电机解体：放回 @ 失败（@,@）", placedBlock.name, spot[0], spot[1], e);
             continue;
           }
           if (first == null && t.build != null)
@@ -1848,9 +1893,9 @@ public class SuperCombineFactory extends Block {
           moveItems(stashItems, first.items);
           moveLiquids(stashLiquids, first.liquids);
         }
-        Log.info("[combine] 组合工厂已解体：放回 @ 台工厂", placed);
+        Log.info("[combine] 组合发电机已解体：放回 @ 台工厂", placed);
       } catch (Throwable t) {
-        Log.err("[combine] 组合工厂解体失败", t);
+        Log.err("[combine] 组合发电机解体失败", t);
       }
     }
 
@@ -2154,7 +2199,7 @@ public class SuperCombineFactory extends Block {
       return true;
     } catch (Throwable t) {
       if (drawerDrawErr.add(cb.name == null ? "" : cb.name))
-        Log.err("[combine] 组合工厂：@ 的 drawer 绘制失败（这一格退回整套图标）", cb.name, t);
+        Log.err("[combine] 组合发电机：@ 的 drawer 绘制失败（这一格退回整套图标）", cb.name, t);
       return false;
     } finally {
       if (view != null)
@@ -2333,13 +2378,15 @@ public class SuperCombineFactory extends Block {
   static final Seq<Field> sFld = new Seq<>();
   static final FloatSeq sVal = new FloatSeq();
 
-  /** 这一格工厂的抽屉（分离机不是 GenericCrafter，但有同名字段 {@code drawer}）。 */
+  /** 这一格工厂的抽屉（分离机不是 GenericCrafter，但有同名字段 {@code drawer}；发电机同理）。 */
   static @Nullable DrawBlock drawerOf(Block cb) {
     try {
       if (cb instanceof GenericCrafter gc)
         return gc.drawer;
       if (cb instanceof Separator sp)
         return sp.drawer;
+      if (cb instanceof PowerGenerator pg)
+        return pg.drawer;
     } catch (Throwable ignored) {
     }
     return null;
@@ -2535,7 +2582,7 @@ public class SuperCombineFactory extends Block {
 
   /** 供测试/调试：这台建筑现在有几格真的装了工厂。 */
   public static int loadedCells(Building b) {
-    if (!(b instanceof SuperCombineFactoryBuild sb))
+    if (!(b instanceof SuperCombineGeneratorBuild sb))
       return 0;
     int n = 0;
     for (Building c : sb.cells)
@@ -2546,10 +2593,10 @@ public class SuperCombineFactory extends Block {
 
   /** 供测试：这台合体工厂的实际物品容量上限。 */
   public static int itemCapOf(Building b) {
-    return b instanceof SuperCombineFactoryBuild sb ? sb.realItemCap : 0;
+    return b instanceof SuperCombineGeneratorBuild sb ? sb.realItemCap : 0;
   }
 
   public static float liquidCapOf(Building b) {
-    return b instanceof SuperCombineFactoryBuild sb ? sb.realLiquidCap : 0f;
+    return b instanceof SuperCombineGeneratorBuild sb ? sb.realLiquidCap : 0f;
   }
 }
