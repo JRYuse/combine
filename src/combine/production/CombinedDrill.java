@@ -81,6 +81,162 @@ public class CombinedDrill extends Block {
 
     public Mode mode = Mode.drill;
 
+    // ==================== 矿物阴影：压成 1x1 的钻头 ====================
+    /**
+     * 【用户 2026-10-08 第三版】阴影上的钻头**实际占地也压成 1x1**（不是只画小）：每种钻头在
+     * 内容装配时造一个 {@code size=1} 的隐藏版本（{@code Main.createShadowDrills}），玩家把钻头
+     * 摆到阴影上时由 {@link #onNewPlan} 自动换成它。
+     *
+     * <p>它只占 1 格，但挖矿 / 判定矿石仍按**它原来那 size×size 的面积**算（{@link #mineSize()}）——
+     * 也就是"每格都盖住了矿物"照算，激光束条数同理。阴影区域整体是一个"资源输出站"：
+     * 区域里的这些 1x1 钻头共用一口物品 / 液体池（见 {@link OreShadow}），所以通水给任意一台
+     * 都能加速全站，物品也能从区域任意一边送出去（本质和合体工厂 / 合体炮台是同一套东西）。
+     */
+    public int mineSize = -1;
+    /** 本钻头"压成 1x1"的那个隐藏版本（内容装配时建好）。 */
+    public @Nullable CombinedDrill shadowVariant;
+    /** 本实例是不是那个 1x1 版本。 */
+    public boolean shadowShrunk = false;
+
+    /** 挖矿/判定用地基边长：1x1 版本 = 原来的 size，其余 = 自己的 size。 */
+    public int mineSize() {
+        return mineSize > 0 ? mineSize : size;
+    }
+
+    /** 画这一格时的缩放系数：1x1 版本把原来 size×size 的贴图缩进一格。 */
+    public float cellDrawScale() {
+        int m = mineSize();
+        return m <= 0 ? 1f : size / (float) m;
+    }
+
+    /** 和原版 {@code Block.nearbySide} 同口径，但按 {@link #mineSize()} 算（1x1 版本要用原来的宽度）。 */
+    public void nearbySideMine(int x, int y, int rotation, int index, Point2 out) {
+        int s = mineSize();
+        int cornerX = x - (s - 1) / 2, cornerY = y - (s - 1) / 2;
+        switch (rotation) {
+            case 0 -> out.set(cornerX + s, cornerY + index);
+            case 1 -> out.set(cornerX + index, cornerY + s);
+            case 2 -> out.set(cornerX - 1, cornerY + index);
+            case 3 -> out.set(cornerX + index, cornerY - 1);
+            default -> out.set(x, y);
+        }
+    }
+
+    /** {@link #mineSize()} 见方那片地基覆盖的格子。 */
+    public void eachMineTile(Tile tile, arc.func.Cons<Tile> cons) {
+        if (tile == null)
+            return;
+        int s = mineSize();
+        if (s <= 1) {
+            cons.get(tile);
+            return;
+        }
+        int o = -((s - 1) / 2);
+        for (int dx = 0; dx < s; dx++)
+            for (int dy = 0; dy < s; dy++) {
+                Tile other = world.tile(tile.x + dx + o, tile.y + dy + o);
+                if (other != null)
+                    cons.get(other);
+            }
+    }
+
+    /** {@link #eachMineTile} 的 Seq 版（给 {@code find} 之类的旧代码用）。 */
+    public Seq<Tile> mineTiles(Tile tile, Seq<Tile> out) {
+        out.clear();
+        eachMineTile(tile, out::add);
+        return out;
+    }
+
+    /**
+     * 压格版本和合体工厂 / 合体炮台同一套：建造菜单里看不见（{@code hidden}），
+     * 但**放置流程必须仍然合法**。
+     *
+     * <p>【用户报的"阴影上摆钻头、点建造后钻头直接消失"】原版 {@code Build.validPlaceIgnoreUnits}
+     * 第 185 行读的是 {@code type.isPlaceable()}，而默认实现里含 {@code isVisible()}，
+     * {@code hidden} 方块一律 false —— 于是换过去的那份 plan 被判非法、直接从建造队列里丢掉，
+     * 表现就是"点下去什么都没放"。这里单独放行（和 SuperCombineFactory / SuperTurret 一致）。
+     */
+    @Override
+    public boolean isVisible() {
+        return shadowShrunk ? false : super.isVisible();
+    }
+
+    @Override
+    public boolean isPlaceable() {
+        return shadowShrunk
+                ? (supportsEnv(state.rules.env) && (!isBanned() || state.rules.editor))
+                : super.isPlaceable();
+    }
+
+    /**
+     * 【落地压格】玩家把钻头摆到阴影上：这一份 plan 换成 1x1 的隐藏版本。
+     *
+     * <p>原版 {@code InputHandler.flushPlans} 在把计划塞进建造队列前会调一次
+     * {@code plan.block.onNewPlan(copy)}，我们在这时改 {@code copy.block} —— 队列里、发到服务端的
+     * 就已经是 1x1 方块（和超级炮台 / 组合工厂用蓝图虚影放下去是同一类做法，联机可同步）。
+     * 锚点 {@code plan.x/plan.y} 不动，{@link #mineSize()} 的虚拟地基按同一锚点算。
+     */
+    @Override
+    public void onNewPlan(mindustry.entities.units.BuildPlan plan) {
+        if (plan == null || plan.block == null || shadowShrunk)
+            return;
+        try {
+            CombinedDrill target = shadowVariant;
+            if (target == null)
+                return;
+            if (!OreShadow.covers(plan.x, plan.y, mineSize()))
+                return;
+            // 【用户 2026-10-09】"造完的钻头塞阴影没有被覆盖的地方"：点在哪无所谓，
+            // 落点换成这片阴影里最近的空位（锚点/方块一起改，plan 是拷贝，直接改就会发到服务端）。
+            int[] spot = OreShadow.freeSpotFor(plan.x, plan.y, mineSize());
+            if (spot == null)
+                return; // 这片阴影满了：保持原 plan（canPlaceOn 那一关已经判非法了）
+            plan.block = target;
+            plan.x = spot[0];
+            plan.y = spot[1];
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 把 {@code from} 的贴图字段整套拷到 {@code to}。
+     *
+     * <p>1x1 版本是内容装配后才现造的，没法再走原版 {@code load()}（那按自己的名字找图集，
+     * "shadow-xxx" 找不到就把贴图换成 error）；直接沿用原钻头已经加载好的贴图最稳。
+     */
+    public static void copyVisuals(Block from, Block to) {
+        try {
+            for (Class<?> c = from.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                    if (java.lang.reflect.Modifier.isStatic(f.getModifiers())
+                            || f.getType() != TextureRegion.class)
+                        continue;
+                    try {
+                        f.setAccessible(true);
+                        Object v = f.get(from);
+                        java.lang.reflect.Field t = fieldOf(to.getClass(), f.getName());
+                        if (t != null && t.getType() == TextureRegion.class) {
+                            t.setAccessible(true);
+                            t.set(to, v);
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static java.lang.reflect.Field fieldOf(Class<?> clazz, String name) {
+        for (Class<?> c = clazz; c != null && c != Object.class; c = c.getSuperclass()) {
+            try {
+                return c.getDeclaredField(name);
+            } catch (NoSuchFieldException ignored) {
+            }
+        }
+        return null;
+    }
+
     // ==================== 组合体通用 ====================
     public boolean allowCrossTypeCombo = false;
     public float itemCapacityMultiplier = 1f;
@@ -231,23 +387,23 @@ public class CombinedDrill extends Block {
         super.setStats();
         if (mode == Mode.beam) {
             stats.add(Stat.drillTier,
-                    StatValues.drillables(drillTime, 0f, size, drillMultipliers,
+                    StatValues.drillables(drillTime, 0f, mineSize(), drillMultipliers,
                             b -> (b instanceof Floor f && f.wallOre && f.itemDrop != null && f.itemDrop.hardness <= tier
                                     && (blockedItems == null || !blockedItems.contains(f.itemDrop))) ||
                                     (b instanceof StaticWall w && w.itemDrop != null && w.itemDrop.hardness <= tier
                                             && (blockedItems == null || !blockedItems.contains(w.itemDrop)))));
-            stats.add(Stat.drillSpeed, 60f / drillTime * size, StatUnit.itemsSecond);
+            stats.add(Stat.drillSpeed, 60f / drillTime * mineSize(), StatUnit.itemsSecond);
             if (optionalBoostIntensity != 1 && findConsumer(
                     f -> f instanceof ConsumeLiquidBase && f.booster) instanceof ConsumeLiquidBase consBase) {
                 stats.replace(Stat.booster, StatValues.speedBoosters("{0}" + StatUnit.timesSpeed.localized(),
                         consBase.amount, optionalBoostIntensity, false, consBase::consumes));
             }
         } else {
-            stats.add(Stat.drillTier, StatValues.drillables(drillTime, hardnessDrillMultiplier, size * size,
+            stats.add(Stat.drillTier, StatValues.drillables(drillTime, hardnessDrillMultiplier, mineSize() * mineSize(),
                     drillMultipliers, b -> b instanceof Floor f && !f.wallOre && f.itemDrop != null &&
                             f.itemDrop.hardness <= tier && (blockedItems == null || !blockedItems.contains(f.itemDrop))
                             && (indexer.isBlockPresent(f) || state.isMenu())));
-            stats.add(Stat.drillSpeed, 60f / drillTime * size * size, StatUnit.itemsSecond);
+            stats.add(Stat.drillSpeed, 60f / drillTime * mineSize() * mineSize(), StatUnit.itemsSecond);
             if (liquidBoostIntensity != 1 && findConsumer(
                     f -> f instanceof ConsumeLiquidBase && f.booster) instanceof ConsumeLiquidBase consBase) {
                 if (mode == Mode.burst) {
@@ -293,9 +449,24 @@ public class CombinedDrill extends Block {
 
     @Override
     public boolean canPlaceOn(Tile tile, Team team, int rotation) {
+        // 【用户 2026-10-09】"只要阴影区域没满，可以在阴影任意位置建造钻头，造完的钻头塞阴影没有被覆盖的地方"：
+        // 点在这片阴影上（地基压到阴影就算）时不再要求"脚下有矿"，只要求这片区域还有空位 ——
+        // 真正落点由 onNewPlan 挪到最近的空位（见 OreShadow.freeSpotFor）。
+        // 区域满了就直接判非法（点下去什么也不放，不会去顶掉区域里已有的东西）。
+        if (tile != null && OreShadow.covers(tile.x, tile.y, size)) {
+            int[] spot = OreShadow.freeSpotFor(tile.x, tile.y, size);
+            if (spot != null) {
+                lastPlaceX = tile.x;
+                lastPlaceY = tile.y;
+                return true;
+            }
+            lastPlaceX = Integer.MIN_VALUE;
+            return false;
+        }
+        lastPlaceX = Integer.MIN_VALUE;
         if (mode == Mode.beam) {
-            for (int i = 0; i < size; i++) {
-                nearbySide(tile.x, tile.y, rotation, i, Tmp.p1);
+            for (int i = 0; i < mineSize(); i++) {
+                nearbySideMine(tile.x, tile.y, rotation, i, Tmp.p1);
                 for (int j = 0; j < range; j++) {
                     Tile other = world.tile(Tmp.p1.x + Geometry.d4x(rotation) * j,
                             Tmp.p1.y + Geometry.d4y(rotation) * j);
@@ -310,14 +481,29 @@ public class CombinedDrill extends Block {
             }
             return false;
         } else {
-            if (isMultiblock()) {
-                for (Tile other : tile.getLinkedTilesAs(this, tempTiles))
-                    if (canMine(other))
+            if (isMultiblock() || mineSize() > 1) {
+                Seq<Tile> linked = mineTiles(tile, tempTiles);
+                for (int i = 0; i < linked.size; i++)
+                    if (canMine(linked.get(i)))
                         return true;
                 return false;
             }
             return canMine(tile);
         }
+    }
+
+    /** 上一次 {@link #canPlaceOn} 问的那一格（原版 validPlace 先问 canPlaceOn 再问 canReplace，这里当上下文用）。 */
+    int lastPlaceX = Integer.MIN_VALUE, lastPlaceY = Integer.MIN_VALUE;
+
+    /**
+     * 阴影上允许"顶掉"点到的东西（可能是已经塞进去的钻头、或者别人铺的传送带）——
+     * 因为 plan 随后会被 {@link #onNewPlan} 挪到空位上，实际不会真的顶掉谁。
+     **/
+    @Override
+    public boolean canReplace(Block other) {
+        if (lastPlaceX != Integer.MIN_VALUE && OreShadow.covers(lastPlaceX, lastPlaceY, size))
+            return true;
+        return super.canReplace(other);
     }
 
     @Override
@@ -356,7 +542,8 @@ public class CombinedDrill extends Block {
             float width = drawPlaceText(
                     Core.bundle.formatFloat("bar.drillspeed", 60f / getDrillTime(returnItem) * returnCount, 2), x, y,
                     valid);
-            float dx = x * tilesize + offset - width / 2f - 4f, dy = y * tilesize + offset + size * tilesize / 2f + 5,
+            float dx = x * tilesize + offset - width / 2f - 4f,
+                    dy = y * tilesize + offset + mineSize() * tilesize / 2f + 5,
                     s = iconSmall / 4f;
             Draw.mixcol(Color.darkGray, 1f);
             Draw.rect(returnItem.fullIcon, dx, dy - 1, s, s);
@@ -368,8 +555,16 @@ public class CombinedDrill extends Block {
                 Draw.color();
             }
         } else {
-            Tile to = tile.getLinkedTilesAs(this, tempTiles).find(t -> t.drop() != null
-                    && (t.drop().hardness > tier || (blockedItems != null && blockedItems.contains(t.drop()))));
+            Seq<Tile> linked = mineTiles(tile, tempTiles);
+            Tile to = null;
+            for (int i = 0; i < linked.size; i++) {
+                Tile t = linked.get(i);
+                if (t.drop() != null
+                        && (t.drop().hardness > tier || (blockedItems != null && blockedItems.contains(t.drop())))) {
+                    to = t;
+                    break;
+                }
+            }
             Item item = to == null ? null : to.drop();
             if (item != null)
                 drawPlaceText(Core.bundle.get("bar.drilltierreq"), x, y, valid);
@@ -380,8 +575,8 @@ public class CombinedDrill extends Block {
         Item item = null, invalidItem = null;
         boolean multiple = false;
         int count = 0;
-        for (int i = 0; i < size; i++) {
-            nearbySide(x, y, rotation, i, Tmp.p1);
+        for (int i = 0; i < mineSize(); i++) {
+            nearbySideMine(x, y, rotation, i, Tmp.p1);
             int j = 0;
             Item found = null;
             for (; j < range; j++) {
@@ -415,7 +610,7 @@ public class CombinedDrill extends Block {
                     x, y, valid);
             if (!multiple) {
                 float dx = x * tilesize + offset - width / 2f - 4f,
-                        dy = y * tilesize + offset + size * tilesize / 2f + 5, s = iconSmall / 4f;
+                        dy = y * tilesize + offset + mineSize() * tilesize / 2f + 5, s = iconSmall / 4f;
                 Draw.mixcol(Color.darkGray, 1f);
                 Draw.rect(item.fullIcon, dx, dy - 1, s, s);
                 Draw.reset();
@@ -437,10 +632,32 @@ public class CombinedDrill extends Block {
         returnCount = 0;
         oreCount.clear();
         itemArray.clear();
-        for (Tile other : tile.getLinkedTilesAs(this, tempTiles)) {
+        // 【矿物阴影 = 一个资源输出站】
+        //   · 矿种（用户 2026-10-09）：**只看这台钻头自己踩着的那一格** ——
+        //     "钻头挖的矿只应该有它停留的那一格"。踩在铜上挖铜、踩在铅上挖铅；想两种都挖就在
+        //     两种矿上各摆一台（站里共用一口池子）。踩着那格挖不动（tier / 黑名单）就没有。
+        //   · 效率：每台仍按"它原来那 size×size 铺满矿物"给整站加一份（mineSize()²）。
+        // 不在阴影上的钻头照原版口径（自己的 size×size 地基实际有几格矿算几格）。
+        if (OreShadow.inSite(tile)) {
+            if (canMine(tile))
+                oreCount.increment(getDrop(tile), 0, 1);
+            pickDominant();
+            if (returnItem != null)
+                returnCount = mineSize() * mineSize();
+            return;
+        }
+        Seq<Tile> linked = mineTiles(tile, tempTiles);
+        for (int i = 0; i < linked.size; i++) {
+            Tile other = linked.get(i);
             if (canMine(other))
                 oreCount.increment(getDrop(other), 0, 1);
         }
+        pickDominant();
+    }
+
+    /** 从 {@link #oreCount} 里挑主导矿（原版排序口径），写进 {@link #returnItem}/{@link #returnCount}。 */
+    protected void pickDominant() {
+        itemArray.clear();
         for (Item item : oreCount.keys())
             itemArray.add(item);
         itemArray.sort((item1, item2) -> {
@@ -462,6 +679,38 @@ public class CombinedDrill extends Block {
         return tile.drop();
     }
 
+    /** 只用来算"这台钻头**自己脚下**那片地里的主导矿"的临时计数（不碰 countOre 的 oreCount）。 */
+    protected final ObjectIntMap<Item> displayCounts = new ObjectIntMap<>();
+
+    /**
+     * 【用户 2026-10-09】"阴影区域钻头的中心矿物颜色有问题，而且哪怕钻头预设下面没有矿物 a，
+     * 也会显示挖掘矿物 a" —— 中心那个矿物色块/选中框应该反映**钻头脚下实际有什么矿**，
+     * 和原版口径一致（不是阴影区域的主导矿，也不是站里在产的东西）。
+     *
+     * @return 自己 {@link #mineSize()} 见方那片地里数量最多的、这台钻头挖得动的矿；没有就 null。
+     */
+    public @Nullable Item footprintOre(Tile tile, Seq<Tile> tmp) {
+        if (tile == null)
+            return null;
+        displayCounts.clear();
+        Seq<Tile> own = mineTiles(tile, tmp);
+        for (int i = 0; i < own.size; i++) {
+            Tile t = own.get(i);
+            if (canMine(t))
+                displayCounts.increment(getDrop(t), 0, 1);
+        }
+        Item best = null;
+        int bestN = 0;
+        for (Item it : displayCounts.keys()) {
+            int n = displayCounts.get(it, 0);
+            if (n > bestN) {
+                best = it;
+                bestN = n;
+            }
+        }
+        return best;
+    }
+
     public boolean canMine(Tile tile) {
         if (tile == null || tile.block().isStatic())
             return false;
@@ -478,6 +727,18 @@ public class CombinedDrill extends Block {
         public float comboTotalLiquidCap = 0f;
         public int comboTotalItemCap = 0;
         public int pendingLeaderPos = -1;
+        /** 【矿物阴影】定期对账用的时间戳 / 上次看到的"这片阴影里的钻头数"。 */
+        public float shadowCheckAt = 0f;
+        public int lastSiteDrills = -1;
+        /** 【矿物阴影】本站点产出哪种矿（整片阴影区域的主导矿；不在阴影上时为 null）。 */
+        public @Nullable Item siteOre;
+        /**
+         * 【矿物阴影】这片区域里、**这台钻头挖得动**的矿种（用户 2026-10-09："挖矿看钻头预设能挖的"）——
+         * 每一种都按这台钻头"原来大小铺满矿物"的满效率产出，不是按格数比例分摊。
+         */
+        public final Seq<Item> siteItems = new Seq<>();
+        /** 【显示口径】自己脚下那片地里的主导矿（下面没矿就是 null）—— 中心色块/选中框用它。 */
+        public @Nullable Item displayOre;
 
         // Drill / Burst
         public float progress, warmup, timeDrilled, lastDrillSpeed;
@@ -488,8 +749,8 @@ public class CombinedDrill extends Block {
         public float smoothProgress, invertTime;
 
         // Beam
-        public Tile[] facing = new Tile[size];
-        public Point2[] lasers = new Point2[size];
+        public Tile[] facing = new Tile[mineSize()];
+        public Point2[] lasers = new Point2[mineSize()];
         public @Nullable Item lastItem;
         public float time, boostWarmup;
         public int facingAmount;
@@ -526,6 +787,15 @@ public class CombinedDrill extends Block {
                     || ((CombinedDrill) o.block).allowCrossTypeCombo)) {
                 if (b != this)
                     comboGroup.add((CombinedDrillBuild) b);
+            }
+            // 【矿物阴影：一片阴影 = 一个资源生产地】同一片阴影区域里的钻头（哪怕彼此不相邻、
+            // 类型不同）并进同一组 —— 共用一口物品池，物品也能从这片区域的任意一边送出去。
+            try {
+                for (CombinedDrillBuild o : OreShadow.drillsInSiteOf(this)) {
+                    if (o != this && o.isValid() && o.team == team && !comboGroup.contains(o, true))
+                        comboGroup.add(o);
+                }
+            } catch (Throwable ignored) {
             }
             CombinedDrillBuild newLeader = this;
             for (CombinedDrillBuild b : comboGroup)
@@ -802,10 +1072,52 @@ public class CombinedDrill extends Block {
                 countOre(tile);
                 dominantItem = returnItem;
                 dominantItems = returnCount;
+                refreshSiteMix();
+                refreshDisplayOre();
             } else if (cb.mode == Mode.beam) {
                 updateLasers();
                 updateFacing();
             }
+        }
+
+        /**
+         * 【用户 2026-10-09】"挖矿看钻头预设能挖的"：把这片阴影里**这台钻头挖得动**的矿种抄下来，
+         * 产出时每种都按满效率给（不是按格数比例分摊）。
+         */
+        void refreshSiteMix() {
+            siteItems.clear();
+            if (!OreShadow.inSite(tile))
+                return;
+            for (Item it : oreCount.keys())
+                if (oreCount.get(it, 0) > 0 && !siteItems.contains(it, true))
+                    siteItems.add(it);
+        }
+
+        /** 【显示口径】自己脚下那片地里的主导矿（按原版口径；下面没矿就是 null）。 */
+        void refreshDisplayOre() {
+            CombinedDrill cb = (CombinedDrill) block;
+            if (cb.mode == Mode.beam) {
+                // 激光钻没有"脚下"，它挖的是前方那几束：显示前方**实际打到**的矿，打不到就不显示
+                Item found = null;
+                for (int i = 0; i < cb.mineSize() && i < facing.length; i++) {
+                    Tile t = facing[i];
+                    if (t == null)
+                        continue;
+                    Item d = t.wallDrop();
+                    if (d != null) {
+                        found = d;
+                        break;
+                    }
+                }
+                displayOre = found;
+                return;
+            }
+            // 阴影上：中心就画它踩着的那一格（和"挖的矿"同一个口径）
+            if (OreShadow.inSite(tile)) {
+                displayOre = dominantItem;
+                return;
+            }
+            displayOre = cb.footprintOre(tile, cb.tempTiles);
         }
 
         @Override
@@ -948,6 +1260,33 @@ public class CombinedDrill extends Block {
             if (isLeader() && comboDirty)
                 rebuildCombo();
 
+            // 【矿物阴影】区域是玩家后来框出来的、边界上的建筑也会变：定期对一次账
+            //（重新算"整片区域的矿"、并在这一片的钻头数变了时让组长重建分组）。
+            // 0.25s 一次、只有组长扫站点，代价很小。
+            if (shadowCheckAt <= arc.util.Time.time) {
+                shadowCheckAt = arc.util.Time.time + 0.25f;
+                if (OreShadow.inSite(tile)) {
+                    countOre(tile);
+                    siteOre = returnItem;
+                    refreshSiteMix();
+                    refreshDisplayOre();
+                    if (isLeader()) {
+                        int n = OreShadow.drillsInSiteOf(this).size;
+                        if (n != lastSiteDrills) {
+                            lastSiteDrills = n;
+                            comboDirty = true;
+                        }
+                    }
+                } else if (lastSiteDrills != -1) {
+                    lastSiteDrills = -1;
+                    siteOre = null;
+                    displayOre = null;
+                } else {
+                    siteOre = null;
+                    displayOre = null;
+                }
+            }
+
             // FIX: 每帧强制截断超出的液体
             if (liquids != null && comboTotalLiquidCap > 0.001f) {
                 for (Liquid l : content.liquids()) {
@@ -980,22 +1319,33 @@ public class CombinedDrill extends Block {
             timeDrilled += warmup * delta();
             float delay = getDrillTime(dominantItem);
             // FIX(per-type)：只看 dominantItem 自身余量 —— 另一种矿满不影响本矿挖掘
-            if (items.get(dominantItem) < comboTotalItemCap && dominantItems > 0 && efficiency > 0) {
+            // 【阴影区域：两种矿都要挖】池子按"整站没满"判定，产出轮流按区域矿种比例出
+            boolean site = !siteItems.isEmpty();
+            boolean room = site ? items.total() < comboTotalItemCap : items.get(dominantItem) < comboTotalItemCap;
+            if (room && dominantItems > 0 && efficiency > 0) {
                 float speed = Mathf.lerp(1f, cb.liquidBoostIntensity, optionalEfficiency) * efficiency;
-                lastDrillSpeed = (speed * dominantItems * warmup) / delay;
+                lastDrillSpeed = (speed * dominantItems * warmup * (site ? Math.max(siteItems.size, 1) : 1)) / delay;
                 warmup = Mathf.approachDelta(warmup, speed, cb.warmupSpeed);
                 progress += delta() * dominantItems * speed * warmup;
                 if (Mathf.chanceDelta(cb.updateEffectChance * warmup))
-                    cb.updateEffect.at(x + Mathf.range(size * 2f), y + Mathf.range(size * 2f));
+                    cb.updateEffect.at(x + Mathf.range(cb.mineSize() * 2f), y + Mathf.range(cb.mineSize() * 2f));
             } else {
                 lastDrillSpeed = 0f;
                 warmup = Mathf.approachDelta(warmup, 0f, cb.warmupSpeed);
                 return;
             }
-            if (dominantItems > 0 && progress >= delay && items.get(dominantItem) < comboTotalItemCap) {
+            if (dominantItems > 0 && progress >= delay
+                    && (site ? items.total() < comboTotalItemCap : items.get(dominantItem) < comboTotalItemCap)) {
                 int amount = (int) (progress / delay);
-                for (int i = 0; i < amount; i++)
-                    offload(dominantItem);
+                for (int i = 0; i < amount; i++) {
+                    if (!site) {
+                        offload(dominantItem);
+                        continue;
+                    }
+                    // 站里的每一种矿都按这台钻头的满效率产（不是按比例分摊）
+                    for (int k = 0; k < siteItems.size; k++)
+                        offload(siteItems.get(k));
+                }
                 progress %= delay;
                 if (wasVisible && Mathf.chanceDelta(cb.drillEffectChance * warmup))
                     cb.drillEffect.at(x + Mathf.range(cb.drillEffectRnd), y + Mathf.range(cb.drillEffectRnd),
@@ -1032,9 +1382,17 @@ public class CombinedDrill extends Block {
                 lastDrillSpeed = 0f;
                 return;
             }
-            if (dominantItems > 0 && progress >= drillTime && items.get(dominantItem) < comboTotalItemCap) {
-                for (int i = 0; i < dominantItems; i++)
-                    offload(dominantItem);
+            if (dominantItems > 0 && progress >= drillTime
+                    && (siteItems.isEmpty() ? items.get(dominantItem) < comboTotalItemCap
+                            : items.total() < comboTotalItemCap)) {
+                for (int i = 0; i < dominantItems; i++) {
+                    if (siteItems.isEmpty()) {
+                        offload(dominantItem);
+                        continue;
+                    }
+                    for (int k = 0; k < siteItems.size; k++)
+                        offload(siteItems.get(k));
+                }
                 invertTime = 1f;
                 progress %= drillTime;
                 if (wasVisible) {
@@ -1052,24 +1410,33 @@ public class CombinedDrill extends Block {
                 updateLasers();
             warmup = Mathf.approachDelta(warmup, Mathf.num(efficiency > 0), 1f / 60f);
             updateFacing();
+            // 【资源输出站】同站口径：激光钻也按"原来 size 条光束铺满矿"算 ——
+            // 束数取 mineSize()、矿种取整片阴影区域的主导矿（不看前方实际有没有矿墙）。
+            boolean site = siteOre != null;
+            if (site) {
+                facingAmount = cb.mineSize();
+                lastItem = siteOre;
+            }
             float multiplier = Mathf.lerp(1f, cb.optionalBoostIntensity, optionalEfficiency);
             float drillTime = getDrillTime(lastItem);
             boostWarmup = Mathf.lerpDelta(boostWarmup, optionalEfficiency, 0.1f);
             lastDrillSpeed = (facingAmount * multiplier * timeScale) / drillTime * efficiency;
             time += edelta() * multiplier;
             if (time >= drillTime) {
-                for (Tile tile : facing) {
-                    Item drop = tile == null ? null : tile.wallDrop();
-                    // FIX(per-type)：每种矿独立余量，某种满了继续挖别的
-                    // FIX[区块产出统计]: 必须走原版 offload() —— 它会先 produced(item, 1)
-                    // 计入 sector.info.handleProduction（区块产量 rawProduction）。
-                    // 之前这里直接 items.add(drop, 1)：物品进了池子，但区块"物品产出"恒为 0，
-                    // 面板/结算里这块产量一直不涨（用户报的"后台物品增长没算上"；
-                    // 同一类修复见 CombinedCrafter.craft() 与分离机分支的注释）。
-                    // 顺带：offload 里的容量判断走 getMaximumAccepted()，巨兽/组合体那边已重写成整组容量。
-                    if (drop != null && efficiency > 0f && items.get(drop) < comboTotalItemCap)
-                        offload(drop);
-                }
+                // 【区块产出统计】必须走原版 offload()：它会先 produced(item, 1) 计入
+                // sector.info.handleProduction（区块产量 rawProduction）。直接 items.add() 的话物品进池了、
+                // 区块产量却恒为 0（用户报的"后台物品增长没算上"）。
+                if (site) {
+                    for (int i = 0; i < cb.mineSize(); i++)
+                        for (int k = 0; k < siteItems.size; k++)
+                            if (efficiency > 0f && items.total() < comboTotalItemCap)
+                                offload(siteItems.get(k));
+                } else
+                    for (Tile tile : facing) {
+                        Item drop = tile == null ? null : tile.wallDrop();
+                        if (drop != null && efficiency > 0f && items.get(drop) < comboTotalItemCap)
+                            offload(drop);
+                    }
                 time %= drillTime;
             }
             // FIX(混合矿堵塞)：逐类型倒出池内所有矿物
@@ -1083,10 +1450,11 @@ public class CombinedDrill extends Block {
 
         // Beam 辅助
         protected void updateLasers() {
-            for (int i = 0; i < size; i++) {
+            CombinedDrill cb = (CombinedDrill) block;
+            for (int i = 0; i < cb.mineSize(); i++) {
                 if (lasers[i] == null)
                     lasers[i] = new Point2();
-                nearbySide(tileX(), tileY(), rotation, i, lasers[i]);
+                cb.nearbySideMine(tileX(), tileY(), rotation, i, lasers[i]);
             }
         }
 
@@ -1096,7 +1464,7 @@ public class CombinedDrill extends Block {
             int dx = Geometry.d4x(rotation), dy = Geometry.d4y(rotation);
             facingAmount = 0;
             CombinedDrill cb = (CombinedDrill) block;
-            for (int p = 0; p < size; p++) {
+            for (int p = 0; p < cb.mineSize(); p++) {
                 Point2 l = lasers[p];
                 Tile dest = null;
                 for (int i = 0; i < cb.range; i++) {
@@ -1191,7 +1559,7 @@ public class CombinedDrill extends Block {
         @Override
         public void drawSelect() {
             CombinedDrill cb = (CombinedDrill) block;
-            drawItemSelection(cb.mode == Mode.beam ? lastItem : dominantItem);
+            drawItemSelection(displayOre);
         }
 
         @Override
@@ -1234,6 +1602,100 @@ public class CombinedDrill extends Block {
         public void drawCracks() {
         }
 
+        /**
+         * 【矿物阴影：物品能从这片阴影的任意一边送出去】
+         *
+         * <p>原版 {@code dump} 只看自己那几格旁边的邻居；阴影上的钻头改成从"整片阴影区域边界上
+         * 所有能收物品的建筑"里挑一个送（区域是不规则形状也一样 —— 逐格扫边界）。
+         * 不在阴影上的钻头照原版。列表有缓存（区域版本变了 / 每 0.25s 重算），拆掉的建筑不会留在里面。
+         */
+        @Override
+        public boolean dump(Item todump) {
+            if (!OreShadow.inSite(tile))
+                return super.dump(todump);
+            // 先走原版那条：紧挨着自己的传送带 / 容器（现在钻头压成 1x1，玩家很可能把它们
+            // 直接铺在阴影区域**里面**）——
+            // 用户报的"阴影的物品输出不正常"就是这条原来被整条跳过了。
+            if (super.dump(todump))
+                return true;
+            if (!block.hasItems || items == null || items.total() == 0
+                    || (todump != null && !items.has(todump)))
+                return false;
+            Seq<Building> outs = OreShadow.outputsOf(tile);
+            if (outs.isEmpty())
+                return false;
+            int dump = cdump;
+            for (int i = 0; i < outs.size; i++) {
+                Building other = outs.get((i + dump) % outs.size);
+                if (other == null || !other.isValid())
+                    continue;
+                if (handOff(other, todump)) {
+                    incrementDump(outs.size);
+                    return true;
+                }
+                // 传送带这类"只收挨着自己那一格递过来的东西"：钻头在区域里可能离它好几格，
+                // 直接递会被拒。临时把"来源"挪到这片阴影紧挨着它的那一格再递一次，
+                // 物品就正常从区域那一边出去了（物品数不凭空多/少）。
+                Tile proxy = OreShadow.adjacentSiteTile(other);
+                if (proxy != null && proxy != tile) {
+                    Tile back = tile;
+                    tile = proxy;
+                    boolean ok, forced;
+                    try {
+                        ok = handOff(other, todump);
+                        // 方向不对（传送带只认"背后"那一格）时只要它还有位置就强行喂一个：
+                        // 站里的东西出了区域的边，具体往哪边流由那条传送带自己的朝向决定。
+                        forced = !ok && todump != null && forceHandOff(other, todump);
+                    } finally {
+                        tile = back;
+                    }
+                    if (ok || forced) {
+                        incrementDump(outs.size);
+                        return true;
+                    }
+                }
+                incrementDump(outs.size);
+            }
+            return false;
+        }
+
+        /** 试着把池子里的物品交给 {@code other}（原版 acceptItem/canDump/handleItem 三步）。 */
+        boolean handOff(Building other, Item todump) {
+            if (todump != null) {
+                if (other.acceptItem(this, todump) && canDump(other, todump)) {
+                    other.handleItem(this, todump);
+                    items.remove(todump, 1);
+                    return true;
+                }
+                return false;
+            }
+            for (Item item : content.items()) {
+                if (!items.has(item))
+                    continue;
+                if (other.acceptItem(this, item) && canDump(other, item)) {
+                    other.handleItem(this, item);
+                    items.remove(item, 1);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /** 目标还有位置、而且"来源那一格"和它相邻时，不管它的朝向直接递一个过去。 */
+        boolean forceHandOff(Building other, Item item) {
+            if (other == null || other.items == null || !other.block.hasItems)
+                return false;
+            if (other.items.total() >= other.getMaximumAccepted(item))
+                return false;
+            if (mindustry.world.Edges.getFacingEdge(tile, other.tile) == null)
+                return false;
+            if (!canDump(other, item))
+                return false;
+            other.handleItem(this, item);
+            items.remove(item, 1);
+            return true;
+        }
+
         public void drawDefaultCracks() {
             super.drawCracks();
         }
@@ -1241,12 +1703,30 @@ public class CombinedDrill extends Block {
         @Override
         public void draw() {
             CombinedDrill cb = (CombinedDrill) block;
-            if (cb.mode == Mode.beam)
-                drawBeam();
-            else if (cb.mode == Mode.burst)
-                drawBurst();
-            else
-                drawDrill();
+            // 【压成 1x1 的钻头】把原来 size×size 的贴图缩进 1 格（普通钻头 k=1 不动）。
+            // 绝对长度（爆钻的箭羽偏移）另外乘同一个系数：Draw.scl 只缩尺寸、不缩那些直接加在坐标上的偏移。
+            float k = cb.cellDrawScale();
+            boolean scaled = k != 1f;
+            float oldScl = Draw.scl, oldSpacing = cb.arrowSpacing, oldOffset = cb.arrowOffset;
+            if (scaled) {
+                Draw.scl = oldScl * k;
+                cb.arrowSpacing = oldSpacing * k;
+                cb.arrowOffset = oldOffset * k;
+            }
+            try {
+                if (cb.mode == Mode.beam)
+                    drawBeam();
+                else if (cb.mode == Mode.burst)
+                    drawBurst();
+                else
+                    drawDrill();
+            } finally {
+                if (scaled) {
+                    cb.arrowSpacing = oldSpacing;
+                    cb.arrowOffset = oldOffset;
+                    Draw.scl = oldScl;
+                }
+            }
         }
 
         void drawDrill() {
@@ -1269,8 +1749,10 @@ public class CombinedDrill extends Block {
             else
                 Draw.rect(cb.rotatorRegion, x, y, timeDrilled * cb.rotateSpeed);
             Draw.rect(cb.topRegion, x, y);
-            if (dominantItem != null && cb.drawMineItem) {
-                Draw.color(dominantItem.color);
+            // 【显示口径】中心那个矿物色块画的是"自己脚下实际有的矿"（阴影里也一样），
+            // 不是站在阴影上就照着区域主导矿画（用户报的"下面没有矿物 a 也显示挖矿物 a"）。
+            if (displayOre != null && cb.drawMineItem) {
+                Draw.color(displayOre.color);
                 Draw.rect(cb.itemRegion, x, y);
                 Draw.color();
             }
@@ -1286,8 +1768,8 @@ public class CombinedDrill extends Block {
                 Draw.rect(cb.topInvertRegion, x, y);
                 Draw.color();
             }
-            if (dominantItem != null && cb.drawMineItem) {
-                Draw.color(dominantItem.color);
+            if (displayOre != null && cb.drawMineItem) {
+                Draw.color(displayOre.color);
                 Draw.rect(cb.itemRegion, x, y);
                 Draw.color();
             }
@@ -1326,7 +1808,7 @@ public class CombinedDrill extends Block {
             var dir = Geometry.d4(rotation);
             int ddx = Geometry.d4x(rotation + 1), ddy = Geometry.d4y(rotation + 1);
             Rand rand = new Rand();
-            for (int i = 0; i < size; i++) {
+            for (int i = 0; i < cb.mineSize(); i++) {
                 Tile face = facing[i];
                 if (face != null) {
                     Item drop = face.wallDrop();
@@ -1532,11 +2014,21 @@ public class CombinedDrill extends Block {
                     continue;
                 CombinedDrill db = (CombinedDrill) d.block;
                 Item mining = db.mode == Mode.beam ? d.lastItem : d.dominantItem;
-                if (mining == null)
-                    continue;
                 float perSecond = d.lastDrillSpeed * 60f * d.timeScale();
                 // 注意：arc 的 ObjectFloatMap.increment(key, defaultAmount, amount) 参数顺序很反直觉
                 // （第三个才是要加的量），这里直接写 put(get+…) 免得再踩。
+                if (perSecond <= 0.0001f)
+                    continue;
+                // 【矿物阴影·资源输出站】站里的钻头是"挖得动的每种矿各按满效率产"，
+                // 所以 display 里每种矿都要有一行速率（用户报的"只有主导矿的速率，没有其他矿的"）。
+                if (!d.siteItems.isEmpty()) {
+                    float each = perSecond / d.siteItems.size;
+                    for (int i = 0; i < d.siteItems.size; i++)
+                        out.put(d.siteItems.get(i), out.get(d.siteItems.get(i), 0f) + each);
+                    continue;
+                }
+                if (mining == null)
+                    continue;
                 if (perSecond > 0.0001f)
                     out.put(mining, out.get(mining, 0f) + perSecond);
             }
