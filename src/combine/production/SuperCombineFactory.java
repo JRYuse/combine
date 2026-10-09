@@ -7,6 +7,7 @@ import arc.graphics.g2d.Lines;
 import arc.graphics.g2d.TextureRegion;
 import arc.math.Mathf;
 import arc.scene.ui.layout.Table;
+import arc.struct.FloatSeq;
 import arc.struct.IntSet;
 import arc.struct.ObjectMap;
 import arc.struct.ObjectSet;
@@ -20,6 +21,8 @@ import combine.net.ComboNet;
 import combine.util.ComboHeatProbe;
 import combine.util.ComboReflect;
 import combine.util.IComboGrouped;
+import mindustry.entities.part.DrawPart;
+import mindustry.entities.part.RegionPart;
 import mindustry.gen.Building;
 import mindustry.gen.Unit;
 import mindustry.graphics.Pal;
@@ -32,15 +35,20 @@ import mindustry.world.Tile;
 import mindustry.world.blocks.heat.HeatBlock;
 import mindustry.world.blocks.heat.HeatProducer;
 import mindustry.world.blocks.production.GenericCrafter;
+import mindustry.world.blocks.production.Separator;
 import mindustry.world.consumers.Consume;
 import mindustry.world.consumers.ConsumeItems;
 import mindustry.world.consumers.ConsumePower;
 import mindustry.world.draw.DrawBlock;
+import mindustry.world.draw.DrawBlockParts;
+import mindustry.world.draw.DrawMulti;
 import mindustry.world.meta.BuildVisibility;
 import mindustry.world.modules.ItemModule;
 import mindustry.world.modules.LiquidModule;
 
 import static mindustry.Vars.*;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 
 /**
  * 超级组合工厂（合体工厂）：把框里的多台工厂合成 **一台 side×side 的方块**（每格一台工厂、缩到 1 格），
@@ -188,11 +196,17 @@ public class SuperCombineFactory extends Block {
   // ==================== 哪些方块算"工厂" ====================
 
   /**
-   * 能合体的"工厂"：{@link GenericCrafter}（含 HeatCrafter / Separator / AttributeCrafter 这些子类）
-   * 和 {@link HeatProducer}（制热机）。钻头 / 泵 / 挖墙钻不算工厂，不在这条合体流程里。
+   * 能合体的"工厂"：{@link GenericCrafter}（含 HeatCrafter / AttributeCrafter 这些子类）、
+   * {@link Separator}（分离机）和 {@link HeatProducer}（制热机）。钻头 / 泵 / 挖墙钻不算工厂，
+   * 不在这条合体流程里。
+   *
+   * <p>【用户报的"Separator 为什么无法合体"】旧口径只认 {@code GenericCrafter}，注释还写着
+   * "Separator 是它的子类" —— 那是老版本的事；本机跑的 160.x 里 {@code Separator} 直接继承
+   * {@link Block}（不是 GenericCrafter），于是分离机永远被判成"不是工厂"、框选时被跳过、
+   * {@link #cellBlock} 也返回 null。这里显式补上分离机。
    */
   public static boolean isFactoryBlock(Block b) {
-    return b instanceof GenericCrafter || b instanceof HeatProducer;
+    return b instanceof GenericCrafter || b instanceof Separator || b instanceof HeatProducer;
   }
 
   /**
@@ -586,12 +600,9 @@ public class SuperCombineFactory extends Block {
    * <p>虚影每帧都要重画，所以假 build 按方块名缓存，不能每帧 new（见 {@link #ghostCell}）。
    */
   public static void drawCellGhost(Block b, float cx, float cy, float rot, float k) {
-    float ox = Draw.xscl, oy = Draw.yscl;
     float zPrev = Draw.z();
     arc.graphics.Color oc = Draw.getColor();
     float cr = oc.r, cg = oc.g, cb2 = oc.b, ca = oc.a;
-    if (k != 1f)
-      Draw.scl(k);
     try {
       Building cell = ghostCell(b);
       boolean drew = false;
@@ -603,12 +614,10 @@ public class SuperCombineFactory extends Block {
       if (!drew) {
         TextureRegion reg = firstFound(b);
         if (reg != null)
-          Draw.rect(reg, cx, cy, rot);
+          drawCellIcon(b, cx, cy, rot, k);
       }
     } catch (Throwable ignored) {
     } finally {
-      if (k != 1f)
-        Draw.scl(ox, oy);
       Draw.z(zPrev);
       Draw.color(cr, cg, cb2, ca);
     }
@@ -1008,13 +1017,8 @@ public class SuperCombineFactory extends Block {
         // 台数按"真的装了工厂的格子"数（cells 数组按边长² 开，空槽不算）
         table.add("[lightgray]组合工厂: [white]" + filledCount() + " 台[]").left();
         table.row();
-        table.add(innerSummary()).left()
-            .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap();
-        table.row();
-        // 【产物】用户报的"没有产物的 display 信息"：列这台组合工厂能产什么（各格产出去重）
-        table.add("[lightgray]产物: [white]" + outputSummary() + "[]").left()
-            .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap();
-        table.row();
+        // 【用户 2026-10-06】display 里不再列"所有建筑的名字"和"产出的物品、液体"（太长、太占地方）：
+        // 只留台数 + 物品 / 液体 / 电力 / 热量四条池子。
         // 【产物条】用户 2026-10-05 要求：物品 / 液体 / 电力 / 热量四条 bar 都要
         buildPoolBars(table);
       } catch (Throwable ignored) {
@@ -1191,12 +1195,10 @@ public class SuperCombineFactory extends Block {
         }).left().padBottom(6f).row();
         table.add("[accent]组合工厂 " + side + "x" + side + "（" + filledCount() + " 台）[]："
             + "物品/液体/电力/热量整台共用").left().row();
-        // 【产物】能产什么
-        table.add("[lightgray]产物: [white]" + outputSummary() + "[]").left()
-            .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap().row();
+        // 【用户 2026-10-06】这块"点方块弹出的悬浮面板"里也不再列"所有建筑的名字"和"产出的物品、液体"
+        // （和 display 同一口径：只留台数 + 四条池子）。
         // 【产物条】物品 / 液体 / 电力 / 热量（用户 2026-10-05 要求四类都要）
         buildPoolBars(table);
-        table.add(innerSummary()).left().width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap().row();
         table.add("[lightgray]想再往里加工厂：点右上角浮标 → 工厂合体 → 把这台和要加的工厂一起框上").left()
             .width(combine.util.ComboUi.COMPOSITION_WIDTH).wrap();
       } catch (Throwable t) {
@@ -2039,49 +2041,55 @@ public class SuperCombineFactory extends Block {
      * {@code size} 临时按 1 算，让那些**按占地格数铺图**的部件（{@code DrawLiquidTile}、
      * {@code DrawWeave}、{@code DrawPower}…）也只画一格、不铺到隔壁格去。
      *
-     * <p>{@code Draw.scl} 只缩贴图尺寸、不缩坐标，所以抽屉里那些写死的"格偏移"仍按 1x1 走 ——
-     * 这正是我们要的（本格就是 1x1）。抽屉整体画不出来（组合方块副本的图没加载上 / 无头）时，
+     * <p>{@code Draw.scl} 只缩贴图尺寸、不缩坐标，所以抽屉里那些写死的"格偏移 / 半径"要另外缩：
+     * 见 {@link #scaleDrawerOffsets}(否则 2x2 的工厂缩到 1 格后零件全飘在格外，用户报的
+     * "贴图没有缩放并且错位")。抽屉整体画不出来（组合方块副本的图没加载上 / 无头）时，
      * 退回画一张整套图标，绝不画半台。
      */
     void drawCell(Building c, Block cb) {
       if (cb == null)
         return;
       float k = cellScale(cb);
-      float ox = Draw.xscl, oy = Draw.yscl;
       float zPrev = Draw.z();
       arc.graphics.Color oc = Draw.getColor();
       float cr = oc.r, cg = oc.g, cbl = oc.b, ca = oc.a;
-      if (k != 1f)
-        Draw.scl(k);
+      // 【不用 Draw.scl】缩放由 drawCellDrawer 里的"贴图自身 scale + 偏移"做：
+      // DrawPistons 这类抽屉会硬写 Draw.xscl/yscl，走 Draw.scl 会被它们改坏（见 scaleDrawer）。
       try {
         if (!drawCellDrawer(c, cb, realItemCap, realLiquidCap))
-          drawCellIcon(cb, c.x, c.y, c.rotdeg());
+          drawCellIcon(cb, c.x, c.y, c.rotdeg(), k);
       } catch (Throwable t) {
         // 这一格画崩了绝不能把整块（甚至整帧）带丢：退回一张静态图标
         try {
-          drawCellIcon(cb, c.x, c.y, c.rotdeg());
+          drawCellIcon(cb, c.x, c.y, c.rotdeg(), k);
         } catch (Throwable ignored) {
         }
       } finally {
-        if (k != 1f)
-          Draw.scl(ox, oy);
         Draw.z(zPrev);
         // 【不要 Draw.reset()】那会把 z 一起清成 0 —— 下一格的 DrawDefault 就画到 z=0 去了。
-        // 只把这一格抽屉改过的颜色还原，z/缩放按进入时的原值恢复。
+        // 只把这一格抽屉改过的颜色还原。
         Draw.color(cr, cg, cbl, ca);
       }
     }
 
-    /** 画一格的整套图标（drawer 画不出来时的兜底），摆在格子中心。 */
-    static void drawCellIcon(Block cb, float x, float y, float rot) {
-      TextureRegion icon = firstFound(cb);
-      if (icon != null)
-        Draw.rect(icon, x, y, rot);
-    }
   }
 
   /** drawer 绘制失败的方块名（免得每帧刷日志）。 */
   static final ObjectSet<String> drawerDrawErr = new ObjectSet<>();
+
+  /** 画一格的整套图标（drawer 画不出来时的兜底），摆在格子中心。缩的口径和抽屉那条路一致。 */
+  static void drawCellIcon(Block cb, float x, float y, float rot, float k) {
+    TextureRegion icon = firstFound(cb);
+    if (icon == null)
+      return;
+    float old = Draw.scl;
+    try {
+      Draw.scl = old * k;
+      Draw.rect(icon, x, y, rot);
+    } finally {
+      Draw.scl = old;
+    }
+  }
 
   /**
    * 走这一格自己的 drawer 画一格（成功返回 true），和超级组合炮台的 {@code drawCellDrawer} 对应。
@@ -2099,6 +2107,10 @@ public class SuperCombineFactory extends Block {
     int oldSize = cb.size;
     int oldItemCap = cb.itemCapacity;
     float oldLiquidCap = cb.liquidCapacity;
+    float k = cellScale(cb);
+    float oldScl = Draw.scl;
+    LiquidModule pool = c.liquids;
+    LiquidModule view = null;
     try {
       // 本格在棋盘上只占 1 格：按 block.size 铺图的抽屉（DrawLiquidTile 等）也必须只铺 1 格
       if (cb.size != 1)
@@ -2108,6 +2120,21 @@ public class SuperCombineFactory extends Block {
         cb.liquidCapacity = sharedLiquidCap;
       if (cb.hasItems && sharedItemCap > 0)
         cb.itemCapacity = sharedItemCap;
+      // 【把这一格缩到 1 格】见 scaleDrawerOffsets 的说明：贴图尺寸走 Draw.scl（全局精灵缩放，
+      // 原版自己就用它做 DrawPlan.animScale），绝对偏移/半径另外乘 k。
+      if (k != 1f) {
+        Draw.scl = oldScl * k;
+        scaleDrawerOffsets(cb, k);
+      }
+      // 【用户报的"多台不同液体的工厂合体后全画同一种液体"】合并后格子共用整台那一份
+      // LiquidModule，`liquids.current()` 是**池子里最多的那种**，于是每个 DrawLiquidRegion /
+      // DrawLiquidTile（没写死 drawLiquid 的那些）都去画它 —— 一格水、一格冷却液看着全成了同一种。
+      // 画之前把这一格的 liquids 换成"只装它自己那种液体"的视图：量还是从整台池子里取，
+      // 但 current() / get() 只反映它自己那一种。画完换回共享池。
+      if (pool != null && cb.hasLiquids) {
+        view = liquidViewFor(cb, pool);
+        c.liquids = view;
+      }
       c.draw(); // = 这一格方块的 drawer（DrawMulti 里的部件/液体/发光都在里面）
       return true;
     } catch (Throwable t) {
@@ -2115,10 +2142,277 @@ public class SuperCombineFactory extends Block {
         Log.err("[combine] 组合工厂：@ 的 drawer 绘制失败（这一格退回整套图标）", cb.name, t);
       return false;
     } finally {
+      if (view != null)
+        c.liquids = pool;
+      if (k != 1f)
+        restoreDrawerOffsets();
+      Draw.scl = oldScl;
       cb.size = oldSize;
       cb.itemCapacity = oldItemCap;
       cb.liquidCapacity = oldLiquidCap;
     }
+  }
+
+  // ==================== "每格缩到 1 格"：抽屉内部偏移也要跟着缩 ====================
+
+  // ==================== 每格画"它自己那种液体" ====================
+
+  /** 画一格时临时用的"单液体视图"（只装这一格该显示的那种液体，量取整台池子）。 */
+  static LiquidModule liquidViewModule;
+
+  static LiquidModule liquidView() {
+    if (liquidViewModule == null)
+      liquidViewModule = new LiquidModule();
+    return liquidViewModule;
+  }
+
+  /** 每种格子方块的"候选液体"（它产的 + 它吃的），按方块名缓存。 */
+  static final ObjectMap<String, Seq<Liquid>> liquidCandidatesCache = new ObjectMap<>();
+
+  static Seq<Liquid> liquidCandidates(Block cb) {
+    Seq<Liquid> cached = cb.name == null ? null : liquidCandidatesCache.get(cb.name);
+    if (cached != null)
+      return cached;
+    Seq<Liquid> out = new Seq<>();
+    try {
+      if (cb instanceof GenericCrafter gc && gc.outputLiquids != null)
+        for (LiquidStack st : gc.outputLiquids)
+          if (st != null && st.liquid != null && !out.contains(st.liquid))
+            out.add(st.liquid);
+      for (Liquid l : content.liquids())
+        if (!out.contains(l) && cb.consumesLiquid(l))
+          out.add(l);
+    } catch (Throwable ignored) {
+    }
+    if (cb.name != null)
+      liquidCandidatesCache.put(cb.name, out);
+    return out;
+  }
+
+  /** 每种格子方块抽屉里"写死"的液体（可以有好几种，例如冷冻液混合机同时画水+冷却液）。 */
+  static final ObjectMap<String, Seq<Liquid>> drawerLiquidsCache = new ObjectMap<>();
+
+  static Seq<Liquid> drawerLiquids(Block cb) {
+    Seq<Liquid> cached = cb.name == null ? null : drawerLiquidsCache.get(cb.name);
+    if (cached != null)
+      return cached;
+    Seq<Liquid> out = new Seq<>();
+    collectDrawerLiquids(drawerOf(cb), out);
+    if (cb.name != null)
+      drawerLiquidsCache.put(cb.name, out);
+    return out;
+  }
+
+  static void collectDrawerLiquids(Object d, Seq<Liquid> out) {
+    if (d == null)
+      return;
+    if (d instanceof DrawMulti dm) {
+      if (dm.drawers != null)
+        for (DrawBlock c : dm.drawers)
+          collectDrawerLiquids(c, out);
+      return;
+    }
+    try {
+      java.lang.reflect.Field f = d.getClass().getField("drawLiquid");
+      Object v = f.get(d);
+      if (v instanceof Liquid l && !out.contains(l))
+        out.add(l);
+    } catch (Throwable ignored) {
+    }
+  }
+
+  /** 抽屉里写死的第一种液体（没有就 null）。 */
+  static @Nullable Liquid drawerLiquid(Block cb) {
+    Seq<Liquid> l = drawerLiquids(cb);
+    return l.isEmpty() ? null : l.first();
+  }
+
+  /**
+   * 准备好"这一格的液体视图"：装这一格抽屉真正会读到的液体（写死的那几种 + 这一格自己该显示的那种），
+   * 量都从整台池子里取；{@code current()} 落在这格自己那种上（没写死 drawLiquid 的抽屉就画它）。
+   */
+  static LiquidModule liquidViewFor(Block cb, LiquidModule pool) {
+    Liquid chosen = cellLiquid(cb, pool);
+    Liquid first = chosen != null ? chosen : content.liquid(0);
+    LiquidModule view = liquidView();
+    view.reset(first, pool == null ? 0f : pool.get(first));
+    for (Liquid l : drawerLiquids(cb))
+      if (l != first)
+        view.set(l, pool == null ? 0f : pool.get(l));
+    return view;
+  }
+
+  /**
+   * 这一格该画哪种液体：抽屉里写死的 {@code drawLiquid} 优先；否则取"这台方块产/吃的液体里，
+   * 整台池子里存得最多的那种"；**这台方块根本不吃/不产液体时返回 null（那一格就不画液体）** ——
+   * 不能退回池子的 {@code current()}，那正好是用户报的"全都画成同一种液体"。
+   */
+  static @Nullable Liquid cellLiquid(Block cb, LiquidModule pool) {
+    Liquid fixed = drawerLiquid(cb);
+    if (fixed != null)
+      return fixed;
+    Seq<Liquid> cand = liquidCandidates(cb);
+    Liquid best = cand.isEmpty() ? null : cand.first();
+    float bestAmt = -1f;
+    for (int i = 0; i < cand.size; i++) {
+      Liquid l = cand.get(i);
+      float a = pool == null ? 0f : pool.get(l);
+      if (a > bestAmt) {
+        bestAmt = a;
+        best = l;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * 【用户要求：每个工厂都缩成 1×1】一张 side×side 的工厂缩进 1 格里，要分两条路一起缩：
+   *
+   * <ol>
+   *   <li><b>贴图/部件尺寸 → 全局精灵缩放 {@code Draw.scl}</b>：{@code Draw.rect(region,…)} 画出来的是
+   *       {@code region.width * region.scale * Draw.scl * Draw.xscl}，{@link TextureRegion#scl()} 里就乘着
+   *       这个静态字段。它**不被任何抽屉影响**（原版 {@code Block.drawPlan} 就是靠
+   *       {@code Draw.scl *= plan.animScale} 缩蓝图），所以贴图、部件（RegionPart）、
+   *       {@code DrawMulti} 里的每一件都会一起缩。
+   *       <p>【为什么不用 {@link Draw#scl(float)}】它改的是 {@code Draw.xscl/yscl}，而
+   *       {@code DrawPistons} 会**硬写** {@code Draw.yscl}（先 -1、画完无条件设回 1）—— 于是
+   *       "活塞之后"的部件全按 1 倍画（用户报的"sporePress 缩放还是有问题"）。用全局
+   *       {@code Draw.scl} 就绕开了它。
+   *   <li><b>绝对偏移/半径自己乘 k</b>：{@code Draw.scl} 只缩尺寸、**不缩坐标**，抽屉里那些
+   *       "直接加到 {@code build.x/build.y} 上"的偏移（{@code DrawRegion.x/y}、
+   *       {@code DrawPistons.*Offset}、{@code DrawFlame.flameX/Y}、{@code DrawSpikes.radius/length}…）
+   *       是绝对世界单位，不缩就会把零件甩到格外。{@code Lines}/{@code Fill}（尖刺、线条、火苗圆、
+   *       光晕半径）连 {@code Draw.scl} 都不吃，也只能靠这些字段缩。
+   * </ol>
+   *
+   * <p>字段名走白名单（只挑"长度/偏移/半径"语义的），反射读改 + 按类缓存，覆盖原版 + 模组各种
+   * DrawBlock 组合，也不用给每个抽屉类写一遍。画完立刻还原（方块/抽屉都是共享实例）。
+   */
+  static final ObjectSet<String> offsetFields = ObjectSet.with(
+      // DrawRegion / DrawWeave / DrawPistons / DrawArcSmelt / DrawCultivator 的居中偏移
+      "x", "y",
+      // DrawFlame 的火焰/光晕
+      "flameX", "flameY", "lightRadius", "lightSinMag",
+      "flameRadius", "flameRadiusIn", "flameRadiusMag", "flameRadiusInMag",
+      // DrawPistons 的活塞长度/侧移
+      // 【只缩"长度"】sinOffset 是正弦的**时间相位**、sideOffset 是**角度**（弧度），
+      // 缩它们会让活塞动画错位，不是"贴图没缩放"，别放进来。
+      "sinMag", "lenOffset", "horiOffset",
+      // DrawCultivator / DrawBubbles
+      "radius", "spread", "strokeMin",
+      // DrawSpikes：半径 / 尖刺长度 / 线宽（都是世界单位；少了 length/stroke 时相位合成机的
+      // 尖刺会按原尺寸戳到格外 —— 用户报的"phase-synthesizer 缩放还是有问题"）
+      "length", "stroke",
+      // DrawCrucibleFlame / DrawArcSmelt 的粒子
+      "flameRad", "circleSpace", "circleStroke",
+      "particleRad", "particleSize", "particleLen", "particleStroke",
+      // DrawLiquidTile 的内边距（世界单位）
+      "padding", "padLeft", "padRight", "padTop", "padBottom",
+      // DrawBlockParts / RegionPart 的零件偏移
+      "originX", "originY", "moveX", "moveY");
+
+  /** 每个抽屉类里要缩的字段（按类缓存，避免每帧反射扫字段）。 */
+  static final ObjectMap<Class<?>, Field[]> offsetFieldsCache = new ObjectMap<>();
+  /** 本次绘制被改过的（对象, 字段, 原值）：画完按逆序还原。 */
+  static final Seq<Object> sObj = new Seq<>();
+  static final Seq<Field> sFld = new Seq<>();
+  static final FloatSeq sVal = new FloatSeq();
+
+  /** 这一格工厂的抽屉（分离机不是 GenericCrafter，但有同名字段 {@code drawer}）。 */
+  static @Nullable DrawBlock drawerOf(Block cb) {
+    try {
+      if (cb instanceof GenericCrafter gc)
+        return gc.drawer;
+      if (cb instanceof Separator sp)
+        return sp.drawer;
+    } catch (Throwable ignored) {
+    }
+    return null;
+  }
+
+  /** 某个抽屉类里"要缩的 float 字段"（含父类；没有就返回空数组）。 */
+  static Field[] offsetFieldsOf(Class<?> c) {
+    Field[] cached = offsetFieldsCache.get(c);
+    if (cached != null)
+      return cached;
+    Seq<Field> found = new Seq<>();
+    try {
+      for (Class<?> k = c; k != null && k != Object.class; k = k.getSuperclass()) {
+        for (Field f : k.getDeclaredFields()) {
+          if (f.getType() != float.class || Modifier.isStatic(f.getModifiers())
+              || !offsetFields.contains(f.getName()))
+            continue;
+          try {
+            f.setAccessible(true);
+            found.add(f);
+          } catch (Throwable ignored) {
+          }
+        }
+      }
+    } catch (Throwable ignored) {
+    }
+    Field[] out = found.toArray(Field.class);
+    offsetFieldsCache.put(c, out);
+    return out;
+  }
+
+  /** 画这一格之前：抽屉里的绝对偏移/半径临时乘 k（贴图尺寸那半由 {@code Draw.scl} 负责）。 */
+  static void scaleDrawerOffsets(Block cb, float k) {
+    sObj.clear();
+    sFld.clear();
+    sVal.clear();
+    try {
+      collectOffsets(drawerOf(cb), k);
+    } catch (Throwable ignored) {
+    }
+  }
+
+  static void collectOffsets(Object o, float k) {
+    if (o == null)
+      return;
+    if (o instanceof DrawMulti dm) {
+      if (dm.drawers != null)
+        for (DrawBlock c : dm.drawers)
+          collectOffsets(c, k);
+      return;
+    }
+    if (o instanceof DrawBlockParts dp) {
+      if (dp.parts != null)
+        for (DrawPart p : dp.parts)
+          collectOffsets(p, k);
+      return;
+    }
+    // 绝对偏移/半径（Lines / Fill / 直接加在坐标上的那些）
+    for (Field f : offsetFieldsOf(o.getClass())) {
+      try {
+        float v = f.getFloat(o);
+        // DrawLiquidTile 的 pad* 用 -1 表示"没设过，走 padding"：只跳这个哨兵，
+        // **别**把负数一律跳过 —— DrawPistons.lenOffset 默认就是 -1，它是个长度，要缩。
+        if (v < 0f && f.getName().startsWith("pad"))
+          continue;
+        sObj.add(o);
+        sFld.add(f);
+        sVal.add(v);
+        f.setFloat(o, v * k);
+      } catch (Throwable ignored) {
+      }
+    }
+    if (o instanceof RegionPart rp && rp.children != null)
+      for (DrawPart p : rp.children)
+        collectOffsets(p, k);
+  }
+
+  /** 还原 {@link #scaleDrawerOffsets(Block, float)} 改过的字段（逆序，异常也不漏）。 */
+  static void restoreDrawerOffsets() {
+    for (int i = sObj.size - 1; i >= 0; i--) {
+      try {
+        sFld.get(i).setFloat(sObj.get(i), sVal.get(i));
+      } catch (Throwable ignored) {
+      }
+    }
+    sObj.clear();
+    sFld.clear();
+    sVal.clear();
   }
 
   /** 一格的绘制缩放：把这一格工厂的贴图缩到一格以内（2x2 → 0.5，3x3 → 1/3）。 */
@@ -2176,9 +2470,9 @@ public class SuperCombineFactory extends Block {
    */
   static boolean computeDrawerUsable(Block cb) {
     try {
-      if (!(cb instanceof GenericCrafter gc) || gc.drawer == null)
+      DrawBlock d = drawerOf(cb);
+      if (d == null)
         return false;
-      DrawBlock d = gc.drawer;
       TextureRegion[] icons = d.icons(cb);
       if (icons != null)
         for (TextureRegion r : icons)

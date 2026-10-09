@@ -8,6 +8,7 @@ import arc.util.Log;
 import mindustry.Vars;
 import mindustry.content.Blocks;
 import mindustry.content.Items;
+import mindustry.content.Liquids;
 import mindustry.core.Logic;
 import mindustry.core.NetClient;
 import mindustry.core.NetServer;
@@ -19,6 +20,7 @@ import mindustry.maps.Map;
 import mindustry.mod.Mod;
 import mindustry.net.Net;
 import mindustry.type.Item;
+import mindustry.type.Liquid;
 import mindustry.ui.Fonts;
 import mindustry.world.Block;
 import mindustry.world.Tile;
@@ -69,6 +71,16 @@ public class FactoryCombineTest implements arc.ApplicationListener {
       var m = sig == null ? c.getMethod(name) : c.getMethod(name, sig);
       m.setAccessible(true);
       return m.invoke(null, args);
+    } catch (NoSuchMethodException nsme) {
+      // 包级可见（非 public）的静态工具方法：getMethod 找不到，退回 getDeclaredMethod
+      try {
+        var m = sig == null ? c.getDeclaredMethod(name) : c.getDeclaredMethod(name, sig);
+        m.setAccessible(true);
+        return m.invoke(null, args);
+      } catch (Throwable t) {
+        System.out.println("[FC] 调用 " + c.getSimpleName() + "." + name + " 失败: " + t);
+        return null;
+      }
     } catch (Throwable t) {
       System.out.println("[FC] 调用 " + c.getSimpleName() + "." + name + " 失败: " + t);
       return null;
@@ -140,6 +152,62 @@ public class FactoryCombineTest implements arc.ApplicationListener {
   static int itemCap(Building b) {
     Object r = callStatic(clsCF, "itemCapOf", new Class<?>[] { Building.class }, b);
     return r instanceof Number n ? n.intValue() : -1;
+  }
+
+  static float fieldFloat(Object o, String name) {
+    for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass())
+      try {
+        var f = c.getDeclaredField(name);
+        f.setAccessible(true);
+        return f.getFloat(o);
+      } catch (NoSuchFieldException ignored) {
+      } catch (Throwable t) {
+        return Float.NaN;
+      }
+    return Float.NaN;
+  }
+
+  static Object fieldObj(Object o, String name) {
+    for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass())
+      try {
+        var f = c.getDeclaredField(name);
+        f.setAccessible(true);
+        return f.get(o);
+      } catch (NoSuchFieldException ignored) {
+      } catch (Throwable t) {
+        return null;
+      }
+    return null;
+  }
+
+  static boolean approx(float a, float b) {
+    return Math.abs(a - b) < 0.001f;
+  }
+
+  /** 在抽屉树里找"有某个字段"的那个抽屉节点（例如 DrawSpikes 有 length、DrawPistons 有 sinMag）。 */
+  static Object findDrawer(Object drawer, String fieldName) {
+    if (drawer == null)
+      return null;
+    if (hasField(drawer, fieldName))
+      return drawer;
+    Object subs = fieldObj(drawer, "drawers");
+    if (subs instanceof Object[] arr)
+      for (Object c : arr) {
+        Object r = findDrawer(c, fieldName);
+        if (r != null)
+          return r;
+      }
+    return null;
+  }
+
+  static boolean hasField(Object o, String name) {
+    for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass())
+      try {
+        c.getDeclaredField(name);
+        return true;
+      } catch (NoSuchFieldException ignored) {
+      }
+    return false;
   }
 
   /** 反射调 SuperCombineFactory.sideFor（测试只编译游戏 jar，模组类只能反射）。 */
@@ -231,6 +299,124 @@ public class FactoryCombineTest implements arc.ApplicationListener {
       check("3x3 压机只算 1 台（扫到 " + (one == null ? -1 : one.size) + "）", one != null && one.size == 1);
       clearArea(95, 95, 108, 108);
       run(3);
+
+      // ---------- 1b) 分离机（Separator）也能合体 ----------
+      // 【用户报的"Separator 为什么无法合体"】160.x 里 Separator 直接继承 Block（不是 GenericCrafter），
+      // 旧口径把它判成"不是工厂"，框选时被跳过。这里锁死回归。
+      Block sepWorld = Vars.content.block("separator");
+      Building sep = place(sepWorld, 120, 60, team);
+      run(3);
+      check("分离机已摆好（world block=" + (sepWorld == null ? "null" : sepWorld.getClass().getName()) + "）",
+          sep != null);
+      Object sepCell = callStatic(clsCF, "cellBlock", new Class<?>[] { Block.class }, sepWorld);
+      check("cellBlock(分离机) 非 null（= 分离机能当格子工厂）", sepCell != null);
+      Seq<Building> sepFound = (Seq<Building>) callStatic(clsCombiner, "scan",
+          new Class<?>[] { Team.class, int.class, int.class, int.class, int.class },
+          team, 115, 55, 128, 70);
+      int sepCount = sepFound == null ? 0
+          : ((Number) callStatic(clsCombiner, "count", new Class<?>[] { Seq.class }, sepFound)).intValue();
+      check("框选扫到分离机（x" + sepCount + "）", sepCount == 1);
+      String sepLayout = (String) callStatic(clsCombiner, "layoutOf", new Class<?>[] { Seq.class }, sepFound);
+      check("布局串含分离机（" + sepLayout + "）", sepLayout != null && sepLayout.contains("separator"));
+      clearArea(115, 55, 128, 70);
+      run(3);
+
+      // ---------- 1c) "每格工厂缩成 1x1"：抽屉里的绝对长度要跟着缩 ----------
+      // 用户报的"phase-weaver / phase-synthesizer / sporePress 缩放还是有问题"。
+      Object psCell = callStatic(clsCF, "cellBlock", new Class<?>[] { Block.class },
+          Vars.content.block("phase-synthesizer"));
+      Object spCell = callStatic(clsCF, "cellBlock", new Class<?>[] { Block.class },
+          Vars.content.block("spore-press"));
+      Object pwCell = callStatic(clsCF, "cellBlock", new Class<?>[] { Block.class },
+          Vars.content.block("phase-weaver"));
+      check("拿到相位合成机/孢子压缩机/相织机的格子方块（" + psCell + "/" + spCell + "/" + pwCell + "）",
+          psCell instanceof Block && spCell instanceof Block && pwCell instanceof Block);
+      if (psCell instanceof Block ps && spCell instanceof Block sp && pwCell instanceof Block pw) {
+        Object spikes = findDrawer(fieldObj(ps, "drawer"), "length");
+        Object pistons = findDrawer(fieldObj(sp, "drawer"), "sinMag");
+        Object weaveOwner = findDrawer(fieldObj(pw, "drawer"), "weave");
+        check("相位合成机抽屉里有 DrawSpikes（radius/length/stroke）", spikes != null);
+        check("孢子压缩机抽屉里有 DrawPistons（sinMag/lenOffset）", pistons != null);
+        check("相织机抽屉里有 DrawWeave（weave 贴图）", weaveOwner != null);
+        if (spikes != null) {
+          float r0 = fieldFloat(spikes, "radius"), l0 = fieldFloat(spikes, "length"),
+              s0 = fieldFloat(spikes, "stroke");
+          callStatic(clsCF, "scaleDrawerOffsets", new Class<?>[] { Block.class, float.class }, ps, 0.5f);
+          boolean scaled = approx(fieldFloat(spikes, "radius"), r0 * 0.5f)
+              && approx(fieldFloat(spikes, "length"), l0 * 0.5f)
+              && approx(fieldFloat(spikes, "stroke"), s0 * 0.5f);
+          callStatic(clsCF, "restoreDrawerOffsets", null);
+          check("DrawSpikes 的 radius/length/stroke 跟着缩（" + r0 + " / " + l0 + " / " + s0 + "）", scaled);
+          check("画完还原（radius 回到 " + r0 + "）",
+              approx(fieldFloat(spikes, "radius"), r0) && approx(fieldFloat(spikes, "length"), l0));
+        }
+        if (pistons != null) {
+          float mag0 = fieldFloat(pistons, "sinMag"), len0 = fieldFloat(pistons, "lenOffset");
+          float sof0 = fieldFloat(pistons, "sinOffset"), sid0 = fieldFloat(pistons, "sideOffset");
+          callStatic(clsCF, "scaleDrawerOffsets", new Class<?>[] { Block.class, float.class }, sp, 0.5f);
+          boolean ok = approx(fieldFloat(pistons, "sinMag"), mag0 * 0.5f)
+              && approx(fieldFloat(pistons, "lenOffset"), len0 * 0.5f)
+              && approx(fieldFloat(pistons, "sinOffset"), sof0)
+              && approx(fieldFloat(pistons, "sideOffset"), sid0);
+          callStatic(clsCF, "restoreDrawerOffsets", null);
+          check("DrawPistons：sinMag/lenOffset(=" + len0 + ") 缩一半，sinOffset/sideOffset 不动", ok);
+        }
+        // 贴图尺寸那一半走全局精灵缩放 Draw.scl（无头没有图集，只能靠真客户端截图核对）
+        check("无头下没有图集（贴图尺寸那半由客户端截图核对）", Core.atlas == null);
+      }
+
+      // ---------- 1d) 多台"不同液体"的工厂合体后，每格要画自己的液体 ----------
+      // 【用户报的"多个有 DrawLiquidRegion/DrawLiquidTile 的工厂合体、液体不同时全画同一种"】
+      // 合并后格子共用整台那一份 LiquidModule，liquids.current() 是池子里最多的那种。
+      Object pcCell = callStatic(clsCF, "cellBlock", new Class<?>[] { Block.class },
+          Vars.content.block("plastanium-compressor"));
+      Object cmCell = callStatic(clsCF, "cellBlock", new Class<?>[] { Block.class },
+          Vars.content.block("cryofluid-mixer"));
+      check("拿到塑料压缩机/冷冻液混合机的格子方块（" + pcCell + "/" + cmCell + "）",
+          pcCell instanceof Block && cmCell instanceof Block);
+      if (pcCell instanceof Block pc && cmCell instanceof Block cm) {
+        check("两台要的液体确实不同（塑料压缩机吃油=" + pc.consumesLiquid(Liquids.oil)
+            + "，混合机吃水=" + cm.consumesLiquid(Liquids.water) + "）",
+            pc.consumesLiquid(Liquids.oil) && cm.consumesLiquid(Liquids.water));
+        // 造一个"油 + 水"都在的池子（水更多 → 旧口径下 current() 就是水，两格都会画水）
+        mindustry.world.modules.LiquidModule pool = new mindustry.world.modules.LiquidModule();
+        pool.set(Liquids.oil, 40f);
+        pool.set(Liquids.water, 90f);
+        check("池子的 current 是水（= 旧口径下每格都会画水，校验用例本身有效）",
+            pool.current() == Liquids.water);
+        Object l1 = callStatic(clsCF, "cellLiquid",
+            new Class<?>[] { Block.class, mindustry.world.modules.LiquidModule.class }, pc, pool);
+        Object l2 = callStatic(clsCF, "cellLiquid",
+            new Class<?>[] { Block.class, mindustry.world.modules.LiquidModule.class }, cm, pool);
+        String n1 = l1 instanceof Liquid lq ? lq.name : String.valueOf(l1);
+        String n2 = l2 instanceof Liquid lq ? lq.name : String.valueOf(l2);
+        check("两格挑到的液体不同（塑料压缩机=" + n1 + " / 混合机=" + n2 + "）",
+            l1 instanceof Liquid a && l2 instanceof Liquid b && a != b);
+        check("塑料压缩机那格挑到的是油", l1 == Liquids.oil);
+        // 视图模块：只装这一格要的液体，量取整台池子
+        Object view = callStatic(clsCF, "liquidViewFor",
+            new Class<?>[] { Block.class, mindustry.world.modules.LiquidModule.class }, pc, pool);
+        check("液体视图只装这一格的油（40，池子口径）",
+            view instanceof mindustry.world.modules.LiquidModule vm
+                && Math.abs(vm.get(Liquids.oil) - 40f) < 0.01f
+                && vm.get(Liquids.water) < 0.01f && vm.current() == Liquids.oil);
+        // 【旧口径的病根】分离机的抽屉是 `DrawLiquidTile()`（drawLiquid=null，画 liquids.current()），
+        // 它自己吃的是**渣**；合并后格子共用整台那一份模块，current() 是池子里最多的水 →
+        // 分离机那格也跟着画水。新口径按"这台方块吃的液体"取，应该画渣。
+        Object sepCell2 = callStatic(clsCF, "cellBlock", new Class<?>[] { Block.class },
+            Vars.content.block("separator"));
+        Object sepLiquid = sepCell2 instanceof Block scb ? callStatic(clsCF, "cellLiquid",
+            new Class<?>[] { Block.class, mindustry.world.modules.LiquidModule.class }, scb, pool) : "no-cell";
+        check("分离机那格画的是它自己吃的渣（不是池子里最多的水）",
+            sepLiquid == Liquids.slag && sepLiquid != pool.current());
+        if (sepCell2 instanceof Block scb) {
+          Object sepView = callStatic(clsCF, "liquidViewFor",
+              new Class<?>[] { Block.class, mindustry.world.modules.LiquidModule.class }, scb, pool);
+          check("分离机的液体视图里 water=0（不再退化成池子的 current）",
+              sepView instanceof mindustry.world.modules.LiquidModule svm
+                  && svm.get(Liquids.water) < 0.01f && svm.current() == Liquids.slag);
+        }
+      }
 
       String layout = (String) callStatic(clsCombiner, "layoutOf", new Class<?>[] { Seq.class }, found);
       String sources = (String) callStatic(clsCombiner, "sourcesOf", new Class<?>[] { Seq.class }, found);

@@ -108,6 +108,7 @@ import mindustry.world.meta.BuildVisibility;
 import mindustry.type.Category;
 
 import static combine.BlockCloner.*;
+import static mindustry.Vars.tilesize;
 
 public class Main extends Mod {
   public static String fileName = "whitelist.json";
@@ -155,6 +156,7 @@ public class Main extends Mod {
     Events.on(mindustry.game.EventType.WorldLoadBeginEvent.class, e -> {
       // 换图：上一张图的"组合体共享配置"不能带到新图（新档里读到本块会再装回来）
       combine.saves.ComboShareState.onWorldLoadBegin();
+      combine.production.OreShadow.onWorldLoadBegin();
       ComboNet.beginWorldLoad();
     });
     // 【读**存档**只会发 SaveLoadEvent，不会发 WorldLoadBegin/WorldLoad】那两条是"读地图"才发的。
@@ -165,11 +167,13 @@ public class Main extends Mod {
     Events.on(SaveLoadEvent.class, e -> {
       // 【必须在 beginWorldLoad 之前】读档末尾补一次"没读到本块就清空"（见 ComboShareState）
       combine.saves.ComboShareState.onLoadFinished();
+      combine.production.OreShadow.onLoadFinished();
       ComboNet.beginWorldLoad();
       ComboNet.rebuildLoading();
     });
     Events.on(WorldLoadEvent.class, e -> {
       combine.saves.ComboShareState.onLoadFinished();
+      combine.production.OreShadow.onLoadFinished();
       // 联机入服时 rules 是刚按名字反查出来的（researched/bannedBlocks 可能装着被替换掉的原版实例），
       // 必须在任何 UI/建造校验读到它之前纠正，否则客户端建造菜单里组合建筑会全部消失。
       Replacer.remapStaleContent();
@@ -198,6 +202,10 @@ public class Main extends Mod {
 
     // 跨组合体网络（连接器/节点）：每帧最多重建一次，避免放一个连接器就重建 5~10 遍
     ComboNet.register();
+
+    // 组合传送带：手里选着同种传送带点在同种传送带上 → 叠一层提速（走原版 Call.tileTap/TapEvent，
+    // 桌面点击与手机点按都覆盖；服务端权威 + 转发，见 combine.distribution.ConveyorOverlay）
+    combine.distribution.ConveyorOverlay.register();
 
     // 【arc 输入兜底】只吞掉"UI 元素在触摸派发过程中被摘掉 → Element.notify 读 getScene() 为 null"
     // 那条 arc 已知 NPE（别的异常照旧抛），别让一次点击把整个存档崩回主菜单。详见 ComboInputGuard。
@@ -241,6 +249,12 @@ public class Main extends Mod {
     // 超级组合炮台：快捷键/按钮 → 框选炮台 → 按数量生成对应边长的组合体（纯客户端交互）
     combine.turret.SuperTurretPlacer.register();
     combine.production.FactoryCombiner.register();
+    // 矿物阴影：框选矿物地板 → 画一层阴影 → 阴影上放钻头会缩到 1x1
+    combine.production.OreShadow.register();
+    // 【必须】框选流程本体（输入 + 拖框那层高亮/边框 + 自动取消）的注册：
+    // 漏了它的话 start() 仍会把输入处理器装上、也能框出阴影，但 Trigger.draw 那条没挂 →
+    // **拖框时看不到任何框（没有填充也没有线条边框）**（用户 2026-10-09 报的）。
+    combine.production.OreShadowPlacer.register();
     // 【用户要求 2026-09-28】不再改 input：入口是 SuperTurretPlacer 自己挂的"框选合体"悬浮按钮
     // （手机/桌面同一个，可拖动，见 SuperTurretPlacer#ensureButton），输入处理器保持原版。
 
@@ -335,6 +349,8 @@ public class Main extends Mod {
 
   /** 客户端与（专用）服务端共用的内容装配。 */
   static boolean contentSetupDone = false;
+  /** 矿物阴影用的 1x1 钻头版本装配过没有。 */
+  static boolean shadowDrillsReady = false;
 
   void setupContent() {
     if (contentSetupDone)
@@ -384,10 +400,14 @@ public class Main extends Mod {
     combine.saves.ComboSaveState.register();
     // 组合体自己的"共享哪些部分"配置（按 pos 存在 ComboShare 里，见 ComboShareState）
     combine.saves.ComboShareState.register();
+    // 组合传送带的"覆盖层数"（存档 + 联机入服世界流都带它，见 ConveyorLayerState）
+    combine.distribution.ConveyorLayerState.register();
 
     try {
       getWhiteList();
       processModBlocks();
+      // 组合传送带（原版/模组的 Conveyor/ArmoredConveyor/Duct/StackConveyor → 能"覆盖叠层提速"的组合版）
+      processConveyors();
       processWalls();
       // 内容初始化期被"按引用抓走"的老方块实例（典型：组装机 UnitAssembler 配方里的
       // PayloadStack.item = 老钨墙/碳化墙）换回组合实例 —— 不换的话原版
@@ -405,6 +425,12 @@ public class Main extends Mod {
       for (var entry : Replacer.replaced) {
         postInit(entry.value);
       }
+      // 【放在 postInit 之后】组合传送带的描述是 postInit 从原版方块抄来的，这里再补一行玩法说明
+      combine.distribution.ConveyorOverlay.applyHints();
+      // 【矿物阴影】每种钻头一个"压成 1x1"的隐藏版本（阴影上摆钻头时由 CombinedDrill.onNewPlan 顶替）。
+      // 【放在 postInit 之后】组合钻头的 localizedName / 图标是 postInit 里从原版方块补上的，
+      // 早建的话 1x1 版本会抄到 null（点它会显示 "shadow-xxx" 这种内部名）。
+      createShadowDrills();
       // 启动日志汇总（逐类刷屏已在 BlockCloner 里合并成一行）
       BlockCloner.logFallbackSummary();
       // 协作组合：抓取"放大前"的基础容量（必须在任何世界加载之前）
@@ -646,6 +672,79 @@ public class Main extends Mod {
     superCombineFactory = SuperCombineFactory.bySide[SuperCombineFactory.MIN_SIDE];
     Log.info("[combine] 组合工厂：@ 种边长已装配（2x2 .. @x@）",
         SuperCombineFactory.MAX_SIDE - SuperCombineFactory.MIN_SIDE + 1, SuperCombineFactory.MAX_SIDE);
+  }
+
+  /**
+   * 【矿物阴影】给每一种钻头现造一个"压成 1x1"的隐藏版本（{@code CombinedDrill} 克隆体）。
+   *
+   * <p>它本体只占 1 格（{@code size=1}），但 {@code mineSize} 记着原来的边长 —— 挖矿、判定矿石、
+   * 激光束数量全按"原来那 size×size 每格都盖住了矿物"算；阴影区域里的这些 1x1 钻头共用一口
+   * 物品 / 液体池（组合逻辑原样继承），所以通水给任意一台就能加速整站，物品也能从区域任意一边出去。
+   *
+   * <p>隐藏方块：不进建造菜单、不参与研究，玩家看到的还是原来的钻头（和合体工厂 / 合体炮台同一个思路）。
+   * 方块名固定 {@code shadow-<原名>}，两端遍历顺序一致 → id 也一致，联机不会错位。
+   */
+  void createShadowDrills() {
+    if (shadowDrillsReady)
+      return;
+    shadowDrillsReady = true;
+    // 快照遍历：新方块会追加进注册表，不能直接遍历
+    Seq<Content> snapshot = new Seq<>(Vars.content.getBy(ContentType.block));
+    int made = 0;
+    for (var c : snapshot) {
+      if (!(c instanceof CombinedDrill cd))
+        continue;
+      if (cd.shadowShrunk || cd.shadowVariant != null || cd.size <= 1)
+        continue;
+      try {
+        CombinedDrill sh = new CombinedDrill("shadow-" + cd.name);
+        copyFields(cd, sh);
+        sh.shadowShrunk = true;
+        sh.shadowVariant = sh;
+        sh.mineSize = cd.size;
+        sh.size = 1;
+        sh.localizedName = cd.localizedName == null ? cd.name : cd.localizedName;
+        sh.description = "压成 1 格的钻头（只出现在矿物阴影上）：挖矿速度仍按原来 "
+            + cd.size + "x" + cd.size + " 每格都盖住了矿物计算。";
+        sh.buildVisibility = BuildVisibility.hidden;
+        sh.requirements(Category.production, BuildVisibility.hidden, new ItemStack[0]);
+        sh.init();
+        // 【offset 必须是 1x1 自己的值（0）】以前为了让贴图落在"原来那片地基的中心"把它设成
+        // 原钻头的半格偏移 —— 结果 Block.bounds()/hitbox 整体偏半格，原版放置判据里
+        // "新方块要能罩住这一格原有的东西"那条直接失败，validPlace=false，
+        // 表现就是**用户报的"阴影上摆钻头、点建造后钻头直接消失"**。
+        // 1x1 的方块就该以自己那一格为中心（init() 已按 size=1 算好 offset/sizeOffset）。
+        sh.postInit();
+        try {
+          sh.setBars();
+        } catch (Throwable ignored) {
+        }
+        // 【贴图：抄原钻头的，别走 ensureIcons】ensureIcons 调的是 sh.load()，它按**自己的名字**
+        // "shadow-机械钻头" 去图集里找贴图 —— 找不到就把 region/topRegion 全换成 error，
+        // 真实客户端截图上就是"阴影上一块 error 方块"（实测踩过）。整套沿用原钻头加载好的贴图。
+        CombinedDrill.copyVisuals(cd, sh);
+        shadowIconFallback(cd, sh);
+        cd.shadowVariant = sh;
+        made++;
+      } catch (Throwable t) {
+        Log.err("[combine] 矿物阴影：@ 的 1x1 版本装配失败（这种钻头不参与阴影压格）", cd.name, t);
+      }
+    }
+    Log.info("[combine] 矿物阴影：@ 种钻头有了压成 1x1 的版本", made);
+  }
+
+  /** 1x1 版本的图标兜底：抄不到原钻头那份就给 error，uiIcon/fullIcon/region 都不留 null。 */
+  static void shadowIconFallback(Block src, Block dst) {
+    try {
+      Object error = (arc.Core.atlas == null) ? null : arc.Core.atlas.find("error");
+      if (dst.fullIcon == null)
+        dst.fullIcon = src.fullIcon != null ? src.fullIcon : (arc.graphics.g2d.TextureRegion) error;
+      if (dst.uiIcon == null)
+        dst.uiIcon = src.uiIcon != null ? src.uiIcon : dst.fullIcon;
+      if (dst.region == null)
+        dst.region = src.region != null ? src.region : dst.fullIcon;
+    } catch (Throwable ignored) {
+    }
   }
 
   void createLiquidBlocks() {
@@ -980,6 +1079,70 @@ public class Main extends Mod {
     } catch (Throwable th) {
       return def;
     }
+  }
+
+  /**
+   * 组合传送带：把原版/模组的 {@code Conveyor / ArmoredConveyor / Duct / StackConveyor}（含子类）
+   * 换成能"覆盖叠层提速"的组合版（同 id、同名字、同贴图、同速度，行为不变）。
+   *
+   * <p>这些类在 {@link NoCombo} 里（传输类不该"组合"共用库存），所以不走 {@link #processModBlocks()}；
+   * 放置/叠层逻辑见 {@code combine.distribution.ConveyorOverlay}。
+   *
+   * <p>和模组其它"现造方块"一样：v8 不会替这一步注册的方块调 init()/postInit()/loadIcon()，
+   * 必须自己补；单个方块失败不能拖垮整张内容表。
+   */
+  void processConveyors() {
+    // 快照遍历：createCombo 会原地修改注册表（set+pop），不可直接遍历
+    Seq<Content> snapshot = new Seq<>(Vars.content.getBy(ContentType.block));
+    int count = 0;
+    for (var c : snapshot) {
+      Block b = (Block) c;
+      if (originalToCombo.containsKey(b) || comboToOriginal.containsKey(b))
+        continue;
+      if (list.contains(b.name))
+        continue;
+      if (b instanceof combine.distribution.CombinedConveyor
+          || b instanceof combine.distribution.CombinedDuct
+          || b instanceof combine.distribution.CombinedStackConveyor)
+        continue;
+
+      boolean isStack = b instanceof mindustry.world.blocks.distribution.StackConveyor;
+      boolean isDuct = b instanceof mindustry.world.blocks.distribution.Duct;
+      boolean isConveyor = b instanceof mindustry.world.blocks.distribution.Conveyor;
+      if (!isStack && !isDuct && !isConveyor)
+        continue;
+
+      try {
+        Block combo;
+        if (isStack) {
+          combo = createCombo(b, combine.distribution.CombinedStackConveyor.class);
+        } else if (isDuct) {
+          combo = createCombo(b, combine.distribution.CombinedDuct.class);
+        } else {
+          combine.distribution.CombinedConveyor cc =
+              createCombo(b, combine.distribution.CombinedConveyor.class);
+          // ArmoredConveyor 只是 Conveyor 上多了"防侧装"，用同一个组合类 + 开关保留它的行为
+          cc.armored = b instanceof mindustry.world.blocks.distribution.ArmoredConveyor;
+          combo = cc;
+        }
+        copyFields(b, combo);
+        combo.init();
+        combo.postInit();
+        if (visuals())
+          // 贴图/图标兜底：方块名和原版一样，load() 会按原名重新取一遍图集贴图
+          // （绝不留 null —— 建造菜单里 uiIcon 为 null 会直接崩）
+          ensureIcons(combo);
+        postInit(combo);
+        // 层数"配置"：copyFields 之后注册一次（原版这些方块没有配置，不会被覆盖，但顺序上更稳）
+        combine.distribution.ConveyorOverlay.install(combo);
+        count++;
+      } catch (Throwable th) {
+        Log.err("[combine] processConveyors failed for " + b.name, th);
+      }
+    }
+    if (count > 0)
+      Log.info("[combine] 组合传送带：@ 种传送带/管道已装配（可覆盖叠层，最多 @ 层）",
+          count, combine.distribution.ConveyorOverlay.MAX_LAYERS);
   }
 
   void processModBlocks() {

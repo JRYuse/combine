@@ -41,13 +41,15 @@ import static mindustry.Vars.*;
 /**
  * 超级组合炮台的选择/放置流程（纯客户端）。
  *
- * <p>交互：点屏幕上的"框选合体"悬浮按钮 → 进入框选模式
+ * <p>
+ * 交互：点屏幕上的"框选合体"悬浮按钮 → 进入框选模式
  * （这时左键只用来画框，不会开枪/开面板/摆方块）→ 拖一个框松开 → 数出框里的炮台、
  * 按数量生成对应边长的超级组合炮台虚影跟着鼠标走 → 左键确定、右键/Q/Esc 取消。
  * 再点一下按钮（或右键/Esc）可以在框选阶段取消。
  * （用户 2026-09-28 要求删掉默认 G 键位、入口改成悬浮按钮、并且不要再改 input。）
  *
- * <p>放置走原版蓝图那套（{@code input.useSchematic}），所以虚影、合法性染色、
+ * <p>
+ * 放置走原版蓝图那套（{@code input.useSchematic}），所以虚影、合法性染色、
  * 建造队列/多线程建造、联机同步全都沿用原版。
  */
 public class SuperTurretPlacer {
@@ -69,8 +71,8 @@ public class SuperTurretPlacer {
   static final InputProcessor processor = new Processor();
   /** HUD 上的悬浮入口按钮（用户要求：手机/桌面都用悬浮式按钮触发框选，别再改 input）。 */
   static @Nullable Element button;
-  /** 点开后出现的两个子按钮：炮台合体 + 工厂合体。 */
-  static @Nullable Element turretBtn, factoryBtn;
+  /** 点开后出现的三个子按钮：炮台合体 + 工厂合体 + 矿物阴影。 */
+  static @Nullable Element turretBtn, factoryBtn, productionBtn;
   static boolean subButtonsShown;
   /** 悬浮按钮边长（像素，乘 Scl）。 */
   static final float BUTTON_SIDE = 48f;
@@ -137,7 +139,8 @@ public class SuperTurretPlacer {
   /**
    * 主按钮点按（非拖动）。
    *
-   * <p>【用户要求 2026-10-04】点浮标 = 在它旁边展开两个子按钮（炮台合体 / 工厂合体），
+   * <p>
+   * 【用户要求 2026-10-04】点浮标 = 在它旁边展开两个子按钮（炮台合体 / 工厂合体），
    * 浮标在屏幕左半边就把子按钮摆到右边、在右半边就摆到左边（见 {@link #positionSubButtons}）；
    * 再点一次收起。框选进行中时点它 = 取消框选（手机没有右键/Esc，这是触摸端的退出出口）。
    */
@@ -149,6 +152,11 @@ public class SuperTurretPlacer {
     }
     if (combine.production.FactoryCombiner.selecting()) {
       combine.production.FactoryCombiner.cancel();
+      hideSubButtons();
+      return;
+    }
+    if (combine.production.OreShadowPlacer.selecting()) {
+      combine.production.OreShadowPlacer.cancel();
       hideSubButtons();
       return;
     }
@@ -174,6 +182,12 @@ public class SuperTurretPlacer {
   static void onFactoryBtn() {
     hideSubButtons();
     combine.production.FactoryCombiner.start();
+  }
+
+  /** 矿物阴影子按钮被点：启动"框矿物地板"流程。 */
+  static void onProductionBtn() {
+    hideSubButtons();
+    combine.production.OreShadowPlacer.start();
   }
 
   public static void start() {
@@ -254,7 +268,7 @@ public class SuperTurretPlacer {
     if (pending.size > 8)
       pending.remove(0);
     // 【只许顶被框住的炮台】把这次框选里那些炮台占的格子登记给放置判据
-    //（SuperTurret.canPlaceOn 逐格检查），于是预览盖在它们上面是绿的、盖在**没框住**的炮台上是红的。
+    // （SuperTurret.canPlaceOn 逐格检查），于是预览盖在它们上面是绿的、盖在**没框住**的炮台上是红的。
     SuperTurret.allowReplaceOver(framedTiles(found));
     selecting = false;
     dragging = false;
@@ -320,7 +334,8 @@ public class SuperTurretPlacer {
         continue;
       // 点防炮的 build 是 BaseTurret.BaseTurretBuild（不是 TurretBuild），rotation 字段同样有
       float rot = b instanceof mindustry.world.blocks.defense.turrets.BaseTurret.BaseTurretBuild tb
-          ? tb.rotation : 90f;
+          ? tb.rotation
+          : 90f;
       if (written > 0)
         sb.append(';');
       written++;
@@ -336,7 +351,8 @@ public class SuperTurretPlacer {
   /**
    * 被选中的炮台坐标（"x,y;x,y"）：超级炮台放下后要把它们拆掉。
    *
-   * <p>现成的合体炮台用 {@code !x,y} 标记 —— 落地时由 {@code consumeSources} 把整台并进来
+   * <p>
+   * 现成的合体炮台用 {@code !x,y} 标记 —— 落地时由 {@code consumeSources} 把整台并进来
    * （连它的库存一起），而不是当成"一格炮台"处理。
    */
   public static String sourcesOf(Seq<Building> found) {
@@ -387,7 +403,7 @@ public class SuperTurretPlacer {
         if (b.tile != null && b.tile != t)
           continue;
         // 【加炮台】现成的合体炮台也认：把它框进去 = 连它里面那些炮台一起重新拼
-        //（想往一台合体里加炮台，就把那台 + 要加的炮台一起框上，再点一下放下去）。
+        // （想往一台合体里加炮台，就把那台 + 要加的炮台一起框上，再点一下放下去）。
         if (b instanceof SuperTurret.SuperTurretBuild) {
           out.add(b);
           if (out.size >= max)
@@ -504,11 +520,13 @@ public class SuperTurretPlacer {
    * （炮台合体 / 工厂合体，见 {@link #showSubButtons}），再点一次收起；框选进行中时点它 = 取消。
    * 按住还能把它拖到任意位置（位置记进本机设置），子按钮会跟着换边。
    *
-   * <p>【用户要求 2026-09-28】不要再改 input / {@code buildPlacementUI}，入口就用这个浮标：
+   * <p>
+   * 【用户要求 2026-09-28】不要再改 input / {@code buildPlacementUI}，入口就用这个浮标：
    * 直接把自己挂到 {@code Core.scene.root}（在 hudGroup 之上），不依赖原版建造菜单的内部结构，
    * 触摸端 / 桌面都有明确的可点入口（手机没有快捷键）。
    *
-   * <p>【为什么挂 scene root 而不是 hudGroup】客户端（MindustryX 实测）会在 hudGroup 里再叠一层
+   * <p>
+   * 【为什么挂 scene root 而不是 hudGroup】客户端（MindustryX 实测）会在 hudGroup 里再叠一层
    * 铺满屏幕的可点容器 / 方块信息面板，排在 hudGroup 的按钮之上 —— 挂在 hudGroup 里的按钮会
    * "看得见、点不动"（点在按钮中心上命中的是那层 ScrollPane）。挂到 root 上就压过它们；
    * 对话框是后加到 root 的，仍然盖在这个浮标上面（弹窗时照旧被挡住，语义不变）。
@@ -613,11 +631,11 @@ public class SuperTurretPlacer {
     }
   }
 
-
   // ==================== 子按钮 ====================
 
   static void showSubButtons() {
-    if (button == null || Core.scene == null || Core.scene.root == null) return;
+    if (button == null || Core.scene == null || Core.scene.root == null)
+      return;
     hideSubButtons();
     float subSize = Scl.scl(40f);
 
@@ -630,7 +648,7 @@ public class SuperTurretPlacer {
     Core.scene.root.addChild(tb);
     turretBtn = tb;
 
-    ImageButton fb = new ImageButton(mindustry.gen.Icon.production, mindustry.ui.Styles.clearTogglei);
+    ImageButton fb = new ImageButton(mindustry.gen.Icon.crafting, mindustry.ui.Styles.clearTogglei);
     fb.name = "combineSubFactoryBtn";
     fb.setSize(subSize, subSize);
     fb.resizeImage(subSize * 0.55f);
@@ -639,13 +657,41 @@ public class SuperTurretPlacer {
     Core.scene.root.addChild(fb);
     factoryBtn = fb;
 
+    ImageButton pb = new ImageButton(mindustry.gen.Icon.production, mindustry.ui.Styles.clearTogglei);
+    pb.name = "combineSubProductionBtn";
+    pb.setSize(subSize, subSize);
+    pb.resizeImage(subSize * 0.55f);
+    pb.addListener(Tooltip.Tooltips.getInstance().create("框选矿物地板：画一层阴影，阴影上放钻头缩到 1x1", false));
+    pb.clicked(SuperTurretPlacer::onProductionBtn);
+    Core.scene.root.addChild(pb);
+    productionBtn = pb;
+
     subButtonsShown = true;
     positionSubButtons();
   }
 
   static void hideSubButtons() {
-    if (turretBtn != null) { try { turretBtn.remove(); } catch (Throwable ignored) {} turretBtn = null; }
-    if (factoryBtn != null) { try { factoryBtn.remove(); } catch (Throwable ignored) {} factoryBtn = null; }
+    if (turretBtn != null) {
+      try {
+        turretBtn.remove();
+      } catch (Throwable ignored) {
+      }
+      turretBtn = null;
+    }
+    if (factoryBtn != null) {
+      try {
+        factoryBtn.remove();
+      } catch (Throwable ignored) {
+      }
+      factoryBtn = null;
+    }
+    if (productionBtn != null) {
+      try {
+        productionBtn.remove();
+      } catch (Throwable ignored) {
+      }
+      productionBtn = null;
+    }
     subButtonsShown = false;
   }
 
@@ -653,24 +699,31 @@ public class SuperTurretPlacer {
    * 按主按钮位置把两个子按钮摆到它旁边：**主按钮在屏幕左半边 → 子按钮在它右边；
    * 在右半边 → 在它左边**（用户 2026-10-04 要求）。
    *
-   * <p>两个子按钮在那一侧**竖排成一列、整体与主按钮垂直居中**，彼此留 {@code gap} 的缝 ——
+   * <p>
+   * 两个子按钮在那一侧**竖排成一列、整体与主按钮垂直居中**，彼此留 {@code gap} 的缝 ——
    * 以前是 "mainY+mainH-subH / mainY" 两条，40px 高的按钮只错开 8px，看着就是"一个按钮"。
    */
   static void positionSubButtons() {
-    if (button == null || turretBtn == null || factoryBtn == null) return;
+    if (button == null || turretBtn == null || factoryBtn == null)
+      return;
     Element p = button.parent;
-    if (p == null) return;
+    if (p == null)
+      return;
     float mainX = button.x, mainY = button.y;
     float mainW = button.getWidth(), mainH = button.getHeight();
     float subW = turretBtn.getWidth(), subH = turretBtn.getHeight();
     float gap = Scl.scl(4f);
     boolean onLeft = mainX + mainW / 2f < p.getWidth() / 2f;
     float x = onLeft ? mainX + mainW + gap : mainX - subW - gap;
-    // 竖排一列、整体垂直居中于主按钮（上 = 炮台合体，下 = 工厂合体）
-    float bottom = mainY + mainH / 2f - (subH * 2f + gap) / 2f;
-    factoryBtn.setPosition(x, bottom);
-    turretBtn.setPosition(x, bottom + subH + gap);
+    // 竖排一列、整体垂直居中于主按钮（上 = 炮台合体，中 = 工厂合体，下 = 矿物阴影）
+    int n = productionBtn == null ? 2 : 3;
+    float bottom = mainY + mainH / 2f - (subH * n + gap * (n - 1)) / 2f;
+    if (productionBtn != null)
+      productionBtn.setPosition(x, bottom);
+    factoryBtn.setPosition(x, bottom + subH + gap);
+    turretBtn.setPosition(x, bottom + (subH + gap) * (n - 1));
   }
+
   /**
    * 浮标上的点按 / 拖动判定：位移超过 {@link #DRAG_THRESHOLD} 才算拖动（挪浮标 + 存位置），
    * 否则算点按（切换框选）。用 {@code event.stageX/Y} 的位移而不是元素的局部坐标 ——
@@ -708,7 +761,8 @@ public class SuperTurretPlacer {
         onMainTap();
       } else {
         saveButtonPos(event.listenerActor);
-            if (subButtonsShown) positionSubButtons();
+        if (subButtonsShown)
+          positionSubButtons();
       }
       moved = false;
     }
@@ -734,8 +788,8 @@ public class SuperTurretPlacer {
         return;
       list.remove(processor, true);
       list.insert(0, processor);
-      } catch (Throwable ignored) {
-      }
+    } catch (Throwable ignored) {
+    }
   }
 
   static class Processor implements InputProcessor {

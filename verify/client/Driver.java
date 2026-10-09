@@ -132,6 +132,16 @@ public class Driver extends Mod{
                 Timer.schedule(() -> shot("wall_damaged"), 16f);
                 Timer.schedule(Driver::wallRepairStep, 18f, 0.5f);
                 Timer.schedule(() -> { Log.info("[drv] wall 模式超时结束"); Core.app.exit(); }, 150f);
+            }else if(mode.equals("conv")){
+                // 组合传送带：铺一排传送带（一格点几下叠到上限、再整排拖一遍）→ 世界截图（贴图/物品还在不在）
+                // + 打开传送带的内容详情（说明里应出现【组合】玩法，图标不能是 error 贴图、不能崩）
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupConvScene, 5f);
+                Timer.schedule(() -> shot("conv_world"), 14f);
+                Timer.schedule(Driver::convOpenInfo, 16f);
+                Timer.schedule(() -> shot("conv_info"), 24f);
+                Timer.schedule(() -> { Log.info("[drv] conv 模式结束"); Core.app.exit(); }, 40f);
             }else if(mode.equals("bp")){
                 // 蓝图里的组合连接器：写一个含连接器的蓝图 → 重新从磁盘 load() → 打印/截图看还在不在
                 Timer.schedule(Driver::hideDialogs, 3f);
@@ -233,6 +243,20 @@ public class Driver extends Mod{
                 // 【串起来，别用独立定时器】软渲染一帧 200~400ms，几个定时器会挤在同一帧乱序触发
                 Timer.schedule(Driver::veilClick, 14f);
                 Timer.schedule(() -> { Log.info("[drv] veil 超时结束"); Core.app.exit(); }, 120f);
+            }else if(mode.equals("shadow")){
+                // 用户 2026-10-08：浮标旁边再加一个子按钮（Icon.production）= 框选矿物地板 →
+                // 画一层阴影；阴影上放下的钻头缩到 1x1（挖矿仍按原来大小每格都盖住了矿物算）。
+                // 要看的：① 三个子按钮的排版（不能被挤出屏幕）；② 阴影真的画在矿上；
+                //        ③ 阴影上放钻头后是一个 1x1 的小钻头贴在阴影上。
+                // 【截图必须按帧排队】软渲染 1~5fps，ScreenUtils 抓的是"上一次渲染完的帧"，
+                // 用 Timer 排几步会落在同一帧里，三张图会一模一样（实测踩过）。这里改成
+                // 每帧推进一步的流水线（改状态和截图之间隔一帧）。
+                installFrameCounter();
+                Timer.schedule(Driver::hideDialogs, 3f);
+                Timer.schedule(Driver::setupShadowScene, 6f);
+                Timer.schedule(Driver::hideDialogs, 9f);
+                Timer.schedule(Driver::startShadowPipeline, 11f);
+                Timer.schedule(() -> { Log.info("[drv] shadow 超时结束"); Core.app.exit(); }, 120f);
             }else if(mode.equals("mergebtn")){
                 // 用户要求 2026-09-28：把"框选合体"按钮改成**悬浮式**（手机/桌面同一个、可拖动），
                 // 并且不要再改 input。这里搭场景 + 跑检查（悬浮/可点/不挡/拖动/不改 input）+ 截图。
@@ -2494,6 +2518,94 @@ public class Driver extends Mod{
         }catch(Throwable t){ Log.err("[drv] setupWallScene failed", t); }
     }
 
+    // ---------------- 组合传送带（覆盖叠层提速，mode=conv） ----------------
+    static Building[] convRow = new Building[8];
+
+    static void setupConvScene(){
+        try{
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.logic.play();
+            if(Vars.state.isPaused()) Vars.state.set(mindustry.core.GameState.State.playing);
+            for(int y=50;y<90;y++) for(int x=50;x<160;x++){ Tile t=Vars.world.tile(x,y); if(t!=null && t.block()!=Blocks.air) t.setBlock(Blocks.air); }
+
+            Block conv = byName("conveyor");
+            if(conv == null){ Log.err("[drv] conv 场景缺 conveyor"); return; }
+            Log.info("[drv] 传送带方块类=@ uiIcon=@ region=@ 贴图行数=@", conv.getClass().getName(),
+                conv.uiIcon == null ? "null" : ("found=" + conv.uiIcon.found()),
+                conv.region == null ? "null" : ("found=" + conv.region.found()),
+                ((mindustry.world.blocks.distribution.Conveyor)conv).regions == null ? -1
+                    : ((mindustry.world.blocks.distribution.Conveyor)conv).regions.length);
+
+            for(int i = 0; i < convRow.length; i++){
+                convRow[i] = place(conv, 60 + i, 60);
+            }
+            // 覆盖叠层：手里选的就是这条传送带 + 方向一致 → 走组合传送带的"覆盖"通道
+            Class<?> overlay = Class.forName("combine.distribution.ConveyorOverlay", true, ml);
+            Class<?> layered = Class.forName("combine.distribution.Layered", true, ml);
+            java.lang.reflect.Method applyLine =
+                overlay.getMethod("applyLine", mindustry.gen.Player.class, Block.class);
+            java.lang.reflect.Method addPreset = overlay.getMethod("addPreset", mindustry.gen.Player.class,
+                arc.struct.Seq.class, Block.class, Tile.class, int.class);
+            java.lang.reflect.Method isOverlayPlan =
+                overlay.getMethod("isOverlayPlan", Block.class, mindustry.entities.units.BuildPlan.class);
+            java.lang.reflect.Method layersGet = layered.getMethod("layers");
+
+            // ① 桌面那套：拖一整排 → 松手提交（applyLine）；预览期间不该叠层
+            arc.struct.Seq<mindustry.entities.units.BuildPlan> line = new arc.struct.Seq<>();
+            for(int i = 0; i < convRow.length; i++)
+                line.add(new mindustry.entities.units.BuildPlan(60 + i, 60, 0, conv, null));
+            conv.handlePlacementLine(line); // 真正的方块方法：super（补桥/换路口）+ 记录这条线
+            Log.info("[drv] 松手前（只有预览）第 0 格层数=@", layersGet.invoke(convRow[0]));
+            int committed = (Integer) applyLine.invoke(null, Vars.player, conv);
+            Log.info("[drv] 松手提交了 @ 格，第 0 格层数=@", committed, layersGet.invoke(convRow[0]));
+
+            // ② 手机那套：放一个"覆盖预设" → 玩家按建造（✓）时原版把计划交给 onNewPlan → 才叠层
+            arc.struct.Seq<mindustry.entities.units.BuildPlan> presets = new arc.struct.Seq<>();
+            boolean presetAdded = (Boolean) addPreset.invoke(null, Vars.player, presets, conv,
+                Vars.world.tile(62, 60), 0);
+            if(presetAdded){
+                var preset = presets.first();
+                boolean valid = Vars.control.input.validPlace(preset.x, preset.y, preset.block, preset.rotation, null, true);
+                Log.info("[drv] 覆盖预设：旋转=@（方向+@）原版 validPlace（✓ 按钮那一关）=@ 画虚影算可以放=@ 层数还=@",
+                    preset.rotation, overlay.getField("PRESET_ROTATION_OFFSET").get(null), valid,
+                    isOverlayPlan.invoke(null, conv, preset), layersGet.invoke(convRow[2]));
+                var copy = preset.copy();
+                preset.block.onNewPlan(copy); // = 原版 ✓ 按钮做的事
+                Log.info("[drv] 按 ✓ 之后：层数=@，计划旋转=@（改回带子方向 @ → 会被单位丢掉，不会真造一条）",
+                    layersGet.invoke(convRow[2]), copy.rotation, Vars.world.tile(62, 60).build.rotation);
+            }else{
+                Log.err("[drv] 覆盖预设没放下去（应该放得下）");
+            }
+            StringBuilder sb = new StringBuilder();
+            for(int i = 0; i < convRow.length; i++){
+                if(convRow[i] == null) continue;
+                sb.append(i).append(":").append(layersGet.invoke(convRow[i])).append(" ");
+            }
+            Log.info("[drv] 传送带层数（格:层）= @", sb.toString().trim());
+            // 每格塞一个物品：看得见传送带在动（也验证叠过层后物品照常走）
+            for(int i = 0; i < convRow.length; i++){
+                if(convRow[i] instanceof mindustry.world.blocks.distribution.Conveyor.ConveyorBuild cb){
+                    cb.handleStack(Items.copper, 1, null);
+                }
+            }
+            Core.camera.position.set(64 * 8f, 60 * 8f + 20f);
+        }catch(Throwable t){ Log.err("[drv] setupConvScene failed", t); }
+    }
+
+    static void convOpenInfo(){
+        try{
+            Block conv = byName("conveyor");
+            if(conv == null) return;
+            Log.info("[drv] 传送带详情: name=@ desc=@", conv.localizedName,
+                conv.description == null ? "null" : conv.description.replace('\n', '|'));
+            Vars.ui.content.show(conv);
+        }catch(Throwable t){ Log.err("[drv] convOpenInfo failed", t); }
+    }
+
     static void wallRepairStep(){
         try{
             if(wall1 == null) return;
@@ -3085,6 +3197,8 @@ public class Driver extends Mod{
 
     // ---------------- 组合工厂（合体工厂） ----------------
     static int fcOx, fcOy;
+    /** 框选出来的工厂要合体到的锚点（虚影/落地位置），比 fcOx/fcOy 居中一点。 */
+    static int fcGx, fcGy;
     static Building fcMerged;
     static int fcFeedTries;
 
@@ -3210,13 +3324,262 @@ public class Driver extends Mod{
             pos.invoke(null);
             arc.scene.Element sT = (arc.scene.Element) getStatic(placer, "turretBtn");
             arc.scene.Element sF = (arc.scene.Element) getStatic(placer, "factoryBtn");
-            Log.info("[drv] 子按钮截图准备: 浮标=@,@ 炮台子按钮=@,@ 工厂子按钮=@,@ （父=@）",
+            arc.scene.Element sP = (arc.scene.Element) getStatic(placer, "productionBtn");
+            Log.info("[drv] 子按钮截图准备: 浮标=@,@ 炮台子按钮=@,@ 工厂子按钮=@,@ 矿物阴影子按钮=@,@ （父=@）",
                 (int) e.x, (int) e.y,
                 sT == null ? -1 : (int) sT.x, sT == null ? -1 : (int) sT.y,
                 sF == null ? -1 : (int) sF.x, sF == null ? -1 : (int) sF.y,
+                sP == null ? -1 : (int) sP.x, sP == null ? -1 : (int) sP.y,
                 e.parent.getClass().getSimpleName());
         } catch (Throwable t) {
             Log.err("[drv] prepareSubButtonShot failed", t);
+        }
+    }
+
+    // ---------------- 矿物阴影（新按钮：框矿物地板 → 阴影上放钻头缩到 1x1） ----------------
+    static int shOx, shOy;
+    /** 阴影模式的逐帧流水线步号（-1 = 没在跑）。 */
+    static int shStep = -1;
+
+    static void startShadowPipeline() {
+        shStep = 0;
+        arc.Events.run(mindustry.game.EventType.Trigger.update, Driver::shadowPipeline);
+    }
+
+    /** 每帧推进一步：改状态和截图之间隔一帧，否则截到的是上一帧（软渲染 1~5fps）。 */
+    static void shadowPipeline() {
+        int s = shStep++;
+        switch (s) {
+            case 0 -> prepareSubButtonShot();
+            case 2 -> shot("shadow_subbuttons");
+            case 4 -> shadowFrameStart();
+            // 【框选中的那一帧】用户 2026-10-09 报"框矿物的时候没有线条边框"——先留一张拖框中的图
+            case 6 -> {
+                // 截图前把"框选状态"打出来，并**强制钉住**（驱动造的单位 isBuilder=false，
+                // 真实玩家不会有这个问题；钉住是为了单独验证"框到底画不画得出来"）
+                try {
+                    Class<?> p2 = Class.forName("combine.production.OreShadowPlacer", true, ml);
+                    setStatic(p2, "selecting", true);
+                    setStatic(p2, "dragging", true);
+                    setStatic(p2, "sx", shOx + 2);
+                    setStatic(p2, "sy", shOy + 2);
+                    setStatic(p2, "ex", shOx + 11);
+                    setStatic(p2, "ey", shOy + 6);
+                    Log.info("[drv] 截图前 selecting=@ sx=@ sy=@ ex=@ ey=@  诊断: isGame=@ player=@ isBuilder=@ block=@ chat=@ kb=@",
+                            getStatic(p2, "selecting"),
+                            getStatic(p2, "sx"), getStatic(p2, "sy"), getStatic(p2, "ex"), getStatic(p2, "ey"),
+                            Vars.state.isGame(), Vars.player != null,
+                            Vars.player == null ? "-" : Vars.player.isBuilder(),
+                            Vars.control.input == null ? "-" : Vars.control.input.block,
+                            Vars.ui.chatfrag.shown(), Core.scene.hasKeyboard());
+                } catch (Throwable t) {
+                    Log.err("[drv] 查框选状态失败", t);
+                }
+            }
+            // 【截图隔一帧】ScreenUtils 抓的是"上一帧"画面；而且驱动造的单位 isBuilder=false，
+            // OreShadowPlacer.update 每帧都会取消框选 —— 所以下面两帧连着钉住，截图才不会抓到被取消的那帧。
+            case 7 -> shadowPinFrame();
+            case 8 -> shot("shadow_framing");
+            case 10 -> shadowFrameFinish();
+            case 12 -> shot("shadow_zone");
+            case 14 -> shadowDropDrill();
+            // 【真·落地检查】把一台钻头**按真人的路子**排进建造队列（player.unit().addBuild），
+            // 让游戏自己走 validPlace + 施工那一步 —— 用户报的"阴影上摆钻头、点建造后钻头直接消失"
+            // 就是这一步失败（hidden 方块默认 isPlaceable()=false / offset 偏半格导致 bounds 不过）。
+            case 18 -> shadowVerifyPlaced("排队后");
+            case 24 -> shadowVerifyPlaced("等施工后");
+            case 26 -> shot("shadow_drill");
+            case 30 -> {
+                Log.info("[drv] shadow 模式结束");
+                Core.app.exit();
+            }
+            default -> {
+            }
+        }
+    }
+
+    /** 开一张干净图 + 铺一片铜矿，相机对准它。 */
+    static void setupShadowScene() {
+        try {
+            hideDialogs();
+            var map = Vars.maps.all().find(m -> m.name().contains("Archipelago"));
+            Vars.world.loadMap(map, map.applyRules(Gamemode.survival));
+            Vars.state.rules.canGameOver = false;
+            Vars.state.rules.waves = false;
+            Vars.state.rules.infiniteResources = true;
+            Vars.logic.play();
+            if (Vars.state.isPaused())
+                Vars.state.set(mindustry.core.GameState.State.playing);
+            for (int y = 30; y < 160; y++)
+                for (int x = 20; x < 200; x++) {
+                    Tile t = Vars.world.tile(x, y);
+                    if (t != null && t.block() != Blocks.air)
+                        t.setBlock(Blocks.air);
+                }
+            int ox = 60, oy = 70;
+            // 铺一片铜矿（阴影只认矿物地板）：地板换成石头、矿用 overlay 叠上去 ——
+            // 这样"阴影把地板压暗"在截图上才看得出来（直接把 oreCopper 当地板铺是深色的，看不出差别）
+            for (int y = oy - 2; y < oy + 10; y++)
+                for (int x = ox - 6; x < ox + 14; x++) {
+                    Tile t = Vars.world.tile(x, y);
+                    if (t != null) {
+                        t.setFloor((mindustry.world.blocks.environment.Floor) Blocks.darksand);
+                        t.setOverlay(Blocks.oreCopper);
+                    }
+                }
+            // 右下一小片换成**铅**：区域主导矿是铜，但第 3 台钻头坐在铅上 —— 用它核对
+            // "中心那个矿物色块画的是自己脚下的矿，而不是区域主导矿"（用户 2026-10-09 报的）。
+            for (int y = oy + 6; y < oy + 10; y++)
+                for (int x = ox + 8; x < ox + 14; x++) {
+                    Tile t = Vars.world.tile(x, y);
+                    if (t != null)
+                        t.setOverlay(Blocks.oreLead);
+                }
+            shOx = ox;
+            shOy = oy;
+            Core.camera.position.set((ox + 7) * 8f, (oy + 5) * 8f);
+            Vars.control.input.block = null;
+            Log.info("[drv] shadow 场景: 铜矿 @x@ 铺在 @,@", 14, 10, ox, oy);
+        } catch (Throwable t) {
+            Log.err("[drv] setupShadowScene failed", t);
+        }
+    }
+
+    /** 进入框选并按住第一个框（**不松手**，好让"拖框中"那一帧能被截到）。 */
+    static void shadowFrameStart() {
+        try {
+            // 【必须】框选要求 player.isBuilder()：驱动原来造的核心单位 alpha 不能建造（canBuild=false），
+            // 于是 OreShadowPlacer.update 每帧都把框选取消掉（selecting 立刻变 false，框根本画不出来）。
+            // 这里换成真能建造的单位（mono）。
+            Unit u = Vars.player.unit();
+            if (u == null || !u.canBuild()) {
+                u = mindustry.content.UnitTypes.mono.spawn(Vars.player.team(), (shOx + 6) * 8f, (shOy + 4) * 8f);
+                Vars.player.unit(u);
+                Log.info("[drv] 换成能建造的单位 @", u.type.name);
+            }
+            try {
+                u.updateBuilding(true);
+            } catch (Throwable ignored) {
+            }
+            Class<?> p = Class.forName("combine.production.OreShadowPlacer", true, ml);
+            invokeStatic(p, "start", null);
+            setStatic(p, "dragging", true);
+            setStatic(p, "sx", shOx + 2);
+            setStatic(p, "sy", shOy + 2);
+            setStatic(p, "ex", shOx + 11);
+            setStatic(p, "ey", shOy + 6);
+            Log.info("[drv] 框选中（第一笔 62,72 → 71,76），当前 selecting=@",
+                    getStatic(p, "selecting"));
+        } catch (Throwable t) {
+            Log.err("[drv] shadowFrameStart failed", t);
+        }
+    }
+
+    /** 松手落地：第一笔 + 第二笔拼成一个 L 形（用户要求：阴影可以是不规则的）。 */
+    static void shadowFrameFinish() {
+        try {
+            Class<?> p = Class.forName("combine.production.OreShadowPlacer", true, ml);
+            invokeStatic(p, "finish", null);
+            frameOnce(p, shOx + 8, shOy + 7, shOx + 11, shOy + 9);
+            Log.info("[drv] 矿物阴影框选完成（L 形）: 记下 @ 格", invokeStatic(Class.forName(
+                    "combine.production.OreShadow", true, ml), "size", null));
+        } catch (Throwable t) {
+            Log.err("[drv] shadowFrameFinish failed", t);
+        }
+    }
+
+    /** 框一笔（模拟拖一个框松手）。 */
+    static void frameOnce(Class<?> p, int x1, int y1, int x2, int y2) {
+        setStatic(p, "dragging", true);
+        setStatic(p, "sx", x1);
+        setStatic(p, "sy", y1);
+        setStatic(p, "ex", x2);
+        setStatic(p, "ey", y2);
+        invokeStatic(p, "finish", null);
+    }
+
+    /** 阴影上摆钻头（走原版落地流程 → 自动压成 1x1，物理占地也只有 1 格），阴影外再放一台当对照。 */
+    static void shadowDropDrill() {
+        try {
+            Block drill = Vars.content.block("mechanical-drill");
+            if (drill == null) {
+                Log.err("[drv] shadowDropDrill: 找不到机械钻头");
+                return;
+            }
+            ensurePlayerUnit((shOx + 6) * 8f, (shOy + 5) * 8f);
+            // 走真路径：原版 flushPlans 里会调 plan.block.onNewPlan(copy)，阴影上的钻头在那里被换成 1x1 版本
+            Class<?> cd = Class.forName("combine.production.CombinedDrill", true, ml);
+            var m = cd.getMethod("onNewPlan", mindustry.entities.units.BuildPlan.class);
+            m.setAccessible(true);
+            Building first = null;
+            int[][] spots = { { shOx + 3, shOy + 3 }, { shOx + 5, shOy + 4 }, { shOx + 9, shOy + 8 } };
+            for (int i = 0; i < spots.length; i++) {
+                int[] sp = spots[i];
+                mindustry.entities.units.BuildPlan plan = new mindustry.entities.units.BuildPlan(sp[0], sp[1], 0, drill);
+                m.invoke(drill, plan);
+                if (i == 0) {
+                    // 第一台交给游戏自己建（真·点建造）
+                    shPlanX = plan.x;
+                    shPlanY = plan.y;
+                    shPlanBlock = plan.block;
+                    Vars.player.unit().addBuild(plan);
+                    Log.info("[drv] 阴影上的第 1 台钻头排队给游戏自己建：plan=@ @,@（validPlace=@）",
+                            plan.block.name, plan.x, plan.y,
+                            mindustry.world.Build.validPlace(plan.block, Team.sharded, plan.x, plan.y,
+                                    plan.rotation, true, false));
+                } else {
+                    Building b = place(plan.block, plan.x, plan.y);
+                    if (first == null)
+                        first = b;
+                }
+            }
+            Building off = place(drill, shOx - 4, shOy + 1);
+            Log.info("[drv] 阴影上摆了 @ 台钻头（@，size=@），阴影外对照 1 台（@，size=@）",
+                    spots.length, first == null ? "?" : first.block.name, first == null ? -1 : first.block.size,
+                    off == null ? "?" : off.block.name, off == null ? -1 : off.block.size);
+        } catch (Throwable t) {
+            Log.err("[drv] shadowDropDrill failed", t);
+        }
+    }
+
+    /** 把"正在框选"钉住一帧（驱动专用，真人玩家的建造单位不会有这个问题）。 */
+    static void shadowPinFrame() {
+        try {
+            Class<?> p2 = Class.forName("combine.production.OreShadowPlacer", true, ml);
+            setStatic(p2, "selecting", true);
+            setStatic(p2, "dragging", true);
+            setStatic(p2, "sx", shOx + 2);
+            setStatic(p2, "sy", shOy + 2);
+            setStatic(p2, "ex", shOx + 11);
+            setStatic(p2, "ey", shOy + 6);
+        } catch (Throwable t) {
+            Log.err("[drv] shadowPinFrame failed", t);
+        }
+    }
+
+    static int shPlanX = -1, shPlanY = -1;
+    static Block shPlanBlock;
+
+    /** 真·落地检查：游戏自己建的那台钻头到底出现没有（用户报的"点建造后钻头直接消失"）。 */
+    static void shadowVerifyPlaced(String when) {
+        try {
+            // 驱动造的单位不一定会执行建造队列（见 ensurePlayerUnit 的注释，veil 模式同款问题）：
+            // 队列那步已经验过 validPlace=true，这里补一次游戏自己的"施工完成"调用，
+            // 好让截图里真有这台钻头（走的是 Call.constructFinish，和真人建造完成是同一条路）。
+            Tile tt = shPlanX < 0 ? null : Vars.world.tile(shPlanX, shPlanY);
+            if (tt != null && (tt.build == null || tt.build.dead()) && shPlanBlock != null)
+                mindustry.gen.Call.constructFinish(tt, shPlanBlock, null, (byte) 0, Team.sharded, null);
+            Building b = shPlanX < 0 ? null : Vars.world.build(shPlanX, shPlanY);
+            Tile t = shPlanX < 0 ? null : Vars.world.tile(shPlanX, shPlanY);
+            Log.info("[drv] 真·落地检查(@): @,@ → @（tile.block=@ build=@ 方块=@ size=@ 建造队列=@）", when,
+                    shPlanX, shPlanY, b == null ? "空（没建出来！）" : "已建成",
+                    t == null ? "-" : t.block().name,
+                    t == null || t.build == null ? "-" : t.build.getClass().getSimpleName(),
+                    b == null ? "-" : b.block.name, b == null ? -1 : b.block.size,
+                    Vars.player == null || Vars.player.unit() == null ? -1
+                            : Vars.player.unit().plans.size);
+        } catch (Throwable t) {
+            Log.err("[drv] shadowVerifyPlaced failed", t);
         }
     }
 
@@ -3243,7 +3606,7 @@ public class Driver extends Mod{
             for (int y = 45; y < 120; y++) {
                 for (int x = 35; x < 170; x++) {
                     boolean ok = true;
-                    for (int dy = 0; dy < 12 && ok; dy++)
+                    for (int dy = 0; dy < 18 && ok; dy++)
                         for (int dx = 0; dx < 24; dx++) {
                             Tile t = Vars.world.tile(x + dx, y + dy);
                             if (t == null || t.floor() == null || t.floor().isLiquid || t.block() != Blocks.air) {
@@ -3264,21 +3627,39 @@ public class Driver extends Mod{
             }
             fcOx = ox;
             fcOy = oy;
-            // 用户报"合体小工厂的 draw 明显画错"的是**冷冻液混合机**：场景就用它（4 台 → 2x2）
-            Block mixer = Vars.content.block("cryofluid-mixer");
-            if (mixer == null)
-                mixer = Vars.content.block("silicon-smelter");
-            Log.info("[drv] factory 场景用方块=@ 尺寸=@（贴图 @x@）", mixer.name, mixer.size,
-                    mixer.region == null ? -1 : mixer.region.width, mixer.region == null ? -1 : mixer.region.height);
-            place(mixer, ox + 3, oy + 7);
-            place(mixer, ox + 9, oy + 7);
-            place(mixer, ox + 15, oy + 7);
-            place(mixer, ox + 21, oy + 7);
+            // 【用户报的"合体部分工厂时贴图没有缩放并且错位"】场景要覆盖"抽屉里有绝对偏移/活塞/火苗"
+            // 的多格工厂（只放冷冻液混合机那种偏移为 0 的机器看不出问题）：
+            // 2x2 冷冻液混合机 / 2x2 石墨压机(活塞) / 3x3 三向压机(活塞) /
+            // 2x2 分离机 / 3x3 窑炉 / 2x2 硅冶炼厂(火苗) / 2x2 粉碎机。7 台 → 3x3 合体块。
+            // melter：1x1、吃**渣**、抽屉里是没写死液体的 DrawLiquidTile（= 用户报的"全都画成一种液体"
+            // 那种格子）。池子里同时灌水和渣，截图上它那格该是橙色渣、其它格是蓝色水。
+            String[] names = { "cryofluid-mixer", "melter", "multi-press",
+                "separator", "kiln", "silicon-smelter",
+                "phase-weaver", "phase-synthesizer", "spore-press" };
+            int placed = 0;
+            for (int i = 0; i < names.length; i++) {
+                Block fb = Vars.content.block(names[i]);
+                if (fb == null) {
+                    Log.err("[drv] factory 场景缺方块 @", names[i]);
+                    continue;
+                }
+                place(fb, ox + 2 + (i % 3) * 6, oy + 1 + (i / 3) * 6);
+                placed++;
+                Log.info("[drv] factory 场景摆了 @ @x@（贴图 @x@）", fb.name, fb.size, fb.size,
+                        fb.region == null ? -1 : fb.region.width,
+                        fb.region == null ? -1 : fb.region.height);
+            }
             // 参照物：旁边放一台**原版**冷冻液混合机（不参与合体），截图里直接对比两种 draw
-            place(mixer, ox + 17, oy + 7);
-            Core.camera.position.set((ox + 9) * 8f, (oy + 7) * 8f);
+            Block mixerRef = Vars.content.block("cryofluid-mixer");
+            if (mixerRef != null)
+                place(mixerRef, ox + 20, oy + 9);
+            // 合体锚点：2x3 台工厂的中间（3x3 合体块压在原位置上，原地合体）
+            fcGx = ox + 8;
+            fcGy = oy + 8;
+            Core.camera.position.set((ox + 9) * 8f, (oy + 9) * 8f);
             Vars.control.input.block = null;
-            Log.info("[drv] factory 场景: 三台工厂摆好，原点 @,@", ox, oy);
+            Log.info("[drv] factory 场景: @ 台工厂摆好（含参照机），原点 @,@ 合体锚点 @,@",
+                    placed, ox, oy, fcGx, fcGy);
         } catch (Throwable t) {
             Log.err("[drv] setupFactoryScene failed", t);
         }
@@ -3290,18 +3671,18 @@ public class Driver extends Mod{
      */
     static void factoryBoxSelect() {
         try {
-            ensurePlayerUnit((fcOx + 9) * 8f, (fcOy + 7) * 8f);
+            ensurePlayerUnit(fcGx * 8f, fcGy * 8f);
             Class<?> placer = Class.forName("combine.production.FactoryCombiner", true, ml);
             invokeStatic(placer, "start", null); // 真入口是浮标的"工厂合体"子按钮
             setStatic(placer, "dragging", true);
             setStatic(placer, "sx", fcOx);
-            setStatic(placer, "sy", fcOy + 5);
-            setStatic(placer, "ex", fcOx + 25);
-            setStatic(placer, "ey", fcOy + 10);
-            Core.camera.position.set((fcOx + 10) * 8f, (fcOy + 7.5f) * 8f);
+            setStatic(placer, "sy", fcOy);
+            setStatic(placer, "ex", fcOx + 17);
+            setStatic(placer, "ey", fcOy + 16);
+            Core.camera.position.set((fcOx + 9) * 8f, (fcOy + 9) * 8f);
             Object found = combineCall("combine.production.FactoryCombiner", "scan",
                     new Class<?>[] { Team.class, int.class, int.class, int.class, int.class },
-                    Team.sharded, fcOx, fcOy + 5, fcOx + 20, fcOy + 10);
+                    Team.sharded, fcOx, fcOy, fcOx + 17, fcOy + 16);
             Object cnt = combineCall("combine.production.FactoryCombiner", "count",
                     new Class<?>[] { Seq.class }, found);
             fcCount = cnt instanceof Number n ? n.intValue() : 0;
@@ -3317,8 +3698,8 @@ public class Driver extends Mod{
             Log.info("[drv] 工厂框选: selectPlans=@ 个 还在框选=@", plans.size,
                     getStatic(placer, "selecting"));
             for (var p : plans) {
-                p.x = fcOx + 9; // 虚影压在原料上（原地合体）
-                p.y = fcOy + 7;
+                p.x = fcGx; // 虚影压在原料上（原地合体）
+                p.y = fcGy;
             }
             if (!plans.isEmpty()) {
                 fcCfg = plans.first().config;
@@ -3335,7 +3716,7 @@ public class Driver extends Mod{
      *  那对字段只在鼠标事件里更新，所以每个想截虚影的帧都要按住它。 */
     static void factoryAim() {
         try {
-            int tx = fcOx + 9, ty = fcOy + 7;
+            int tx = fcGx, ty = fcGy;
             if (Vars.control.input instanceof mindustry.input.DesktopInput di) {
                 di.schematicX = tx;
                 di.schematicY = ty;
@@ -3402,7 +3783,7 @@ public class Driver extends Mod{
      */
     static void veilClick() {
         try {
-            ensurePlayerUnit((fcOx + 9) * 8f, (fcOy + 7) * 8f);
+            ensurePlayerUnit(fcGx * 8f, fcGy * 8f);
             var plans = Vars.control.input.selectPlans;
             if (plans.isEmpty() || Vars.player == null || Vars.player.unit() == null) {
                 Log.err("[drv] veil: 虚影或玩家单位缺失，跳过（plans=@）", plans.size);
@@ -3456,7 +3837,7 @@ public class Driver extends Mod{
     static void factoryPlace() {
         try {
             // 放置要玩家有建造单位（和超级炮台那一套一样）
-            ensurePlayerUnit((fcOx + 9) * 8f, (fcOy + 7) * 8f);
+            ensurePlayerUnit(fcGx * 8f, fcGy * 8f);
             for (var p : Vars.control.input.selectPlans)
                 Log.info("[drv] 计划 @,@ block=@ 可放=@ 那格现有=@ 队伍=@", p.x, p.y, p.block.name,
                         mindustry.world.Build.validPlace(p.block, Team.sharded, p.x, p.y, p.rotation),
@@ -3508,7 +3889,7 @@ public class Driver extends Mod{
                     Log.info("[drv] 合体工厂还没出现，1.5s 后重试（第 @ 次）", fcFeedTries);
                     Timer.schedule(Driver::factoryFeed, 1.5f);
                 } else {
-                    Log.err("[drv] 合体工厂没落地（框选位置 @,@）", fcOx + 9, fcOy + 7);
+                    Log.err("[drv] 合体工厂没落地（框选位置 @,@）", fcGx, fcGy);
                     // 还是要出图（至少能看"没落地"的样子）
                     Timer.schedule(() -> shot("factory_after"), 2f);
                     Timer.schedule(Driver::factoryOpenPanel, 4f);
@@ -3517,7 +3898,9 @@ public class Driver extends Mod{
             }
             Block ps = Vars.content.block("power-source");
             if (ps != null)
-                place(ps, fcMerged.tileX() - 1, fcMerged.tileY());
+                // 【别放进步伐里】合体块是 side×side：电源要摆在它左边一整块之外的格子，
+                // 摆进去会把合体方块自己顶掉（drive 的 place 会强制 setBlock）。
+                place(ps, fcMerged.tileX() - Math.max(fcMerged.block.size, 1), fcMerged.tileY());
             // 再贴一个原版 heat-source（不吃料、立刻产热）：让 display 的"热量"条有真实数字
             try {
                 Block hs = Vars.content.block("heat-source");
@@ -3542,18 +3925,34 @@ public class Driver extends Mod{
             // 才画得出来 —— 截图里"合体块每格有没有在画抽屉（而不是一张死图标）"就看这一步。
             try {
                 fcMerged.liquids.add(mindustry.content.Liquids.water, 4000f); // 会被 tick 裁到池上限
-                Log.info("[drv] 合体工厂灌水: 池里 water=@ 池液体容量=@", fcMerged.liquids.get(mindustry.content.Liquids.water),
+                // 再灌一种**不同**的液体（渣）：验"每格画自己那种液体"（用户报的"全都画同一种"）
+                fcMerged.liquids.add(mindustry.content.Liquids.slag, 1200f);
+                Log.info("[drv] 合体工厂灌液体: water=@ slag=@ 池液体容量=@",
+                        fcMerged.liquids.get(mindustry.content.Liquids.water),
+                        fcMerged.liquids.get(mindustry.content.Liquids.slag),
                         combineCall("combine.production.SuperCombineFactory", "liquidCapOf",
                                 new Class<?>[] { Building.class }, fcMerged));
             } catch (Throwable t) {
                 Log.err("[drv] 合体工厂灌水失败", t);
             }
             // 相机放在"合体块 + 右边那台原版参照机"中间，一张图里直接对比
-            Core.camera.position.set((fcMerged.x + (fcOx + 17) * 8f) / 2f, fcMerged.y + 12f);
+            Core.camera.position.set((fcMerged.x + (fcOx + 20) * 8f) / 2f, fcMerged.y + 12f);
+            // 【逐格核对缩放】再挂一个镜头锁 + 放大：用户报的"某些工厂缩放不对"必须放大才看得清
+            installFactoryCamLock();
             Log.info("[drv] 合体工厂落地: 格数=@ 位置=@,@", combineCall(
                     "combine.production.SuperCombineFactory", "loadedCells",
                     new Class<?>[] { Building.class }, fcMerged),
                     fcMerged.tileX(), fcMerged.tileY());
+            // 诊断：config 到底应用上了没（layout/sources/filledCount）—— "格数=0 / 原料没吃完"
+            // 这类问题一眼看出卡在"配置没到"还是"原料核不中"。
+            try {
+                Object lay = fcMerged.getClass().getField("layout").get(fcMerged);
+                Object src = fcMerged.getClass().getField("sources").get(fcMerged);
+                Object filled = fcMerged.getClass().getMethod("filledCount").invoke(fcMerged);
+                Log.info("[drv] 合体工厂诊断: layout=[@] sources=[@] filled=@", lay, src, filled);
+            } catch (Throwable t) {
+                Log.err("[drv] 合体工厂诊断失败", t);
+            }
             Object[] arr = (Object[]) fcMerged.getClass().getField("cells").get(fcMerged);
             Object[] bs = (Object[]) fcMerged.getClass().getField("cellBlocks").get(fcMerged);
             // 诊断：这一格方块的 drawer 部件都是什么（用户报的 drawer 相关）
@@ -3593,9 +3992,34 @@ public class Driver extends Mod{
                 }
                 Object k = combineCall("combine.production.SuperCombineFactory", "cellScale",
                         new Class<?>[] { Block.class }, b);
+                // 【用户报的"phase-weaver / phase-synthesizer / sporePress 缩放还是有问题"】：
+                // cellScale 只看方块主贴图宽度；把这些抽屉真正会画出来的图（icons）宽度也打出来，
+                // 就能看出"主贴图 64 但 weave/piston 是 96/128"这种"按主贴图缩、零件还是大"的情况。
+                int maxIcon = -1;
+                try {
+                    Object dr = b.getClass().getField("drawer").get(b);
+                    if (dr instanceof mindustry.world.draw.DrawBlock db) {
+                        var icons = db.icons(b);
+                        if (icons != null)
+                            for (var r : icons)
+                                if (r != null && r.found())
+                                    maxIcon = Math.max(maxIcon, r.width);
+                    }
+                } catch (Throwable ignored) {
+                }
                 sb.append(b.name).append("(size=").append(b.size)
                     .append(",region=").append(b.region == null ? -1 : b.region.width)
+                    .append(",maxIcon=").append(maxIcon)
+                    .append(",full=").append(b.fullIcon == null ? -1 : b.fullIcon.width)
                     .append(",k=").append(k).append("),");
+                // 抽屉里**每一张**贴图的宽度（weave / glow / piston / heat 这些不在 icons() 里的也要看）
+                try {
+                    Object dr = b.getClass().getField("drawer").get(b);
+                    StringBuilder rb = new StringBuilder();
+                    dumpRegionSizes(dr, rb);
+                    Log.info("[drv] 贴图尺寸 @: @", b.name, rb.toString());
+                } catch (Throwable ignored) {
+                }
             }
             Log.info("[drv] 合体工厂 cells=@ blocks=[@]", arr.length, sb.toString());
             // 原料必须都没了
@@ -3616,6 +4040,55 @@ public class Driver extends Mod{
     }
 
     /** 把方块自己的 buildConfiguration 表（点方块弹出的那张）放进对话框截图。 */
+    /** 递归打印一个抽屉（含 DrawMulti 子抽屉 / DrawBlockParts）里所有 TextureRegion 字段的尺寸。 */
+    /** 把镜头钉在合体块上并放大（逐格核对缩放用）。 */
+    static void installFactoryCamLock() {
+        var t = new arc.scene.ui.layout.Table();
+        t.touchable = arc.scene.event.Touchable.disabled;
+        t.update(() -> {
+            if (fcMerged != null && fcMerged.isValid()) {
+                Core.camera.position.set(fcMerged.x, fcMerged.y);
+                // arc 的 Camera 没有 zoom 字段：直接缩小"可见世界范围"就是放大
+                Core.camera.width = 40f;
+                Core.camera.height = 30f;
+            }
+        });
+        Vars.ui.hudGroup.addChild(t);
+    }
+
+    static void dumpRegionSizes(Object o, StringBuilder sb) {
+        if (o == null)
+            return;
+        sb.append(o.getClass().getSimpleName()).append('{');
+        for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass())
+            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                if (!arc.graphics.g2d.TextureRegion.class.isAssignableFrom(f.getType()))
+                    continue;
+                try {
+                    f.setAccessible(true);
+                    Object r = f.get(o);
+                    if (r instanceof arc.graphics.g2d.TextureRegion tr)
+                        sb.append(f.getName()).append('=').append(tr.found() ? tr.width : -1).append(' ');
+                } catch (Throwable ignored) {
+                }
+            }
+        sb.append("} ");
+        try {
+            Object arr = o.getClass().getField("drawers").get(o);
+            if (arr instanceof Object[] a)
+                for (Object c : a)
+                    dumpRegionSizes(c, sb);
+        } catch (Throwable ignored) {
+        }
+        try {
+            Object arr = o.getClass().getField("parts").get(o);
+            if (arr instanceof Iterable<?> it)
+                for (Object c : it)
+                    dumpRegionSizes(c, sb);
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** 世界里现在有几台组合工厂（驱动检查用）。 */
     static int countMerged() {
         int n = 0;
