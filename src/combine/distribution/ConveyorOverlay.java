@@ -5,6 +5,7 @@ import arc.Events;
 import arc.math.Mathf;
 import arc.math.geom.Point2;
 import arc.struct.IntIntMap;
+import arc.struct.ObjectMap;
 import arc.struct.Seq;
 import arc.util.Log;
 import mindustry.Vars;
@@ -43,6 +44,63 @@ import mindustry.world.Tile;
 public class ConveyorOverlay {
   /** 最多叠几层（1 层 = 原速）。 */
   public static final int MAX_LAYERS = 5;
+  /** 设置项 key：组合传送带最大堆叠层数（滑块 1..10，默认 {@link #MAX_LAYERS}，即时生效）。 */
+  public static final String SETTING_MAX_LAYERS = "combine-conveyor-max-layers";
+  /** 单独配置（按传送带名字）的存储键。 */
+  static final String CUSTOM_KEY = "combine-conveyor-layer-data";
+  /** 单独配置：方块名 → 自定义上限（0 / 缺失 = 未配置，走全局滑块默认）。 */
+  public static final ObjectMap<String, Integer> customLayers = new ObjectMap<>();
+  private static boolean customLoaded = false;
+
+  /** 设置值（无头 / 未配置时回默认）。 */
+  public static int settingMaxLayers() {
+    return Mathf.clamp(Core.settings.getInt(SETTING_MAX_LAYERS, MAX_LAYERS), 1, 10);
+  }
+
+  /** 读入单独配置（幂等）。 */
+  public static void loadLayers() {
+    if (customLoaded)
+      return;
+    customLoaded = true;
+    customLayers.clear();
+    if (Core.settings == null)
+      return;
+    String raw = Core.settings.getString(CUSTOM_KEY, "");
+    if (raw.isEmpty())
+      return;
+    for (String line : raw.split("\n")) {
+      if (line.trim().isEmpty())
+        continue;
+      int eq = line.indexOf('=');
+      if (eq <= 0)
+        continue;
+      try {
+        customLayers.put(line.substring(0, eq).trim(), Integer.parseInt(line.substring(eq + 1).trim()));
+      } catch (Throwable t) {
+        Log.err("[combine] 读取传送带堆叠配置失败: " + line, t);
+      }
+    }
+  }
+
+  public static void saveLayers() {
+    if (Core.settings == null)
+      return;
+    StringBuilder sb = new StringBuilder();
+    for (var e : customLayers.entries()) {
+      if (sb.length() > 0)
+        sb.append('\n');
+      sb.append(e.key).append('=').append(e.value);
+    }
+    Core.settings.put(CUSTOM_KEY, sb.toString());
+    Core.settings.saveValues();
+  }
+
+  /** 某传送带的单独上限（0 = 未配置，用全局滑块默认）。 */
+  public static int customLayersOf(Block block) {
+    if (block == null || block.name == null)
+      return 0;
+    return customLayers.get(block.name, 0);
+  }
   /**
    * 预设计划的旋转偏移：{@code 方向 + 4}。
    * {@code Mathf.mod(rotation, 4)} 之后还是同一个方向，但能让 {@code Build.validPlace} 把
@@ -132,15 +190,10 @@ public class ConveyorOverlay {
         || block instanceof CombinedStackConveyor;
   }
 
-  /** 方块自己的层数上限（没写就是 {@link #MAX_LAYERS}）。 */
+  /** 方块层数上限：单独配置（{@link #customLayers}）优先，否则走全局滑块默认（{@link #SETTING_MAX_LAYERS}）。 */
   public static int maxLayers(Block block) {
-    if (block instanceof CombinedConveyor c)
-      return c.maxLayers;
-    if (block instanceof CombinedDuct d)
-      return d.maxLayers;
-    if (block instanceof CombinedStackConveyor s)
-      return s.maxLayers;
-    return MAX_LAYERS;
+    int custom = customLayersOf(block);
+    return custom > 0 ? Mathf.clamp(custom, 1, 10) : settingMaxLayers();
   }
 
   /**
