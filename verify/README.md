@@ -307,3 +307,24 @@ verify/lagnet-selftest.py --count 3000 --rate 150 --latency 200   # 压更狠一
 ```bash
 DRV_UISCALE=200 verify/run-client.sh mx /tmp/mp_coop/data list   # 小逻辑宽度下看排版
 ```
+
+## 矿物阴影上的钻头：预设/虚影要和落地后一致（2026-10-09）
+
+用户报"阴影上建造合体钻头的时候预设直接画 1x1，建造后钻头就在预设位置"。两条根因都在绘制：
+
+1. **`Draw.scl` 字段是死的**：arc 的 `Draw.rect(region,x,y)` 用的是 `xscl/yscl`，
+   `Draw.scl` 这个字段**全库没有任何地方读**（`javap -c arc.graphics.g2d.Draw` 里只有 `putstatic`、
+   没有 `getstatic`）。`CombinedDrillBuild.draw()` 原来写的是 `Draw.scl = oldScl * k` —— 等于没缩，
+   1x1 的压格钻头把原钻头 size×size 的大图直接铺出来。改成和其它压格方块（SuperTurret）同口径：
+   `Draw.scl(k)` 临时乘 xscl/yscl，画完 `Draw.scl(ox, oy)` 还原。
+2. **预设虚影画的是原钻头的整图**：`drawPlanRegion` 走原版 → 画 `fullIcon`（还是那张 size×size 的图），
+   而压格版本是 1x1 的方块，于是"1x1 的框 + 旁边挂着半截钻头"。现在 `CombinedDrill.drawPlanRegion`
+   按 `1/原size` 缩着画落地后静止时那几张图（本体 + 各模式的顶盖），`drawPlanConfig` 的中心矿色块同理；
+   真·原版钻头**悬停在阴影上**时虚影也直接按压格版本画（`planScaleFor` 里查 `OreShadow.covers`），
+   所见即所得。
+
+核对：`verify/run-client.sh vanilla /tmp/mp_min/data shadow`（只需 combine，不必装废土科技，快很多）——
+流水线里的 `shadow_preset`（排队那一帧）和新增的 `shadow_preset_ghost`（把建造单位挪远、让 plan
+停在队列里不施工，截纯预设那一帧）应当都是"缩进 1 格的钻头"，和 `shadow_drill`（落地后）一致；
+对照：旧包同一格是"1x1 空框 + 外面挂着大图"。
+逻辑回归 `verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.ShadowDrillTest`：38/38 PASS。

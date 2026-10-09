@@ -3383,13 +3383,20 @@ public class Driver extends Mod{
             case 10 -> shadowFrameFinish();
             case 12 -> shot("shadow_zone");
             case 14 -> shadowDropDrill();
+            // 【预设那一帧】队列里的那颗 plan（用户说的"预设"）到底画成什么：1x1 的方块 + 哪张图？
+            case 15 -> shot("shadow_preset");
             // 【真·落地检查】把一台钻头**按真人的路子**排进建造队列（player.unit().addBuild），
             // 让游戏自己走 validPlace + 施工那一步 —— 用户报的"阴影上摆钻头、点建造后钻头直接消失"
             // 就是这一步失败（hidden 方块默认 isPlaceable()=false / offset 偏半格导致 bounds 不过）。
             case 18 -> shadowVerifyPlaced("排队后");
             case 24 -> shadowVerifyPlaced("等施工后");
             case 26 -> shot("shadow_drill");
-            case 30 -> {
+            // 【预设虚影单独验】再排一颗（阴影上的空位）后把建造单位**挪远**，让 plan 停在队列里
+            // （不施工）——这样截到的就是纯"预设"那一帧：压格钻头的虚影该是"缩进 1 格的钻头"，
+            // 不是"1x1 的空框 + 旁边挂着原来那张大图"（用户 2026-10-09 报的）。
+            case 28 -> shadowQueueGhost();
+            case 30 -> shot("shadow_preset_ghost");
+            case 32 -> {
                 Log.info("[drv] shadow 模式结束");
                 Core.app.exit();
             }
@@ -3481,8 +3488,15 @@ public class Driver extends Mod{
             Class<?> p = Class.forName("combine.production.OreShadowPlacer", true, ml);
             invokeStatic(p, "finish", null);
             frameOnce(p, shOx + 8, shOy + 7, shOx + 11, shOy + 9);
-            Log.info("[drv] 矿物阴影框选完成（L 形）: 记下 @ 格", invokeStatic(Class.forName(
-                    "combine.production.OreShadow", true, ml), "size", null));
+            // 【别依赖 placer 的 finish】OreShadowPlacer.update 每帧会按触摸状态复位 sx/sy/ex/ey，
+            // 驱动没有真触摸 → 第一笔经常被复位掉（实测只记下第二笔的 12 格）。这里直接调
+            // OreShadow.toggle 把"L 形"两笔都标上，保证"阴影上一定盖住钻头的地基"。
+            Class<?> sh = Class.forName("combine.production.OreShadow", true, ml);
+            invokeStatic(sh, "toggle", new Class<?>[]{int.class, int.class, int.class, int.class},
+                    shOx + 2, shOy + 2, shOx + 11, shOy + 6);
+            invokeStatic(sh, "toggle", new Class<?>[]{int.class, int.class, int.class, int.class},
+                    shOx + 8, shOy + 7, shOx + 11, shOy + 9);
+            Log.info("[drv] 矿物阴影（L 形）: 记下 @ 格", invokeStatic(sh, "size", null));
         } catch (Throwable t) {
             Log.err("[drv] shadowFrameFinish failed", t);
         }
@@ -3523,10 +3537,20 @@ public class Driver extends Mod{
                     shPlanY = plan.y;
                     shPlanBlock = plan.block;
                     Vars.player.unit().addBuild(plan);
-                    Log.info("[drv] 阴影上的第 1 台钻头排队给游戏自己建：plan=@ @,@（validPlace=@）",
-                            plan.block.name, plan.x, plan.y,
+                    // 【用户报的"预设直接画 1x1"】把队列里那颗 plan（= 预设）到底长什么样打出来：
+                    // 方块名/size、以及绘制"预设"用的 fullIcon/uiIcon/region 有没有加载、多大。
+                    Log.info("[drv] 阴影上的第 1 台钻头排队给游戏自己建：plan=@ size=@ @,@（validPlace=@）"
+                            + " | 预设贴图 fullIcon=@ @x@ uiIcon=@ region=@ @x@",
+                            plan.block.name, plan.block.size, plan.x, plan.y,
                             mindustry.world.Build.validPlace(plan.block, Team.sharded, plan.x, plan.y,
-                                    plan.rotation, true, false));
+                                    plan.rotation, true, false),
+                            plan.block.fullIcon != null && plan.block.fullIcon.found(),
+                            plan.block.fullIcon == null ? 0 : plan.block.fullIcon.width,
+                            plan.block.fullIcon == null ? 0 : plan.block.fullIcon.height,
+                            plan.block.uiIcon != null && plan.block.uiIcon.found(),
+                            plan.block.region != null && plan.block.region.found(),
+                            plan.block.region == null ? 0 : plan.block.region.width,
+                            plan.block.region == null ? 0 : plan.block.region.height);
                 } else {
                     Building b = place(plan.block, plan.x, plan.y);
                     if (first == null)
@@ -3543,6 +3567,30 @@ public class Driver extends Mod{
     }
 
     /** 把"正在框选"钉住一帧（驱动专用，真人玩家的建造单位不会有这个问题）。 */
+    /**
+     * 在阴影上排一颗钻头的 plan，然后立刻把建造单位挪到远处 —— 让这颗 plan **停在队列里不施工**，
+     * 这样才能截到纯"预设"（虚影）那一帧。plan 走的是和真人一样的路（onNewPlan 压格）。
+     */
+    static void shadowQueueGhost() {
+        try {
+            Block drill = Vars.content.block("mechanical-drill");
+            if (drill == null || Vars.player == null || Vars.player.unit() == null)
+                return;
+            Class<?> cd = Class.forName("combine.production.CombinedDrill", true, ml);
+            var m = cd.getMethod("onNewPlan", mindustry.entities.units.BuildPlan.class);
+            m.setAccessible(true);
+            mindustry.entities.units.BuildPlan plan =
+                    new mindustry.entities.units.BuildPlan(shOx + 6, shOy + 3, 0, drill);
+            m.invoke(drill, plan);
+            Vars.player.unit().addBuild(plan);
+            Log.info("[drv] 预设虚影: 排队 plan=@ size=@ @,@", plan.block.name, plan.block.size, plan.x, plan.y);
+            // 挪远：施工要求单位在 buildRange 内，挪远后这颗 plan 就一直是"预设"状态
+            Vars.player.unit().set(shOx * 8f + 600f, shOy * 8f + 600f);
+        } catch (Throwable t) {
+            Log.err("[drv] shadowQueueGhost failed", t);
+        }
+    }
+
     static void shadowPinFrame() {
         try {
             Class<?> p2 = Class.forName("combine.production.OreShadowPlacer", true, ml);
