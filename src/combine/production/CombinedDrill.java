@@ -530,12 +530,13 @@ public class CombinedDrill extends Block {
 
         // 压格版本的中心色块也要缩进这一格（和 drawPlanRegion 同一个系数）
         float k = planScaleFor(plan.x, plan.y);
+        float px = landingX(plan), py = landingY(plan);
         float ox = Draw.xscl, oy = Draw.yscl;
         try {
             if (k != 1f)
                 Draw.scl(k);
             Draw.tint(returnItem.color);
-            Draw.rect(itemRegion, plan.drawx(), plan.drawy());
+            Draw.rect(itemRegion, px, py);
             Draw.color();
         } catch (Throwable ignored) {
         } finally {
@@ -562,6 +563,26 @@ public class CombinedDrill extends Block {
     }
 
     /**
+     * 压格钻头**虚影的落点**（世界坐标）：不是原钻头那 size×size 地基的中心，而是
+     * "落地后这一格"的中心 —— 自己就是压格版本时 = 锚点那一格；原版钻头悬停在阴影上时
+     * = {@link OreShadow#freeSpotFor} 算出来的空位（和 {@code onNewPlan} 落地用的是同一个口径），
+     * 所以虚影画在哪就真落在哪，"像放一个真正的 1x1 建筑一样"。
+     */
+    public float landingX(BuildPlan plan) {
+        if (shadowShrunk)
+            return plan.drawx();
+        int[] spot = OreShadow.freeSpotFor(plan.x, plan.y, mineSize());
+        return (spot == null ? plan.x : spot[0]) * tilesize;
+    }
+
+    public float landingY(BuildPlan plan) {
+        if (shadowShrunk)
+            return plan.drawy();
+        int[] spot = OreShadow.freeSpotFor(plan.x, plan.y, mineSize());
+        return (spot == null ? plan.y : spot[1]) * tilesize;
+    }
+
+    /**
      * 【用户报的"阴影上建造合体钻头的时候预设直接画 1x1"】预设虚影要和落地后的样子一致：
      * 原版 {@code drawPlanRegion} 画的是 {@code fullIcon} —— 那还是**原钻头**那张 size×size 的整图，
      * 而压格版本是 1x1 的方块，于是虚影要么伸出一格、要么只剩一个 1x1 的空框。
@@ -574,14 +595,15 @@ public class CombinedDrill extends Block {
             super.drawPlanRegion(plan, list);
             return;
         }
+        float px = landingX(plan), py = landingY(plan);
         float ox = Draw.xscl, oy = Draw.yscl;
         try {
             Draw.scl(k);
             if (region != null && region.found())
-                Draw.rect(region, plan.drawx(), plan.drawy());
+                Draw.rect(region, px, py);
             TextureRegion top = mode == Mode.beam ? topRegionBeam : topRegion;
             if (top != null && top.found())
-                Draw.rect(top, plan.drawx(), plan.drawy(), mode == Mode.beam ? plan.rotation * 90f : 0f);
+                Draw.rect(top, px, py, mode == Mode.beam ? plan.rotation * 90f : 0f);
         } catch (Throwable ignored) {
         } finally {
             Draw.scl(ox, oy);
