@@ -658,6 +658,15 @@ public class Main extends Mod {
         // 【必须用 hidden】以前写成 requirements(Category, ItemStack.with())：那个重载会把
         // buildVisibility 覆盖成 shown，于是这个 0 造价的方块直接进了建造菜单（用户可见的 bug）。
         f.requirements(Category.production, BuildVisibility.hidden, new ItemStack[0]);
+        // 【战役模式必须】本方块是 Mod.init() 里现造的隐藏方块，没进科技树、永远不会被研究 ——
+        // 而原版虚影链路 control.input.useSchematic → Schematics.toPlans 会 removeAll 掉
+        // `!block.unlockedNow()` 的计划，UnlockableContent.unlockedNow() 在战役里
+        // （state.isCampaign() = rules.sector != null）只认 unlocked/alwaysUnlocked：
+        // 少了这一行，战役图里框选完**虚影根本不会生成**、点下去什么也不发生
+        // （用户报的"战役模式下工厂无法合体"）。沙盒/自定义图 isCampaign()=false，
+        // unlockedNow() 恒真，所以只有战役会坏。超级组合炮台当年也是靠这一行才在战役里能用
+        // （见 createSuperTurrets）。hidden 方块不进建造菜单/数据库，这一行没有别的副作用。
+        f.alwaysUnlocked = true;
         f.init();
         f.postInit();
         // 血量/液体产物的信息条：原版是在 afterPatch 里建的，我们现造的方块要自己调一次
