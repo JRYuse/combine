@@ -232,6 +232,24 @@ public class ShadowDrillTest implements ApplicationListener {
       check("压格版本不进建造菜单（visibility=" + small.buildVisibility + "）",
           small.buildVisibility == mindustry.world.meta.BuildVisibility.hidden);
       check("压格版本有名字（" + small.localizedName + "）", small.localizedName != null);
+      // 【用户 2026-10-10 报"放置合体钻头还不消耗材料"】压格版本必须保留原钻头的造价。
+      // 这份 requirements 是两处的唯一口径：客户端 BuilderComp 的"核心有没有料"那一关（缺料就不施工），
+      // 以及原版拆除时 ConstructBuild 按 requirements 退料（下面 B2 段锁的就是这一条）。
+      {
+        mindustry.type.ItemStack[] req = small.requirements;
+        StringBuilder sb = new StringBuilder();
+        int sum = 0;
+        if (req != null)
+          for (mindustry.type.ItemStack st : req) {
+            sb.append(st.item.name).append('=').append(st.amount).append(' ');
+            sum += st.amount;
+          }
+        System.out.println("[SD] 压格版本造价: [" + sb.toString().trim() + "]");
+        check("压格版本保留原钻头造价（放合体钻头要花材料，共 " + sum + "）",
+            req != null && req.length > 0 && sum > 0 && drill.requirements != null
+                && req.length == drill.requirements.length);
+      }
+      check("压格版本给了解锁兜底（alwaysUnlocked，战役/联机不会被当成没解锁）", small.alwaysUnlocked);
 
       Block core = Vars.content.block("core-shard");
       place(core, 30, 150);
@@ -331,6 +349,11 @@ public class ShadowDrillTest implements ApplicationListener {
       int marked = size();
       Class<?> clsChunk = Class.forName("combine.production.OreShadow$Chunk", true, ml);
       SaveFileReader.CustomChunk w = (SaveFileReader.CustomChunk) clsChunk.getDeclaredConstructor().newInstance();
+      // 【用户 2026-10-10 报"联机的时候客户端不能合体钻头"】阴影块必须进**入服世界流**：
+      // 原版 NetworkIO.writeWorld 只带 writeNet()==true 的自定义块（见 SaveVersion.writeCustomChunks）。
+      // 以前是 false（靠 PlayerJoin 那张包补发），可那张包在世界数据发完的同一瞬间就发出去了，
+      // 客户端还没读完世界流 → receiveZone 里 world.tile(...) 拿不到东西 → 整片阴影丢掉。
+      check("阴影块要进联机入服世界流（writeNet=true）", w.writeNet());
       ByteArrayOutputStream bos = new ByteArrayOutputStream();
       w.write(new DataOutputStream(bos));
       SaveFileReader.CustomChunk rd = (SaveFileReader.CustomChunk) clsChunk.getDeclaredConstructor().newInstance();
@@ -459,26 +482,32 @@ public class ShadowDrillTest implements ApplicationListener {
       check("中心画的是自己踩着的铅（" + dnPb + "）", dispPb == Items.lead);
       check("挖的也是铅（" + domPbName + "）", domPb == Items.lead);
 
-      // ---------- I：没满就能在任意位置摆，落点自动塞进空位 ----------
+      // ---------- I：点哪落哪（用户 2026-10-10 报"放置位置和点击位置不一样"） ----------
+      // 以前：地基压到阴影就算合法，落点由 OreShadow.freeSpotFor 挪到最近的空位 —— 点 A 出 B。
+      // 现在：只有"点到的这一格自己在阴影里、而且是空的"才合法，落点就是这一格；
+      //       点到已被占的格子 = 不放（不再自动挪走）。
       callStatic(clsShadow, "clear", null);
       clearArea();
       floor(40, 40, 110, 90, Blocks.oreCopper);
       mark(60, 70, 62, 72); // 3x3 = 9 格
       place(small, 62, 72); // 先占掉一格
       run(3);
-      boolean vpOccupied = mindustry.world.Build.validPlace(drill, Team.sharded, 62, 72, 0, true, false);
-      check("阴影上点在**已被占**的格子上也算合法（validPlace=" + vpOccupied + "）", vpOccupied);
-      mindustry.entities.units.BuildPlan aim = new mindustry.entities.units.BuildPlan(62, 72, 0, drill);
+      boolean vpFree = mindustry.world.Build.validPlace(drill, Team.sharded, 61, 71, 0, true, false);
+      check("点在阴影空位上合法（validPlace=" + vpFree + "）", vpFree);
+      mindustry.entities.units.BuildPlan aim = new mindustry.entities.units.BuildPlan(61, 71, 0, drill);
       onNewPlan.invoke(drill, aim);
-      boolean spotFree = aim.block == small && Vars.world.tile(aim.x, aim.y).build == null;
-      Object onZone = callStatic(clsShadow, "covers",
-          new Class<?>[] { int.class, int.class, int.class }, aim.x, aim.y, 2);
-      System.out.println("[SD] 点(62,72) → 落点(" + aim.x + "," + aim.y + ") 方块="
-          + (aim.block == null ? "null" : aim.block.name) + " 在阴影里=" + onZone);
-      check("落点被挪到该阴影里的空位、且换成压格版本", spotFree && Boolean.TRUE.equals(onZone)
-          && !(aim.x == 62 && aim.y == 72));
+      System.out.println("[SD] 点(61,71) → 落点(" + aim.x + "," + aim.y + ") 方块="
+          + (aim.block == null ? "null" : aim.block.name));
+      check("点在阴影空位上：位置不动、只换成压格版本（" + aim.x + "," + aim.y + "）",
+          aim.block == small && aim.x == 61 && aim.y == 71);
+      boolean vpOccupied = mindustry.world.Build.validPlace(drill, Team.sharded, 62, 72, 0, true, false);
+      System.out.println("[SD] 点在已被占的阴影格 (62,72)：validPlace=" + vpOccupied);
+      check("点在已被占的阴影格上不放（不再自动挪到空位）", !vpOccupied);
+      mindustry.entities.units.BuildPlan occupied = new mindustry.entities.units.BuildPlan(62, 72, 0, drill);
+      onNewPlan.invoke(drill, occupied);
+      check("已被占的那格不会换成压格版本（plan 原样留着，交给原版判非法）", occupied.block == drill);
 
-      // 把 3x3 区域塞满 → 再点就不允许了（"只要阴影区域没满"）
+      // 把 3x3 区域塞满 → 再点就不允许了（每一格都被占）
       for (int y = 70; y <= 72; y++)
         for (int x = 60; x <= 62; x++)
           if (Vars.world.tile(x, y).build == null)
@@ -487,6 +516,48 @@ public class ShadowDrillTest implements ApplicationListener {
       boolean vpFull = mindustry.world.Build.validPlace(drill, Team.sharded, 61, 71, 0, true, false);
       System.out.println("[SD] 区域塞满后再点：validPlace=" + vpFull);
       check("阴影区域满了就不能再摆（validPlace=" + vpFull + "）", !vpFull);
+
+      // ---------- L：拆除压格钻头要退回原钻头的造价（用户 2026-10-10） ----------
+      // 走原版完整链路：beginBreak 把这一格切成"正在拆"（ConstructBuild，current = 被拆的方块），
+      // 再把进度推到 0 —— 原版这时候按 current.requirements × buildCostMultiplier ×
+      // deconstructRefundMultiplier 往核心退料。以前压格版本的 requirements 是空的（0 造价），
+      // 于是"放置不要钱、拆了也不退钱"；现在两边都跟着原钻头走。
+      callStatic(clsShadow, "clear", null);
+      clearArea();
+      // 上面 clearArea 会把开头那台核心一起清掉（范围含 30,150），退款要往核心退料，这里补一台
+      place(core, 30, 150);
+      run(5);
+      floor(40, 40, 110, 90, Blocks.oreCopper);
+      mark(90, 70, 94, 74);
+      Building ref = place(small, 90, 70);
+      run(5);
+      check("拆除用例：压格钻头已摆好", ref != null && ref.block == small);
+      {
+        mindustry.type.ItemStack req0 = small.requirements[0];
+        float rmul = Vars.state.rules.buildCostMultiplier * Vars.state.rules.deconstructRefundMultiplier;
+        int expect = Math.round(req0.amount * rmul);
+        mindustry.world.blocks.storage.CoreBlock.CoreBuild coreBuild = Team.sharded.data().core();
+        int beforeRef = coreBuild == null ? -1 : coreBuild.items.get(req0.item);
+        mindustry.world.Build.beginBreak(null, Team.sharded, 90, 70);
+        Building mid = Vars.world.build(90, 70);
+        String cur = mid instanceof mindustry.world.blocks.ConstructBlock.ConstructBuild cbb
+            ? (cbb.current == null ? "null" : cbb.current.name)
+            : "-";
+        if (mid instanceof mindustry.world.blocks.ConstructBlock.ConstructBuild cbb) {
+          mindustry.gen.Unit builder = mindustry.content.UnitTypes.poly.create(Team.sharded);
+          builder.set(90 * 8f, 70 * 8f);
+          for (int i = 0; i < 40 && Vars.world.build(90, 70) == cbb; i++)
+            cbb.deconstruct(builder, coreBuild, 0.1f);
+        }
+        int afterRef = coreBuild == null ? -1 : coreBuild.items.get(req0.item);
+        System.out.println("[SD] 拆除退款: 格子=" + (mid == null ? "null" : mid.getClass().getSimpleName())
+            + " current=" + cur + "，" + req0.item.name + " 核心 " + beforeRef + " → " + afterRef
+            + "（期望 +" + expect + "）");
+        check("拆除压格钻头退还原钻头造价（" + req0.item.name + " +" + (afterRef - beforeRef) + "）",
+            expect > 0 && afterRef - beforeRef == expect);
+        Vars.world.tile(90, 70).setBlock(Blocks.air);
+        run(3);
+      }
 
       System.out.println("[SD] RESULT " + (fail == 0 ? "ALL PASS" : (fail + " FAILED")) + " (pass=" + pass + ")");
       System.exit(fail == 0 ? 0 : 1);

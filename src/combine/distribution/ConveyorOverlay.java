@@ -2,11 +2,16 @@ package combine.distribution;
 
 import arc.Core;
 import arc.Events;
+import arc.graphics.Color;
+import arc.graphics.g2d.Draw;
+import arc.graphics.g2d.GlyphLayout;
 import arc.math.Mathf;
 import arc.math.geom.Point2;
+import arc.scene.ui.layout.Scl;
 import arc.struct.IntIntMap;
 import arc.struct.Seq;
 import arc.util.Log;
+import arc.util.pooling.Pools;
 import mindustry.Vars;
 import mindustry.entities.units.BuildPlan;
 import mindustry.game.EventType.LineConfirmEvent;
@@ -14,6 +19,7 @@ import mindustry.game.EventType.TapEvent;
 import mindustry.gen.Building;
 import mindustry.gen.Call;
 import mindustry.gen.Player;
+import mindustry.graphics.Layer;
 import mindustry.input.MobileInput;
 import mindustry.world.Block;
 import mindustry.world.Tile;
@@ -342,6 +348,49 @@ public class ConveyorOverlay {
             + maxLayers(block) + " 层（一次拖拽每格各叠一层）。";
       } catch (Throwable ignored) {
       }
+    }
+  }
+
+  /** 层数数字的画法（世界坐标小字）：口径抄原版 {@code Block.drawPlaceText}。 */
+  static final float badgeScale = 0.2f;
+
+  /**
+   * 【用户 2026-10-10】"组合传送带的数字显示放在**传送带身上**，而不是旁边"：
+   * 叠过层（layers &gt; 1）的带子，把**层数**数字画在它自己那一格的中心（= 传送带身上）。
+   *
+   * <p>只有 1 层（默认状态）不画 —— 不然满地图都是数字。数字跟着方块走，缩放/平移和贴图一致；
+   * 颜色走 {@code Fonts.outline}（自带描边），压在深色贴图上也能看清。
+   */
+  public static void drawLayerBadge(Building build, int layers) {
+    if (Vars.headless || build == null || build.block == null || layers <= 1)
+      return;
+    try {
+      var font = mindustry.ui.Fonts.outline;
+      if (font == null)
+        return;
+      String text = Integer.toString(layers);
+      boolean ints = font.usesIntegerPositions();
+      float z = Draw.z();
+      GlyphLayout layout = Pools.obtain(GlyphLayout.class, GlyphLayout::new);
+      try {
+        font.setUseIntegerPositions(false);
+        font.getData().setScale(badgeScale / Scl.scl(1f));
+        layout.setText(font, text);
+        // 带子本身画在 Layer.block - 0.5（原版 ConveyorBuild.draw 的 29.5），数字压在它上面一点点
+        Draw.z(Layer.block + 0.2f);
+        // 【必须把批颜色重置成不透明白】原版画建筑时可能留下 alpha=0/带色调的批颜色，
+        // 那样 font.draw 画出来是全透明的（实测：日志"画完了"但截图上一个字都看不到）。
+        Draw.color(Color.white);
+        font.setColor(Color.white);
+        font.draw(text, build.x - layout.width / 2f, build.y + layout.height / 2f);
+      } finally {
+        Pools.free(layout);
+        font.getData().setScale(1f);
+        font.setUseIntegerPositions(ints);
+        Draw.z(z);
+        Draw.color();
+      }
+    } catch (Throwable ignored) {
     }
   }
 }

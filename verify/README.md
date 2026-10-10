@@ -328,3 +328,54 @@ DRV_UISCALE=200 verify/run-client.sh mx /tmp/mp_coop/data list   # 小逻辑宽�
 停在队列里不施工，截纯预设那一帧）应当都是"缩进 1 格的钻头"，和 `shadow_drill`（落地后）一致；
 对照：旧包同一格是"1x1 空框 + 外面挂着大图"。
 逻辑回归 `verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.ShadowDrillTest`：38/38 PASS。
+
+## 2026-10-10 的一轮修复（合体钻头/合体工厂的账 + 联机入服 + 点哪落哪 + 传送带层数数字）
+
+用户一口气报了 7 条，这一轮落了 6 条（第 1 条"组合传送带转向会卡"见下"没复现"）：
+
+1. **放置合体钻头不消耗材料**（`Main.createShadowDrills`）：压格版本的 `requirements` 以前被
+   `requirements(Category, BuildVisibility, new ItemStack[0])` 清成了空表 —— 玩家摆下来的 1x1 钻头
+   不要钱。现在改成 `sh.requirements = cd.requirements.clone()`（并单独设 `category`/`buildVisibility`，
+   不能再调那个会顺手覆盖可见性的重载）。客户端 `BuilderComp` 的"核心有没有料"那一关、以及原版
+   拆除退款都读这份 requirements。
+2. **拆合体工厂/合体钻头要退物品**：钻头靠上面那份 requirements 走原版
+   `ConstructBuild.deconstruct`（`requirements × buildCostMultiplier × deconstructRefundMultiplier`）自动退；
+   组合工厂自己的 requirements 是空的（里面的工厂是合体时被吃掉的），所以在
+   `SuperCombineFactoryBuild.onDeconstructed` 里和超级组合炮台同一口径手动退
+   （`refundCellCosts()`，逐台格子工厂退到本队核心）。
+3. **联机时客户端不能合体钻头**（`OreShadow.Chunk.writeNet()` 改 `true`）：原版
+   `NetworkIO.writeWorld` 只带 `writeNet()==true` 的自定义块；以前阴影靠 `PlayerJoin` 补发，而那条包
+   在世界数据刚发完就发出去了，客户端还没读完世界流 → `receiveZone` 里 `world.tile(...)` 拿不到东西、
+   整片阴影被丢掉（中途入服的客户端看不到/用不了主机画的阴影）。现在阴影跟着入服世界流一起落地
+   （和 `ConveyorLayerState` 同一个做法），`PlayerJoin` 补发照旧留着兜底。
+   隐藏的压格方块同时补了 `alwaysUnlocked`（同组合工厂/超级炮台那个战役坑）。
+4. **合体钻头放置位置和点击位置不一样**：以前 `canPlaceOn` 允许"地基压到阴影就算"、`onNewPlan`
+   再 `freeSpotFor` 把落点挪到最近的空位 —— 点 A 出 B。现在只认**点到的这一格**：
+   自己在阴影里 + 这一格是空的才合法，落点就是这一格（点到已占的格子 = 不放）；
+   `landingX/Y` 也改成 `plan.x * tilesize`（不再用 `plan.drawx()` —— 2x2 钻头有半格偏移，
+   虚影/落地会和点击差半格）。
+5. **组合传送带的数字显示放在传送带身上**：`ConveyorOverlay.drawLayerBadge()` 把**层数**数字画在
+   带子自己那一格的中心（`Fonts.outline`，口径抄原版 `Block.drawPlaceText`），
+   `CombinedConveyor/CombinedDuct/CombinedStackConveyor` 的 build.draw 各调一次；只在
+   `layers > 1` 时画。踩过的坑：必须 `Draw.color(Color.white)` 把批颜色重置成不透明白，
+   否则原版画建筑留下的批颜色会让 `font.draw` 画出来是全透明的（日志"画完了"但截图一个字都没有）。
+
+验证（本机 Windows，headless 用 `Downloads\server-release.jar` 当游戏类，数据目录 `C:\tmp\cfv\data`，
+里面只装了 combine）：
+
+```
+javac -nowarn -cp <game.jar> -d verify\build\cfv verify\tests\<Test>.java
+java -cp "<game.jar>;verify\build\cfv" combine.dbg.<Test> C:\tmp\cfv\data
+```
+
+- `ShadowDrillTest` 45/45 PASS（新增：压格版本保留原钻头造价 + alwaysUnlocked + 阴影块 writeNet=true +
+  点空位不动/点已占不放 + 拆除退还原钻头造价 copper +6）
+- `FactoryCombineTest` PASS=68 FAIL=0（新增 6.5 段：拆除组合工厂退还原料工厂造价，核心 +141）
+- `ConveyorOverlayTest` 32/32 PASS（回归：叠层/存档/速度不受影响）
+- 真客户端：`verify/run-client.ps1 -Game vanilla -Mode conv` → `030_conv_world.png`、
+  `-Game mx` → `032_conv_world.png`：拉到试验带近景，带子上能看到 "2/2/3/2/2/2/2/2" 的层数数字；
+  `-Mode shadow` → `037/038/039_shadow_*.png`：预设虚影和落地后的钻头都在同一格（1x1、居中）。
+  （`conv` 场景顺手把镜头钉到试验带并拉近：以前镜头跟着玩家单位、试验带根本不在画面里。）
+- **没复现**：第 1 条"组合传送带在转向的时候会卡"——headless 实测直线/单个拐角/连拐 × 1 层/5 层，
+  通过量都和直线同量级（拐角 1 层 95 / 5 层 300，直线 93/300，均无卡死）；原地改方向（quickRotate）
+  后层数与速度也都保持（同一实例、层数 5、4 帧位移 0.7 不变）。需要用户补一句具体现象。

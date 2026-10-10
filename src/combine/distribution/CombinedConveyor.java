@@ -146,6 +146,8 @@ public class CombinedConveyor extends Conveyor {
       } finally {
         speed = keep;
       }
+      // 层数数字画在带子自己身上（用户 2026-10-10："数字显示放在传送带身上，而不是旁边"）
+      ConveyorOverlay.drawLayerBadge(this, layers);
     }
 
     @Override

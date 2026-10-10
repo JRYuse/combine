@@ -1007,6 +1007,69 @@ public class SuperCombineFactory extends Block {
       super.onDestroyed();
     }
 
+    /** 拆除时把里面每台工厂的**建造成本**退还给玩家（见 {@link #refundCellCosts()}）。 */
+    @Override
+    public void onDeconstructed(mindustry.gen.Unit unit) {
+      try {
+        refundCellCosts();
+      } catch (Throwable t) {
+        Log.err("[combine] 组合工厂：退还格子工厂造价失败", t);
+      }
+      super.onDeconstructed(unit);
+    }
+
+    /**
+     * 【用户 2026-10-10 报"拆除合体工厂的时候应该返回物品"】本方块自己的 requirements 是空的
+     * （{@code new ItemStack[0]}，见 {@code Main.createSuperCombineFactory}）：那些工厂是合体时被
+     * **吃掉**的，造价本来就花出去了 —— 可原版"按 deconstruct 的 requirements 退钱"读到空表，
+     * 一分不退（用户看到的就是"拆了组合工厂，材料全没了"）。
+     *
+     * <p>这里按原版 {@code ConstructBuild} 拆解完成的同一口径退：每台格子工厂的
+     * {@code requirements} × {@code rules.buildCostMultiplier} × {@code rules.deconstructRefundMultiplier}，
+     * 进本队核心（物品没解锁 / 核心装不下就不给，和原版一致）。和
+     * {@code SuperTurret.CombinedTurretBuild#refundCellCosts()} 完全同一套 —— 用户的同一条要求。
+     *
+     * <p>只退**造价**：池子里的物品/液体跟着方块一起走（拆了就没了，和原版拆一台装了货的工厂一样）。
+     * 想连里面的货一起拿回来就用面板上的「解体」（那会把每台工厂原样放回去）。
+     */
+    void refundCellCosts() {
+      ensureCells();
+      if (team == null || cellBlocks == null || cellBlocks.length == 0)
+        return;
+      mindustry.game.Rules rules = state == null ? null : state.rules;
+      float mul = rules == null ? 1f
+          : Math.max(0f, rules.buildCostMultiplier) * Math.max(0f, rules.deconstructRefundMultiplier);
+      if (mul <= 0f)
+        return;
+      mindustry.world.blocks.storage.CoreBlock.CoreBuild core = null;
+      try {
+        core = team.data().core();
+      } catch (Throwable ignored) {
+      }
+      if (core == null || core.items == null)
+        return;
+      for (Block cb : cellBlocks) {
+        if (cb == null || cb.requirements == null)
+          continue;
+        for (mindustry.type.ItemStack stack : cb.requirements) {
+          if (stack == null || stack.item == null)
+            continue;
+          int amount = Mathf.round(stack.amount * mul);
+          if (amount <= 0)
+            continue;
+          try {
+            if (!stack.item.unlockedNowHost())
+              continue;
+            boolean room = rules == null || rules.infiniteResources
+                || core.items.get(stack.item) < core.storageCapacity - amount;
+            if (room)
+              core.items.add(stack.item, amount);
+          } catch (Throwable ignored) {
+          }
+        }
+      }
+    }
+
     // ==================== 面板 / 悬浮信息 ====================
 
     @Override
