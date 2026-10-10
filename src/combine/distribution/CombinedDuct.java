@@ -85,6 +85,9 @@ public class CombinedDuct extends Duct {
       } finally {
         speed = keep;
       }
+      // 层数数字画在管道自己身上（只在正常那一趟画；under 那趟是垫底贴图）
+      if (!under)
+        ConveyorOverlay.drawLayerBadge(this, layers);
     }
   }
 }

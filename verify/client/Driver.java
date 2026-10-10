@@ -2592,7 +2592,15 @@ public class Driver extends Mod{
                     cb.handleStack(Items.copper, 1, null);
                 }
             }
-            Core.camera.position.set(64 * 8f, 60 * 8f + 20f);
+            // 【2026-10-10】镜头钉到这条试验带上并拉近，截图要能看清"带子上叠了几层"的数字
+            // （用户要求"数字显示放在传送带身上"）。以前镜头默认跟着玩家单位（在核心那边），
+            // 8 格试验带根本不在画面里，看不出层数、也看不清贴图/物品。
+            Core.settings.put("detach-camera", true); // 关掉"镜头跟随玩家"，否则每帧都会被拉回单位
+            Core.camera.position.set((60 + convRow.length / 2f) * 8f, 60 * 8f);
+            try {
+                Vars.renderer.setScale(3.5f);
+            } catch (Throwable ignored) {
+            }
         }catch(Throwable t){ Log.err("[drv] setupConvScene failed", t); }
     }
 

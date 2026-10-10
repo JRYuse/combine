@@ -74,5 +74,19 @@ public class CombinedStackConveyor extends StackConveyor {
         speed = keep;
       }
     }
+
+    @Override
+    public void draw() {
+      // 老规矩：画的时候也把方块级 speed 按层数放大（原版 draw 里的动画/物品插值都读它）
+      float keep = speed;
+      speed = keep * speedMul();
+      try {
+        super.draw();
+      } finally {
+        speed = keep;
+      }
+      // 层数数字画在带子自己身上（用户 2026-10-10："数字显示放在传送带身上，而不是旁边"）
+      ConveyorOverlay.drawLayerBadge(this, layers);
+    }
   }
 }

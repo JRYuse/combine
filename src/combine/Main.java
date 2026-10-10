@@ -792,7 +792,20 @@ public class Main extends Mod {
         sh.description = "压成 1 格的钻头（只出现在矿物阴影上）：挖矿速度仍按原来 "
             + cd.size + "x" + cd.size + " 每格都盖住了矿物计算。";
         sh.buildVisibility = BuildVisibility.hidden;
-        sh.requirements(Category.production, BuildVisibility.hidden, new ItemStack[0]);
+        // 【用户 2026-10-10 报"放置合体钻头还不消耗材料"】以前这里写
+        // {@code sh.requirements(Category.production, BuildVisibility.hidden, new ItemStack[0])} ——
+        // 那把造价整个清零了：玩家在阴影上摆下来的 1x1 钻头**不要钱**。改成保留原钻头那份造价
+        // （和玩家选的还是同一台钻头一个价）。这份 requirements 同时是两个地方的口径：
+        //   · 客户端 {@code BuilderComp} 的"核心有没有料"那一关（缺料就 stuck，不施工）；
+        //   · 拆除时原版 {@code ConstructBuild.deconstruct} 按 {@code requirements} 退料。
+        // 所以拆除合体钻头（用户 2026-10-10 报的"应该返回物品"）也是靠这一行拿到退款的。
+        // 注意：不能调 {@code requirements(...)} 那个重载 —— 它会把 buildVisibility 一起覆盖成 hidden 之外的值。
+        sh.category = cd.category;
+        sh.requirements = cd.requirements == null ? new ItemStack[0] : cd.requirements.clone();
+        // 【战役/联机也必须可用】和隐藏的组合工厂、超级组合炮台同一个坑：现造的隐藏方块没进科技树，
+        // 战役里 `unlockedNow()` 只认 unlocked/alwaysUnlocked —— 少了这一行，涉及"按解锁过滤"的
+        // 链路（蓝图/虚影、以及客户端自己那份解锁表）会把压格钻头当成没解锁的东西丢掉。
+        sh.alwaysUnlocked = true;
         sh.init();
         // 【offset 必须是 1x1 自己的值（0）】以前为了让贴图落在"原来那片地基的中心"把它设成
         // 原钻头的半格偏移 —— 结果 Block.bounds()/hitbox 整体偏半格，原版放置判据里

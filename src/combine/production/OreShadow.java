@@ -268,7 +268,12 @@ public class OreShadow {
 
   /**
    * 一块 size×size 的地基（锚点 {@code (ax,ay)}，和 {@code Tile.getLinkedTilesAs} 同口径）
-   * 有没有盖到阴影 —— 落地压格用它判断"这台钻头是不是摆在阴影上"。
+   * 有没有盖到阴影。
+   *
+   * <p>【2026-10-10 起放置不再用它】落地压格的口径改成 {@link #inSite}（只认点到的这一格，
+   * 见 {@code CombinedDrill.canPlaceOn}）—— 用户要求"点哪落哪"，以前"地基压到阴影就算合法、
+   * 再把落点挪到最近空位"的做法会让位置和点击对不上。这个方法留着给"这台钻头的地基压没压到
+   * 某片阴影"这类判断用。
    */
   public static boolean covers(int ax, int ay, int size) {
     if (marked.isEmpty())
@@ -430,9 +435,13 @@ public class OreShadow {
   }
 
   /**
-   * 【用户 2026-10-08】"只要阴影区域没满，可以在阴影任意位置建造钻头，造完的钻头塞阴影没有被覆盖的地方"。
+   * 找这片阴影里离 {@code (ax,ay)} 最近的**空位**。
    *
-   * @return 这片阴影里离 {@code (ax,ay)} 最近的**空位**（{@code {x,y}}）；这片已经满了返回 null。
+   * <p>【2026-10-10 起放置不再用它】用户后来要求"放置位置和点击位置要一样"，所以
+   * {@code CombinedDrill.onNewPlan} 不再把落点挪到空位（点到的这一格必须自己就是空的）。
+   * 这个方法留着当"这片阴影还剩哪些空位"的工具。
+   *
+   * @return {@code {x,y}}；这片已经满了返回 null。
    */
   public static int[] freeSpotFor(int ax, int ay, int size) {
     ensureSites();
@@ -554,7 +563,17 @@ public class OreShadow {
 
     @Override
     public boolean writeNet() {
-      return false;
+      // 【用户 2026-10-10 报"联机的时候客户端不能合体钻头"】必须进**入服世界流**。
+      //
+      // 原版 NetworkIO.writeWorld 只带 writeNet()==true 的自定义块（javap：
+      // SaveVersion.writeCustomChunks(out, true) 里 `if(net && !chunk.writeNet()) continue`）。
+      // 以前这里是 false，靠 PlayerJoin 事件补发 —— 可那条包是在服务端**刚发完世界数据**就发的，
+      // 客户端此刻还没把世界流读完（异步分块传），receiveZone 里 world.tile(...) 拿不到东西，
+      // 整片阴影被丢掉。表现就是用户报的：**中途入服的客户端看不到/用不了主机画的阴影**，
+      // 在阴影上摆钻头不缩成 1x1、也不并成一站（= "客户端不能合体钻头"）。
+      // 改成 true 后阴影跟着世界流一起落地（和 ConveyorLayerState 同一个理由、同一个做法）；
+      // PlayerJoin 那条补发照旧留着（服务端在玩家入服后又画了阴影的兜底）。
+      return true;
     }
 
     @Override

@@ -184,16 +184,17 @@ public class CombinedDrill extends Block {
             CombinedDrill target = shadowVariant;
             if (target == null)
                 return;
-            if (!OreShadow.covers(plan.x, plan.y, mineSize()))
+            Tile tile = plan.tile();
+            // 【用户 2026-10-10 报"合体钻头放置位置和点击位置不一样"】落点就是**点到的这一格**：
+            // plan.x/plan.y 不动（以前这里会 freeSpotFor 挪到最近的空位，于是点 A 出 B）。
+            // 只认"点到的这一格自己在阴影里"——那一格是不是空的，由 canPlaceOn/validPlace 那一关判。
+            if (tile == null || !OreShadow.inSite(tile))
                 return;
-            // 【用户 2026-10-09】"造完的钻头塞阴影没有被覆盖的地方"：点在哪无所谓，
-            // 落点换成这片阴影里最近的空位（锚点/方块一起改，plan 是拷贝，直接改就会发到服务端）。
-            int[] spot = OreShadow.freeSpotFor(plan.x, plan.y, mineSize());
-            if (spot == null)
-                return; // 这片阴影满了：保持原 plan（canPlaceOn 那一关已经判非法了）
+            // 这一格已经被占了（原版 validPlace 本来就判非法，正常流程到不了这儿）：
+            // 保持原 plan 不动，别把"压在别的东西上面"的计划也换成压格版本。
+            if (tile.build != null && !tile.build.dead())
+                return;
             plan.block = target;
-            plan.x = spot[0];
-            plan.y = spot[1];
         } catch (Throwable ignored) {
         }
     }
@@ -449,21 +450,13 @@ public class CombinedDrill extends Block {
 
     @Override
     public boolean canPlaceOn(Tile tile, Team team, int rotation) {
-        // 【用户 2026-10-09】"只要阴影区域没满，可以在阴影任意位置建造钻头，造完的钻头塞阴影没有被覆盖的地方"：
-        // 点在这片阴影上（地基压到阴影就算）时不再要求"脚下有矿"，只要求这片区域还有空位 ——
-        // 真正落点由 onNewPlan 挪到最近的空位（见 OreShadow.freeSpotFor）。
-        // 区域满了就直接判非法（点下去什么也不放，不会去顶掉区域里已有的东西）。
-        if (tile != null && OreShadow.covers(tile.x, tile.y, size)) {
-            int[] spot = OreShadow.freeSpotFor(tile.x, tile.y, size);
-            if (spot != null) {
-                lastPlaceX = tile.x;
-                lastPlaceY = tile.y;
-                return true;
-            }
-            lastPlaceX = Integer.MIN_VALUE;
-            return false;
+        // 【用户 2026-10-10 报"合体钻头放置位置和点击位置不一样"】阴影上只认**点到的这一格**：
+        //   · 这一点自己在阴影里（marked）→ 只要这一格是空的就合法，落点就是这一格（点哪落哪）；
+        //   · 这一点被占（或不在阴影里）→ 不合法，不再"自动挪到最近空位"（那正是位置对不上的原因）。
+        // 阴影上不再要求"脚下有矿"：整片区域的矿由站口径算（见 CombinedDrillBuild 的 dominantItems）。
+        if (tile != null && OreShadow.inSite(tile)) {
+            return tile.build == null || tile.build.dead();
         }
-        lastPlaceX = Integer.MIN_VALUE;
         if (mode == Mode.beam) {
             for (int i = 0; i < mineSize(); i++) {
                 nearbySideMine(tile.x, tile.y, rotation, i, Tmp.p1);
@@ -490,20 +483,6 @@ public class CombinedDrill extends Block {
             }
             return canMine(tile);
         }
-    }
-
-    /** 上一次 {@link #canPlaceOn} 问的那一格（原版 validPlace 先问 canPlaceOn 再问 canReplace，这里当上下文用）。 */
-    int lastPlaceX = Integer.MIN_VALUE, lastPlaceY = Integer.MIN_VALUE;
-
-    /**
-     * 阴影上允许"顶掉"点到的东西（可能是已经塞进去的钻头、或者别人铺的传送带）——
-     * 因为 plan 随后会被 {@link #onNewPlan} 挪到空位上，实际不会真的顶掉谁。
-     **/
-    @Override
-    public boolean canReplace(Block other) {
-        if (lastPlaceX != Integer.MIN_VALUE && OreShadow.covers(lastPlaceX, lastPlaceY, size))
-            return true;
-        return super.canReplace(other);
     }
 
     @Override
@@ -549,7 +528,7 @@ public class CombinedDrill extends Block {
      * 这颗钻头的**预设虚影**该怎么画：
      * <ul>
      * <li>自己就是压格版本（{@code shadowShrunk}）→ 按 1/原size 缩进一格；</li>
-     * <li>自己是原版钻头、但这一格（含它 size×size 的地基）压在矿物阴影上 → 落地后会被
+     * <li>自己是原版钻头、但**点到的这一格**在矿物阴影里 → 落地后会被
      * {@code onNewPlan} 换成压格版本，虚影也照压格版本画（所见即所得）；
      * 这时锚点用这一格自己（落地后 1x1 版本就落在这一格）。</li>
      * </ul>
@@ -557,29 +536,25 @@ public class CombinedDrill extends Block {
      * @return 画虚影用的缩放系数（1 = 照原版画）
      */
     public float planScaleFor(int x, int y) {
-        if (shadowShrunk || (shadowVariant != null && OreShadow.covers(x, y, mineSize())))
+        if (shadowShrunk || (shadowVariant != null && OreShadow.inSite(world.tile(x, y))))
             return 1f / Math.max(mineSize(), 1);
         return 1f;
     }
 
     /**
-     * 压格钻头**虚影的落点**（世界坐标）：不是原钻头那 size×size 地基的中心，而是
-     * "落地后这一格"的中心 —— 自己就是压格版本时 = 锚点那一格；原版钻头悬停在阴影上时
-     * = {@link OreShadow#freeSpotFor} 算出来的空位（和 {@code onNewPlan} 落地用的是同一个口径），
-     * 所以虚影画在哪就真落在哪，"像放一个真正的 1x1 建筑一样"。
+     * 压格钻头**虚影的落点**（世界坐标）= 点到的这一格的中心（{@code plan.x * tilesize}）。
+     *
+     * <p>【为什么不能直接用 {@code plan.drawx()}】原钻头是偶数边长（2x2 的机械/气动钻），
+     * {@code Block.offset} 是半格，`plan.drawx()` 会落在"这一格 + 半格"的位置；而落地后是 1x1、
+     * 占的就是 {@code plan.x/plan.y} 这一格。直接用 drawx 画出来，虚影和落地就永远差半格
+     * （用户 2026-10-10 报的"放置位置和点击位置不一样"里就有这半格的份）。
      */
     public float landingX(BuildPlan plan) {
-        if (shadowShrunk)
-            return plan.drawx();
-        int[] spot = OreShadow.freeSpotFor(plan.x, plan.y, mineSize());
-        return (spot == null ? plan.x : spot[0]) * tilesize;
+        return plan.x * tilesize;
     }
 
     public float landingY(BuildPlan plan) {
-        if (shadowShrunk)
-            return plan.drawy();
-        int[] spot = OreShadow.freeSpotFor(plan.x, plan.y, mineSize());
-        return (spot == null ? plan.y : spot[1]) * tilesize;
+        return plan.y * tilesize;
     }
 
     /**

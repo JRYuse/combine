@@ -117,3 +117,23 @@ tasks.register('deploy', Jar) {
     }
 }
 
+def installMod = tasks.register("installMod", Copy) {
+    dependsOn(deploy)
+    description = "打包完成后自动复制到 Mindustry 的 mods 目录"
+    group = "build"
+
+    def modsDir = isWindows
+            ? new File(System.getenv("APPDATA"), "Mindustry/mods")
+            : new File(System.getProperty("user.home"), ".local/share/Mindustry/mods")
+
+    from(layout.buildDirectory.file("libs/${project.name}.jar"))
+    into(modsDir)
+
+    doFirst {
+        if (!modsDir.exists()) {
+            modsDir.mkdirs()
+            println("已创建 mods 目录: ${modsDir.absolutePath}")
+        }
+        println("将模组复制到: ${modsDir.absolutePath}")
+    }
+}

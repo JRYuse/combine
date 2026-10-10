@@ -728,6 +728,49 @@ public class FactoryCombineTest implements arc.ApplicationListener {
         check("存读档用例不抛异常", false);
       }
 
+      // ---------- 6.5) 拆除（不是解体）：退还原料工厂的**建造成本**（用户 2026-10-10） ----------
+      // 组合工厂自己的 requirements 是空的（那些工厂合体时被吃掉了、造价本来就花出去了），
+      // 原版"按 deconstruct 的 requirements 退钱"一分不退。这里和超级组合炮台同口径核对：
+      // 每台格子工厂的 requirements × buildCostMultiplier × deconstructRefundMultiplier 进核心。
+      {
+        Object[] cbs = (Object[]) field(merged, "cellBlocks");
+        float mul = Vars.state.rules.buildCostMultiplier * Vars.state.rules.deconstructRefundMultiplier;
+        // 退款是退到**核心**里的：clearArea 把地图自带的核心也清了，这里补一台（同 SuperTurretDissolveTest）
+        place(Vars.content.block("core-shard"), 40, 100, team);
+        run(5);
+        java.util.LinkedHashMap<mindustry.type.Item, Integer> want = new java.util.LinkedHashMap<>();
+        int cellCount = 0;
+        if (cbs != null)
+          for (Object o : cbs) {
+            if (!(o instanceof Block b) || b.requirements == null)
+              continue;
+            cellCount++;
+            for (mindustry.type.ItemStack st : b.requirements) {
+              if (st == null || st.item == null)
+                continue;
+              want.merge(st.item, Math.round(st.amount * mul), Integer::sum);
+            }
+          }
+        mindustry.world.blocks.storage.CoreBlock.CoreBuild core = team.data().core();
+        int beforeRef = 0, afterRef = 0, expectRef = 0;
+        if (core != null && core.items != null)
+          for (var e : want.entrySet()) {
+            beforeRef += core.items.get(e.getKey());
+            expectRef += e.getValue();
+          }
+        merged.onDeconstructed(null);
+        if (core != null && core.items != null)
+          for (var e : want.entrySet())
+            afterRef += core.items.get(e.getKey());
+        StringBuilder sbRef = new StringBuilder();
+        for (var e : want.entrySet())
+          sbRef.append(e.getKey().name).append('+').append(e.getValue()).append(' ');
+        System.out.println("[FC] 拆除退款: mul=" + mul + " 核心 " + beforeRef + " → " + afterRef
+            + "（期望 +" + expectRef + "，格子工厂 " + cellCount + " 台；明细 " + sbRef.toString().trim() + "）");
+        check("拆除组合工厂退还原料工厂造价（核心 +" + (afterRef - beforeRef) + "）",
+            cellCount == 3 && expectRef > 0 && afterRef - beforeRef == expectRef);
+      }
+
       // ---------- 7) 解体：工厂放回来 + 库存保留 ----------
       int itemsBefore = merged.items.get(Items.copper) + merged.items.get(Items.lead);
       call(merged, "configure", new Class<?>[] { Object.class }, "!dissolve");
