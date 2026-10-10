@@ -528,9 +528,86 @@ public class CombinedDrill extends Block {
         if (returnItem == null || !drawMineItem)
             return;
 
-        Draw.tint(returnItem.color);
-        Draw.rect(itemRegion, plan.drawx(), plan.drawy());
-        Draw.color();
+        // 压格版本的中心色块也要缩进这一格（和 drawPlanRegion 同一个系数）
+        float k = planScaleFor(plan.x, plan.y);
+        float px = landingX(plan), py = landingY(plan);
+        float ox = Draw.xscl, oy = Draw.yscl;
+        try {
+            if (k != 1f)
+                Draw.scl(k);
+            Draw.tint(returnItem.color);
+            Draw.rect(itemRegion, px, py);
+            Draw.color();
+        } catch (Throwable ignored) {
+        } finally {
+            if (k != 1f)
+                Draw.scl(ox, oy);
+        }
+    }
+
+    /**
+     * 这颗钻头的**预设虚影**该怎么画：
+     * <ul>
+     * <li>自己就是压格版本（{@code shadowShrunk}）→ 按 1/原size 缩进一格；</li>
+     * <li>自己是原版钻头、但这一格（含它 size×size 的地基）压在矿物阴影上 → 落地后会被
+     * {@code onNewPlan} 换成压格版本，虚影也照压格版本画（所见即所得）；
+     * 这时锚点用这一格自己（落地后 1x1 版本就落在这一格）。</li>
+     * </ul>
+     *
+     * @return 画虚影用的缩放系数（1 = 照原版画）
+     */
+    public float planScaleFor(int x, int y) {
+        if (shadowShrunk || (shadowVariant != null && OreShadow.covers(x, y, mineSize())))
+            return 1f / Math.max(mineSize(), 1);
+        return 1f;
+    }
+
+    /**
+     * 压格钻头**虚影的落点**（世界坐标）：不是原钻头那 size×size 地基的中心，而是
+     * "落地后这一格"的中心 —— 自己就是压格版本时 = 锚点那一格；原版钻头悬停在阴影上时
+     * = {@link OreShadow#freeSpotFor} 算出来的空位（和 {@code onNewPlan} 落地用的是同一个口径），
+     * 所以虚影画在哪就真落在哪，"像放一个真正的 1x1 建筑一样"。
+     */
+    public float landingX(BuildPlan plan) {
+        if (shadowShrunk)
+            return plan.drawx();
+        int[] spot = OreShadow.freeSpotFor(plan.x, plan.y, mineSize());
+        return (spot == null ? plan.x : spot[0]) * tilesize;
+    }
+
+    public float landingY(BuildPlan plan) {
+        if (shadowShrunk)
+            return plan.drawy();
+        int[] spot = OreShadow.freeSpotFor(plan.x, plan.y, mineSize());
+        return (spot == null ? plan.y : spot[1]) * tilesize;
+    }
+
+    /**
+     * 【用户报的"阴影上建造合体钻头的时候预设直接画 1x1"】预设虚影要和落地后的样子一致：
+     * 原版 {@code drawPlanRegion} 画的是 {@code fullIcon} —— 那还是**原钻头**那张 size×size 的整图，
+     * 而压格版本是 1x1 的方块，于是虚影要么伸出一格、要么只剩一个 1x1 的空框。
+     * 这里压格时按 {@code 1/原size} 缩小画"落地后静止时画的那几张图"（本体 + 各模式的顶盖）。
+     */
+    @Override
+    public void drawPlanRegion(BuildPlan plan, Eachable<BuildPlan> list) {
+        float k = planScaleFor(plan.x, plan.y);
+        if (k == 1f) {
+            super.drawPlanRegion(plan, list);
+            return;
+        }
+        float px = landingX(plan), py = landingY(plan);
+        float ox = Draw.xscl, oy = Draw.yscl;
+        try {
+            Draw.scl(k);
+            if (region != null && region.found())
+                Draw.rect(region, px, py);
+            TextureRegion top = mode == Mode.beam ? topRegionBeam : topRegion;
+            if (top != null && top.found())
+                Draw.rect(top, px, py, mode == Mode.beam ? plan.rotation * 90f : 0f);
+        } catch (Throwable ignored) {
+        } finally {
+            Draw.scl(ox, oy);
+        }
     }
 
     void drawPlaceDrill(int x, int y, boolean valid) {
@@ -1707,9 +1784,13 @@ public class CombinedDrill extends Block {
             // 绝对长度（爆钻的箭羽偏移）另外乘同一个系数：Draw.scl 只缩尺寸、不缩那些直接加在坐标上的偏移。
             float k = cb.cellDrawScale();
             boolean scaled = k != 1f;
-            float oldScl = Draw.scl, oldSpacing = cb.arrowSpacing, oldOffset = cb.arrowOffset;
+            // 【必须用 Draw.scl(k) 那个方法】arc 的 `Draw.scl` **字段**没有任何人读取（rect 用的是
+            // xscl/yscl），以前只写字段 = 贴图根本没缩，1x1 的钻头把原钻头 size×size 的大图直接铺出来
+            //（用户报的"预设/钻头画出来还是原来那么大"）。这里改成和其它压格方块（SuperTurret）
+            // 同一个口径：临时乘 xscl/yscl，画完还原。
+            float oldX = Draw.xscl, oldY = Draw.yscl, oldSpacing = cb.arrowSpacing, oldOffset = cb.arrowOffset;
             if (scaled) {
-                Draw.scl = oldScl * k;
+                Draw.scl(k);
                 cb.arrowSpacing = oldSpacing * k;
                 cb.arrowOffset = oldOffset * k;
             }
@@ -1724,7 +1805,7 @@ public class CombinedDrill extends Block {
                 if (scaled) {
                     cb.arrowSpacing = oldSpacing;
                     cb.arrowOffset = oldOffset;
-                    Draw.scl = oldScl;
+                    Draw.scl(oldX, oldY);
                 }
             }
         }
