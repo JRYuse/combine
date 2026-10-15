@@ -154,7 +154,8 @@ public class CombinedDrill extends Block {
      * <p>【用户报的"阴影上摆钻头、点建造后钻头直接消失"】原版 {@code Build.validPlaceIgnoreUnits}
      * 第 185 行读的是 {@code type.isPlaceable()}，而默认实现里含 {@code isVisible()}，
      * {@code hidden} 方块一律 false —— 于是换过去的那份 plan 被判非法、直接从建造队列里丢掉，
-     * 表现就是"点下去什么都没放"。这里单独放行（和 SuperCombineFactory / SuperTurret 一致）。
+     * 表现就是"点下去什么都没放"。这里单独放行（合体建筑里那几种隐藏方块也是这么做的，
+     * 见 merge 项目的 SuperCombineFactory / SuperTurret）。
      */
     @Override
     public boolean isVisible() {
@@ -1294,7 +1295,10 @@ public class CombinedDrill extends Block {
         // ---- 核心更新 ----
         @Override
         public void updateTile() {
-          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
+          // 关掉相邻自动组合（总开关 / 只保留超级组合）/ 不是玩家队伍：照常跑自己的逻辑 ——
+          // 组合钻头的 super 是 Building.updateTile()（空实现），一 return 就彻底停摆；
+          // 分组被 ComboTeams.playerTeam 挡成"只有自己"时 = 原版单机行为（见 ComboReflect.markSolo）。
+          if (!combine.util.ComboTeams.playerTeam(team)) combine.util.ComboReflect.markSolo(this);
             if (pendingLeaderPos != -1) {
                 Building b = world.build(pendingLeaderPos);
                 if (b instanceof CombinedDrillBuild leaderBuild && leaderBuild.isValid() && leaderBuild.team == team) {
@@ -1761,7 +1765,7 @@ public class CombinedDrill extends Block {
             boolean scaled = k != 1f;
             // 【必须用 Draw.scl(k) 那个方法】arc 的 `Draw.scl` **字段**没有任何人读取（rect 用的是
             // xscl/yscl），以前只写字段 = 贴图根本没缩，1x1 的钻头把原钻头 size×size 的大图直接铺出来
-            //（用户报的"预设/钻头画出来还是原来那么大"）。这里改成和其它压格方块（SuperTurret）
+            //（用户报的"预设/钻头画出来还是原来那么大"）。这里改成和其它压格方块（合体建筑里的那几种）
             // 同一个口径：临时乘 xscl/yscl，画完还原。
             float oldX = Draw.xscl, oldY = Draw.yscl, oldSpacing = cb.arrowSpacing, oldOffset = cb.arrowOffset;
             if (scaled) {

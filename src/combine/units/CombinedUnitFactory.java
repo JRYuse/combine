@@ -257,7 +257,10 @@ public class CombinedUnitFactory extends UnitFactory implements IUnitCombo.IUnit
 
         @Override
         public void updateTile() {
-          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
+          // 关掉相邻自动组合（总开关 / 只保留超级组合）/ 不是玩家队伍：照常跑自己的逻辑 ——
+          // 本类重写了 getMaximumAccepted（读 comboTotalItemCap），一 return 走 super 就成了
+          // "容量还是整组的、收料各收各的"；分组只剩自己时 = 原版单机行为（见 ComboReflect.markSolo）。
+          if (!combine.util.ComboTeams.playerTeam(team)) combine.util.ComboReflect.markSolo(this);
             comboPreUpdate();
 
 

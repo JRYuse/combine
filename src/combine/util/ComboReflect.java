@@ -378,6 +378,55 @@ public class ComboReflect {
         return p != null && p != -1;
     }
 
+    /**
+     * 【关掉相邻自动组合时】把本机恢复成"单独一台"的组合状态。
+     *
+     * <p>为什么要有这个：各组合类重写的 {@code updateTile()} 开头都有一条
+     * "不算组合 → {@code super.updateTile(); return;}". 那条**不能真的 return**：
+     * <ul>
+     * <li>组合钻头（{@code CombinedDrill}）的 super 是 {@code Building.updateTile()} —— 空实现，
+     * 一 return 钻头就彻底停摆（用户报的"关掉组合后钻头类全部停摆"）；</li>
+     * <li>组合发电机/单位工厂/炮塔的 super 也**不是**它们各自仿写的那个原版 build 类
+     * （{@code CombinedGeneratorBuild extends ConsumeGeneratorBuild} 而不是 ImpactReactorBuild，
+     * 于是冲击反应堆不预热、核反应堆不发热）。</li>
+     * </ul>
+     * 正确做法是让它们照常跑自己的逻辑 —— 那些逻辑在"组里只有自己"时就等价于原版单机行为
+     * （容量/库存都是单台的，见各 {@code rebuildCombo()}）。本方法就是那个把状态拨回
+     * "只有自己"的开关：清掉残留的 leader / 待恢复 leader，并置脏让下一次
+     * {@code rebuildCombo()} 重新按"单台"算容量。
+     *
+     * <p>每帧都会被调用，所以**必须是廉价且幂等的**：已经是单台状态时立刻返回，
+     * 不会每帧重建分组（否则大基地里就是每台建筑每帧一次重建 = 卡顿）。
+     */
+    public static void markSolo(Building b){
+        if(b == null) return;
+        try{
+            // leader 还在 / 存档里还记着"该并进谁"：这才是"还处在组合态"，需要拨回来
+            if(fieldValue(b, "comboLeader") == null && !hasPendingLeader(b)) return;
+            setField(b, "comboLeader", null);
+            setInt(b, "pendingLeaderPos", -1);
+            Seq<Object> self = new Seq<>();
+            self.add(b);
+            if(hasField(b, "comboGroup")) setField(b, "comboGroup", self);
+            // 容量先按单台基础值给（rebuildCombo 之后也是这个值，这里只是别让本帧读到组容量）
+            setItemCap(b, baseItemCap(b));
+            setLiquidCap(b, baseLiquidCap(b));
+            setDirty(b, true);
+        }catch(Throwable ignored){
+        }
+    }
+
+    /** 把任意字段设成 value（类型不符/字段不存在就静默跳过）。 */
+    public static void setField(Object obj, String name, Object value){
+        if(obj == null) return;
+        Field f = findField(obj.getClass(), name);
+        if(f == null) return;
+        try{
+            f.set(obj, value);
+        }catch(Throwable ignored){
+        }
+    }
+
     public static void rebuildLocal(Building b){
         if(b == null) return;
         call(b, "rebuildCombo");

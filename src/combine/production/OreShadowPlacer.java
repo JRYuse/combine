@@ -25,7 +25,7 @@ import mindustry.world.Tile;
 import static mindustry.Vars.*;
 
 /**
- * 「矿物阴影」的框选流程（和 {@code FactoryCombiner} / {@code SuperTurretPlacer} 平行，纯客户端）。
+ * 「矿物阴影」的框选流程（纯客户端；入口是 HUD 上那个浮标的子按钮，见 {@link combine.ui.ComboHudButton}）。
  *
  * <p>入口：HUD 浮标 → 展开的子按钮里的 {@code Icon.production} 那一个。
  * 拖框 → 松开就把框里面的**矿物地板**（{@code tile.drop() != null}）逐格取反，
@@ -61,14 +61,7 @@ public class OreShadowPlacer {
   public static void start() {
     if (headless || state == null || !state.isGame() || player == null || !player.isBuilder())
       return;
-    // 三个框选流程互斥（两个处理器会互相抢事件）
-    try {
-      if (combine.turret.SuperTurretPlacer.selecting())
-        combine.turret.SuperTurretPlacer.cancel();
-      if (FactoryCombiner.selecting())
-        FactoryCombiner.cancel();
-    } catch (Throwable ignored) {
-    }
+    // 【合体建筑的框选流程已独立到 merge 项目】本项目现在只剩这一个框选流程，不用再互斥。
     selecting = true;
     dragging = false;
     sx = sy = ex = ey = -1;
@@ -255,7 +248,7 @@ public class OreShadowPlacer {
       // 【为什么这套画法是对的】用户 2026-10-09 报"框矿物的时候没有线条边框"，根因不是画法，
       // 而是 Main 里漏了 OreShadowPlacer.register() —— 缺了它，start() 照样能框（输入处理器是
       // start() 自己装的）、阴影也能落地，但 Trigger.draw 这条没挂，拖框时**什么框都不画**。
-      // 补上注册后这套（和 FactoryCombiner / SuperTurretPlacer 完全同款）在真客户端上正常显示。
+      // 补上注册后这套（和别的框选流程同款）在真客户端上正常显示。
       Draw.draw(Layer.overlayUI, () -> {
         Draw.color(Pal.accent, 0.22f);
         Fill.crect(fx, fy, fw, fh);

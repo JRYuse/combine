@@ -682,7 +682,9 @@ public class CombinedItemTurret extends ItemTurret {
 
     @Override
     public void updateTile() {
-      if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
+      // 关掉相邻自动组合（总开关 / 只保留超级组合）/ 不是玩家队伍：照常跑自己的逻辑 ——
+      // 分组被 ComboTeams.playerTeam 挡成"只有自己"时 = 原版单机行为（见 ComboReflect.markSolo）。
+      if (!combine.util.ComboTeams.playerTeam(team)) combine.util.ComboReflect.markSolo(this);
       if (isLeader() && comboDirty)
         rebuildCombo();
       // FIX[liquid]: 领导者每帧按组总容量截断共享池

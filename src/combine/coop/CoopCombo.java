@@ -388,6 +388,11 @@ public class CoopCombo {
 
   private static boolean computeEligible(Block b, boolean ignoreManualBlacklist) {
     if (!enabled) return false;
+    // 【关掉相邻自动组合 = 协作组合也关】协作组合本身就是"相邻同类机器自动并池"，
+    // 组合总开关关掉 / "只保留超级组合"时它必须一起停（否则玩家看到的是"开关关了、mod 方块
+    // 之间还在共享库存/容量"）。关掉那一瞬间的"拆开"由 ComboTeams.detachEverything() 调
+    // rebuild() 完成（这里判 false 就走 rebuild 里的脱离分支：还原容量/导电性 + 各拿一份）。
+    if (!combine.util.ComboTeams.autoCombine()) return false;
     // 【不组合名单】传输类等明确不该组合的类（含 js/java 子类）直接排除；
     // 界面上列清单（ignoreManualBlacklist=true）时只看类名单，手动屏蔽的也要能列出来再勾回去
     if (ignoreManualBlacklist ? NoCombo.blockedByClass(b) : NoCombo.blocked(b)) return false;

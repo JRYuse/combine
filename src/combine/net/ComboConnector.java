@@ -165,7 +165,8 @@ public class ComboConnector extends PowerBlock {
 
         @Override
         public void updateTile(){
-          if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
+          // 组合连接器是玩家**手动铺的**（不是相邻自动组合），关掉自动组合时它照常工作；
+          // 自动相邻组合那部分由 ComboTeams.autoCombine() 在分组/建图那一层挡掉。
             super.updateTile();
             int hash = linkHash();
             if(hash != lastLinkHash){
