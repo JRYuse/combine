@@ -193,10 +193,6 @@ public class Main extends Mod {
     // 跨组合体网络（连接器/节点）：每帧最多重建一次，避免放一个连接器就重建 5~10 遍
     ComboNet.register();
 
-    // 组合传送带：手里选着同种传送带点在同种传送带上 → 叠一层提速（走原版 Call.tileTap/TapEvent，
-    // 桌面点击与手机点按都覆盖；服务端权威 + 转发，见 combine.distribution.ConveyorOverlay）
-    combine.distribution.ConveyorOverlay.register();
-
     // 【arc 输入兜底】只吞掉"UI 元素在触摸派发过程中被摘掉 → Element.notify 读 getScene() 为 null"
     // 那条 arc 已知 NPE（别的异常照旧抛），别让一次点击把整个存档崩回主菜单。详见 ComboInputGuard。
     combine.util.ComboInputGuard.register();
@@ -380,14 +376,9 @@ public class Main extends Mod {
     combine.saves.ComboSaveState.register();
     // 组合体自己的"共享哪些部分"配置（按 pos 存在 ComboShare 里，见 ComboShareState）
     combine.saves.ComboShareState.register();
-    // 组合传送带的"覆盖层数"（存档 + 联机入服世界流都带它，见 ConveyorLayerState）
-    combine.distribution.ConveyorLayerState.register();
-
     try {
       getWhiteList();
       processModBlocks();
-      // 组合传送带（原版/模组的 Conveyor/ArmoredConveyor/Duct/StackConveyor → 能"覆盖叠层提速"的组合版）
-      processConveyors();
       processWalls();
       // 内容初始化期被"按引用抓走"的老方块实例（典型：组装机 UnitAssembler 配方里的
       // PayloadStack.item = 老钨墙/碳化墙）换回组合实例 —— 不换的话原版
@@ -403,8 +394,6 @@ public class Main extends Mod {
       for (var entry : Replacer.replaced) {
         postInit(entry.value);
       }
-      // 【放在 postInit 之后】组合传送带的描述是 postInit 从原版方块抄来的，这里再补一行玩法说明
-      combine.distribution.ConveyorOverlay.applyHints();
       // 启动日志汇总（逐类刷屏已在 BlockCloner 里合并成一行）
       BlockCloner.logFallbackSummary();
       // 协作组合：抓取"放大前"的基础容量（必须在任何世界加载之前）
@@ -873,70 +862,6 @@ public class Main extends Mod {
     } catch (Throwable th) {
       return def;
     }
-  }
-
-  /**
-   * 组合传送带：把原版/模组的 {@code Conveyor / ArmoredConveyor / Duct / StackConveyor}（含子类）
-   * 换成能"覆盖叠层提速"的组合版（同 id、同名字、同贴图、同速度，行为不变）。
-   *
-   * <p>这些类在 {@link NoCombo} 里（传输类不该"组合"共用库存），所以不走 {@link #processModBlocks()}；
-   * 放置/叠层逻辑见 {@code combine.distribution.ConveyorOverlay}。
-   *
-   * <p>和模组其它"现造方块"一样：v8 不会替这一步注册的方块调 init()/postInit()/loadIcon()，
-   * 必须自己补；单个方块失败不能拖垮整张内容表。
-   */
-  void processConveyors() {
-    // 快照遍历：createCombo 会原地修改注册表（set+pop），不可直接遍历
-    Seq<Content> snapshot = new Seq<>(Vars.content.getBy(ContentType.block));
-    int count = 0;
-    for (var c : snapshot) {
-      Block b = (Block) c;
-      if (originalToCombo.containsKey(b) || comboToOriginal.containsKey(b))
-        continue;
-      if (list.contains(b.name))
-        continue;
-      if (b instanceof combine.distribution.CombinedConveyor
-          || b instanceof combine.distribution.CombinedDuct
-          || b instanceof combine.distribution.CombinedStackConveyor)
-        continue;
-
-      boolean isStack = b instanceof mindustry.world.blocks.distribution.StackConveyor;
-      boolean isDuct = b instanceof mindustry.world.blocks.distribution.Duct;
-      boolean isConveyor = b instanceof mindustry.world.blocks.distribution.Conveyor;
-      if (!isStack && !isDuct && !isConveyor)
-        continue;
-
-      try {
-        Block combo;
-        if (isStack) {
-          combo = createCombo(b, combine.distribution.CombinedStackConveyor.class);
-        } else if (isDuct) {
-          combo = createCombo(b, combine.distribution.CombinedDuct.class);
-        } else {
-          combine.distribution.CombinedConveyor cc =
-              createCombo(b, combine.distribution.CombinedConveyor.class);
-          // ArmoredConveyor 只是 Conveyor 上多了"防侧装"，用同一个组合类 + 开关保留它的行为
-          cc.armored = b instanceof mindustry.world.blocks.distribution.ArmoredConveyor;
-          combo = cc;
-        }
-        copyFields(b, combo);
-        combo.init();
-        combo.postInit();
-        if (visuals())
-          // 贴图/图标兜底：方块名和原版一样，load() 会按原名重新取一遍图集贴图
-          // （绝不留 null —— 建造菜单里 uiIcon 为 null 会直接崩）
-          ensureIcons(combo);
-        postInit(combo);
-        // 层数"配置"：copyFields 之后注册一次（原版这些方块没有配置，不会被覆盖，但顺序上更稳）
-        combine.distribution.ConveyorOverlay.install(combo);
-        count++;
-      } catch (Throwable th) {
-        Log.err("[combine] processConveyors failed for " + b.name, th);
-      }
-    }
-    if (count > 0)
-      Log.info("[combine] 组合传送带：@ 种传送带/管道已装配（可覆盖叠层，最多 @ 层）",
-          count, combine.distribution.ConveyorOverlay.MAX_LAYERS);
   }
 
   void processModBlocks() {

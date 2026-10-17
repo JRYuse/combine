@@ -74,11 +74,11 @@ verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.MultiBuildPerfTest -Dper
 `hudbtn` 模式：搭一片矿物地板 → 跑 HUD 浮标自检（挂上了没 / 位置尺寸 / 点得到 / 没改原版 input）
 → 把浮标挪到屏幕左半边、展开子按钮截图（截图在**桌面** `shots/`，日志里报浮标与子按钮的坐标）。
 
-> **合体类功能（炮台合体 / 工厂合体 / 合体钻头·矿物阴影）已经独立到 `merge` 项目**（见 `../merge`）。
+> **合体类功能（炮台合体 / 工厂合体 / 合体钻头·矿物阴影 / 传送带·管道·卸载器叠层）已经独立到 `merge` 项目**（见 `../merge`）。
 > **两个模组可以（也应该）同时装**：合体格子借 combine 的替换表换回原版方块、合体炮台↔组合炮台相邻
 > / 被组合节点接成一张网络都照旧（跨模组那条在 merge 的 `verify/tests/CrossModTest` 里，需要同时装两个模组）。
-> 本仓库的验证器不再覆盖合体/钻头本身 —— 那一套用例（SuperTurretTest / SuperTurretDissolveTest /
-> FactoryCombineTest / FactoryCampaignTest / ShadowDrillTest）和 `factory`/`veil`/`superturret`/`planet`/`pd`
+> 本仓库的验证器不再覆盖合体/钻头/叠层本身 —— 那一套用例（SuperTurretTest / SuperTurretDissolveTest /
+> FactoryCombineTest / FactoryCampaignTest / ShadowDrillTest / ConveyorOverlayTest）和 `factory`/`veil`/`superturret`/`planet`/`pd`
 > 这些驱动模式都随功能一起搬走了。combine 侧**不再有 HUD 浮标**（原来的炮台/工厂/矿物阴影按钮都在 merge 的
 > 浮标上）；`verify/client/Driver.java` 里遗留的 `shadow`/`hudbtn` 模式只作历史参考，实际验证请用 merge 的
 > `-Mode hud` 和 `merge.dbg.ShadowDrillTest`。下面"修复记录"里那些带日期的条目保留原样，当作历史记录看。
