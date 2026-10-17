@@ -105,8 +105,21 @@ public class ComboSaveState implements SaveFileReader.CustomChunk{
       stream.readFully(payload);
 
       Building b = Vars.world == null ? null : Vars.world.build(pos);
-      if(!(b instanceof ComboSaved saved))
+      if(!(b instanceof ComboSaved saved)){
+        // 【合体钻头已经搬到 merge】旧存档里钻头的状态还写在 combine-combo-state 这个块里。
+        // 两个模组同时装时，这个块由 combine 注册（merge 不能再注册同名块），所以这里按类名
+        // 把载荷转交给 merge 的 readCombo —— 不转的话旧档里的钻头进度/组长会丢（物品本身仍在
+        // 地图区，位置最小的那台持有整池，不会丢）。只装 combine 时这些位置是别的方块/空气，跳过。
+        if(b != null && b.getClass().getName().startsWith("merge.")){
+          try{
+            java.lang.reflect.Method m = b.getClass().getMethod("readCombo", Reads.class, byte.class);
+            m.invoke(b, new Reads(new DataInputStream(new ByteArrayInputStream(payload))), revision);
+          }catch(Throwable t){
+            Log.err("[combine] 把旧档里的合体钻头状态转交给 merge 失败 @" + pos, t);
+          }
+        }
         continue;
+      }
       try{
         saved.readCombo(new Reads(new DataInputStream(new ByteArrayInputStream(payload))), revision);
       }catch(Throwable t){

@@ -11,7 +11,6 @@ import combine.net.ComboConnector;
 import combine.net.ComboNet;
 import combine.net.ComboNode;
 import combine.production.CombinedCrafter;
-import combine.production.CombinedDrill;
 import combine.production.CombinedFracker;
 import combine.production.CombinedGenerator;
 import combine.production.CombinedPump;
@@ -85,9 +84,6 @@ import mindustry.world.blocks.power.HeaterGenerator;
 import mindustry.world.blocks.power.ImpactReactor;
 import mindustry.world.blocks.power.NuclearReactor;
 import mindustry.world.blocks.production.AttributeCrafter;
-import mindustry.world.blocks.production.BeamDrill;
-import mindustry.world.blocks.production.BurstDrill;
-import mindustry.world.blocks.production.Drill;
 import mindustry.world.blocks.production.GenericCrafter;
 import mindustry.world.blocks.production.HeatCrafter;
 import mindustry.world.blocks.power.VariableReactor;
@@ -153,7 +149,6 @@ public class Main extends Mod {
     Events.on(mindustry.game.EventType.WorldLoadBeginEvent.class, e -> {
       // 换图：上一张图的"组合体共享配置"不能带到新图（新档里读到本块会再装回来）
       combine.saves.ComboShareState.onWorldLoadBegin();
-      combine.production.OreShadow.onWorldLoadBegin();
       ComboNet.beginWorldLoad();
     });
     // 【读**存档**只会发 SaveLoadEvent，不会发 WorldLoadBegin/WorldLoad】那两条是"读地图"才发的。
@@ -164,13 +159,11 @@ public class Main extends Mod {
     Events.on(SaveLoadEvent.class, e -> {
       // 【必须在 beginWorldLoad 之前】读档末尾补一次"没读到本块就清空"（见 ComboShareState）
       combine.saves.ComboShareState.onLoadFinished();
-      combine.production.OreShadow.onLoadFinished();
       ComboNet.beginWorldLoad();
       ComboNet.rebuildLoading();
     });
     Events.on(WorldLoadEvent.class, e -> {
       combine.saves.ComboShareState.onLoadFinished();
-      combine.production.OreShadow.onLoadFinished();
       // 联机入服时 rules 是刚按名字反查出来的（researched/bannedBlocks 可能装着被替换掉的原版实例），
       // 必须在任何 UI/建造校验读到它之前纠正，否则客户端建造菜单里组合建筑会全部消失。
       Replacer.remapStaleContent();
@@ -243,17 +236,9 @@ public class Main extends Mod {
     // 设置里的"建筑组合开关"界面（客户端才有 UI，服务端自动跳过）
     combine.ui.ComboBlockList.register();
 
-    // HUD 上的悬浮浮标（点一下展开子按钮）—— 合体建筑（炮台合体 / 工厂合体）已经独立到
-    // merge 项目，这里留下的入口只负责「矿物阴影」
-    combine.ui.ComboHudButton.register();
-    // 矿物阴影：框选矿物地板 → 画一层阴影 → 阴影上放钻头会缩到 1x1
-    combine.production.OreShadow.register();
-    // 【必须】框选流程本体（输入 + 拖框那层高亮/边框 + 自动取消）的注册：
-    // 漏了它的话 start() 仍会把输入处理器装上、也能框出阴影，但 Trigger.draw 那条没挂 →
-    // **拖框时看不到任何框（没有填充也没有线条边框）**（用户 2026-10-09 报的）。
-    combine.production.OreShadowPlacer.register();
-    // 【用户要求 2026-09-28】不再改 input：入口是 ComboHudButton 自己挂的悬浮浮标
-    // （手机/桌面同一个，可拖动），输入处理器保持原版。
+    // 【合体钻头 / 矿物阴影已经搬到 merge 项目】合体炮台、合体工厂、合体钻头连同
+    // HUD 浮标入口（炮台合体 / 工厂合体 / 矿物阴影）都由 merge 提供；
+    // 本模组只保留"相邻/区域自动组合"这一半，不再往 HUD 上挂浮标。
 
     Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
     // 客户端在这之后才把蓝图库从磁盘读进来（assets.load(schematics)），再兜一次键；
@@ -346,8 +331,6 @@ public class Main extends Mod {
 
   /** 客户端与（专用）服务端共用的内容装配。 */
   static boolean contentSetupDone = false;
-  /** 矿物阴影用的 1x1 钻头版本装配过没有。 */
-  static boolean shadowDrillsReady = false;
 
   void setupContent() {
     if (contentSetupDone)
@@ -422,10 +405,6 @@ public class Main extends Mod {
       }
       // 【放在 postInit 之后】组合传送带的描述是 postInit 从原版方块抄来的，这里再补一行玩法说明
       combine.distribution.ConveyorOverlay.applyHints();
-      // 【矿物阴影】每种钻头一个"压成 1x1"的隐藏版本（阴影上摆钻头时由 CombinedDrill.onNewPlan 顶替）。
-      // 【放在 postInit 之后】组合钻头的 localizedName / 图标是 postInit 里从原版方块补上的，
-      // 早建的话 1x1 版本会抄到 null（点它会显示 "shadow-xxx" 这种内部名）。
-      createShadowDrills();
       // 启动日志汇总（逐类刷屏已在 BlockCloner 里合并成一行）
       BlockCloner.logFallbackSummary();
       // 协作组合：抓取"放大前"的基础容量（必须在任何世界加载之前）
@@ -626,92 +605,6 @@ public class Main extends Mod {
     // 免得玩家在战役里彻底造不出来。
     comboConnector.alwaysUnlocked = !onTree;
     comboNode.alwaysUnlocked = !onTree;
-  }
-
-    /**
-   * 【矿物阴影】给每一种钻头现造一个"压成 1x1"的隐藏版本（{@code CombinedDrill} 克隆体）。
-   *
-   * <p>它本体只占 1 格（{@code size=1}），但 {@code mineSize} 记着原来的边长 —— 挖矿、判定矿石、
-   * 激光束数量全按"原来那 size×size 每格都盖住了矿物"算；阴影区域里的这些 1x1 钻头共用一口
-   * 物品 / 液体池（组合逻辑原样继承），所以通水给任意一台就能加速整站，物品也能从区域任意一边出去。
-   *
-   * <p>隐藏方块：不进建造菜单、不参与研究，玩家看到的还是原来的钻头（和合体工厂 / 合体炮台同一个思路）。
-   * 方块名固定 {@code shadow-<原名>}，两端遍历顺序一致 → id 也一致，联机不会错位。
-   */
-  void createShadowDrills() {
-    if (shadowDrillsReady)
-      return;
-    shadowDrillsReady = true;
-    // 快照遍历：新方块会追加进注册表，不能直接遍历
-    Seq<Content> snapshot = new Seq<>(Vars.content.getBy(ContentType.block));
-    int made = 0;
-    for (var c : snapshot) {
-      if (!(c instanceof CombinedDrill cd))
-        continue;
-      if (cd.shadowShrunk || cd.shadowVariant != null || cd.size <= 1)
-        continue;
-      try {
-        CombinedDrill sh = new CombinedDrill("shadow-" + cd.name);
-        copyFields(cd, sh);
-        sh.shadowShrunk = true;
-        sh.shadowVariant = sh;
-        sh.mineSize = cd.size;
-        sh.size = 1;
-        sh.localizedName = cd.localizedName == null ? cd.name : cd.localizedName;
-        sh.description = "压成 1 格的钻头（只出现在矿物阴影上）：挖矿速度仍按原来 "
-            + cd.size + "x" + cd.size + " 每格都盖住了矿物计算。";
-        sh.buildVisibility = BuildVisibility.hidden;
-        // 【用户 2026-10-10 报"放置合体钻头还不消耗材料"】以前这里写
-        // {@code sh.requirements(Category.production, BuildVisibility.hidden, new ItemStack[0])} ——
-        // 那把造价整个清零了：玩家在阴影上摆下来的 1x1 钻头**不要钱**。改成保留原钻头那份造价
-        // （和玩家选的还是同一台钻头一个价）。这份 requirements 同时是两个地方的口径：
-        //   · 客户端 {@code BuilderComp} 的"核心有没有料"那一关（缺料就 stuck，不施工）；
-        //   · 拆除时原版 {@code ConstructBuild.deconstruct} 按 {@code requirements} 退料。
-        // 所以拆除合体钻头（用户 2026-10-10 报的"应该返回物品"）也是靠这一行拿到退款的。
-        // 注意：不能调 {@code requirements(...)} 那个重载 —— 它会把 buildVisibility 一起覆盖成 hidden 之外的值。
-        sh.category = cd.category;
-        sh.requirements = cd.requirements == null ? new ItemStack[0] : cd.requirements.clone();
-        // 【战役/联机也必须可用】和隐藏的组合工厂、超级组合炮台同一个坑：现造的隐藏方块没进科技树，
-        // 战役里 `unlockedNow()` 只认 unlocked/alwaysUnlocked —— 少了这一行，涉及"按解锁过滤"的
-        // 链路（蓝图/虚影、以及客户端自己那份解锁表）会把压格钻头当成没解锁的东西丢掉。
-        sh.alwaysUnlocked = true;
-        sh.init();
-        // 【offset 必须是 1x1 自己的值（0）】以前为了让贴图落在"原来那片地基的中心"把它设成
-        // 原钻头的半格偏移 —— 结果 Block.bounds()/hitbox 整体偏半格，原版放置判据里
-        // "新方块要能罩住这一格原有的东西"那条直接失败，validPlace=false，
-        // 表现就是**用户报的"阴影上摆钻头、点建造后钻头直接消失"**。
-        // 1x1 的方块就该以自己那一格为中心（init() 已按 size=1 算好 offset/sizeOffset）。
-        sh.postInit();
-        try {
-          sh.setBars();
-        } catch (Throwable ignored) {
-        }
-        // 【贴图：抄原钻头的，别走 ensureIcons】ensureIcons 调的是 sh.load()，它按**自己的名字**
-        // "shadow-机械钻头" 去图集里找贴图 —— 找不到就把 region/topRegion 全换成 error，
-        // 真实客户端截图上就是"阴影上一块 error 方块"（实测踩过）。整套沿用原钻头加载好的贴图。
-        CombinedDrill.copyVisuals(cd, sh);
-        shadowIconFallback(cd, sh);
-        cd.shadowVariant = sh;
-        made++;
-      } catch (Throwable t) {
-        Log.err("[combine] 矿物阴影：@ 的 1x1 版本装配失败（这种钻头不参与阴影压格）", cd.name, t);
-      }
-    }
-    Log.info("[combine] 矿物阴影：@ 种钻头有了压成 1x1 的版本", made);
-  }
-
-  /** 1x1 版本的图标兜底：抄不到原钻头那份就给 error，uiIcon/fullIcon/region 都不留 null。 */
-  static void shadowIconFallback(Block src, Block dst) {
-    try {
-      Object error = (arc.Core.atlas == null) ? null : arc.Core.atlas.find("error");
-      if (dst.fullIcon == null)
-        dst.fullIcon = src.fullIcon != null ? src.fullIcon : (arc.graphics.g2d.TextureRegion) error;
-      if (dst.uiIcon == null)
-        dst.uiIcon = src.uiIcon != null ? src.uiIcon : dst.fullIcon;
-      if (dst.region == null)
-        dst.region = src.region != null ? src.region : dst.fullIcon;
-    } catch (Throwable ignored) {
-    }
   }
 
   void createLiquidBlocks() {
@@ -1068,8 +961,6 @@ public class Main extends Mod {
       boolean isHeatProducer = isExact(b, HeatProducer.class);
       boolean isSeparator = isExact(b, Separator.class);
       boolean isAttribute = isExact(b, AttributeCrafter.class);
-      boolean isDrill = isExact(b, Drill.class) || isExact(b, BeamDrill.class)
-          || isExact(b, BurstDrill.class);
       boolean isGenerator = isExact(b, ConsumeGenerator.class)
           || isExact(b, ImpactReactor.class)
           || isExact(b, NuclearReactor.class) || isExact(b, HeaterGenerator.class);
@@ -1117,7 +1008,7 @@ public class Main extends Mod {
       boolean isReconstructor = isExact(b, Reconstructor.class);
 
       if (!isFactory && !isHeatCrafter && !isHeatProducer && !isSeparator && !isAttribute
-          && !isDrill && !isGenerator && !isLaunchPad && !isLandingPad
+          && !isGenerator && !isLaunchPad && !isLandingPad
           && !isRegen && !isOverdrive && !isMend && !isForce && !isStorage && !isCore
           && !isLogic && !isContLiquidTurret && !isLiquidTurret && !isItemTurret
           && !isPowerTurret && !isLaserTurret
@@ -1126,7 +1017,7 @@ public class Main extends Mod {
         continue;
 
       // 防止重复处理已转换类型
-      if (b instanceof CombinedCrafter || b instanceof CombinedDrill
+      if (b instanceof CombinedCrafter
           || b instanceof CombinedGenerator || b instanceof CombinedLaunchPad || b instanceof CombinedLandingPad
           || b instanceof combine.storage.CombinedCoreBlock
           || b instanceof CombinedRegenProjector || b instanceof CombinedOverdriveProjector
@@ -1158,15 +1049,6 @@ public class Main extends Mod {
         else
           cc.mode = CombinedCrafter.Mode.generic;
         combo = cc;
-      } else if (isDrill) {
-        CombinedDrill cd = createCombo(b, CombinedDrill.class);
-        if (isExact(b, BeamDrill.class))
-          cd.mode = CombinedDrill.Mode.beam;
-        else if (isExact(b, BurstDrill.class))
-          cd.mode = CombinedDrill.Mode.burst;
-        else
-          cd.mode = CombinedDrill.Mode.drill;
-        combo = cd;
       } else if (isGenerator) {
         CombinedGenerator cg = createCombo(b, CombinedGenerator.class);
         // FIX[消耗变快]: copyFields 只拷同名字段，而组合类的模式字段带

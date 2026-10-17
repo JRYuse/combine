@@ -1,7 +1,6 @@
 package combine.units;
 import combine.net.ComboNet;
 import combine.production.CombinedCrafter;
-import combine.production.CombinedDrill;
 import combine.production.CombinedPump;
 import combine.util.ComboReflect;
 import combine.util.UnitComboBridge;

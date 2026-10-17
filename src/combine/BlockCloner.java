@@ -1,5 +1,4 @@
 package combine;
-import combine.production.CombinedDrill;
 import combine.turret.CombinedItemTurret.CombinedItemTurretBuild;
 import combine.turret.CombinedItemTurret;
 import combine.util.DrawCombinedLiquid;
@@ -145,12 +144,6 @@ public class BlockCloner {
           : atlasFind(original.name);
     }
     ObjectMap<String, String> fieldMap = new ObjectMap<>();
-    if (combo instanceof CombinedDrill) {
-      fieldMap.put("topRegionBeam", "topRegion");
-      fieldMap.put("glowRegionBeam", "glowRegion");
-      fieldMap.put("topRegionBurst", "topRegion");
-      fieldMap.put("glowRegionBurst", "glowRegion");
-    }
 
     ObjectMap<String, TextureRegion> origRegions = new ObjectMap<>();
     collectRegions(original, origRegions);
