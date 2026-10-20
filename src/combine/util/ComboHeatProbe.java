@@ -13,7 +13,7 @@ import mindustry.world.Block;
  * 上的热（用户报的"无法把制热机的热量传递给炮台"）。贴着节点的建筑本来就看得见，
  * 只有**连线接进来、又没贴着节点**的需热端会漏。
  *
- * <p>做法和 {@link combine.turret.SuperTurret.HeatProbe} 一样：给那些需热建筑的
+ * <p>做法和合体建筑（已独立到 merge 项目）里"给每一格喂整台热量"的热量探针一样：给那些需热建筑的
  * {@code proximity} 里插一个摆在它自己坐标上的假建筑（{@code rotate = false}，
  * 于是原版把它算成"整份热量都在这格的热源"），其 {@code heat()} 就是整张网络的热量。
  * 每帧由 {@link combine.net.ComboNet} 刷新，网络断了就把探针摘掉。

@@ -186,10 +186,8 @@ public class CoopPanel {
   public static boolean showable(Building b) {
     if (b == null || !b.isValid() || b.block == null)
       return false;
-    // 超级组合炮台：用户要求"给合体炮台加上悬浮面板看物品和液体数量"。
-    // 它不是组合方块（不替换原版），也不走协作组合，所以这里单独放行。
-    if (b instanceof combine.turret.SuperTurret.SuperTurretBuild)
-      return b.items != null || b.liquids != null;
+    // 【合体炮台（超级组合炮台）已独立到 merge 项目】本项目不再有那种方块，
+    // 这里只剩"组合方块（本模组替换出来的）+ 协作组合（mod 方块）"两条路。
     boolean combined = isCombined(b.block);
     if (!CoopCombo.eligible(b.block) && !combined)
       return false;
@@ -340,10 +338,7 @@ public class CoopPanel {
       Seq<Building> members = members(build);
       // 标题 + 构成
       // 组合方块（本模组替换出来的）叫"组合体"，协作组合接管的那些仍叫"协作组合"
-      combine.turret.SuperTurret.SuperTurretBuild st = build instanceof combine.turret.SuperTurret.SuperTurretBuild s
-          ? s
-          : null;
-      String kind = st != null ? "超级组合炮台" : (isCombined(build.block) ? "组合体" : "协作组合");
+      String kind = isCombined(build.block) ? "组合体" : "协作组合";
       // 【换行宽度封顶】以前取"逻辑屏幕宽的一半"当换行宽：设备逻辑宽很大时（平板/桌面放大 UI），
       // 这个宽度能到上千，面板照样顶穿屏幕（用户报的"容器的组合体成员显示还是没换行"）。
       // 现在夹在 160..300 之间，任何设备上都只占屏幕的一小条。
@@ -353,13 +348,6 @@ public class CoopPanel {
       // 标题（方块名）也可能很长，一起换行
       table.add("[accent]" + kind + "[] x" + Math.max(members.size, 1) + "  " + build.block.localizedName)
           .left().width(compWidth).wrap().row();
-      // 超级炮台再单列一行"里面装了哪些炮台"（每格一台，看池子的时候知道里面是什么）
-      if (st != null) {
-        String inner = st.innerSummary();
-        if (inner.isEmpty())
-          inner = "（空）";
-        table.add("[lightgray]里面: " + inner + "[]").left().width(compWidth).wrap().row();
-      }
       ObjectIntMap<Block> counts = new ObjectIntMap<>();
       for (Building m : members)
         counts.increment(m.block, 1);
@@ -379,9 +367,6 @@ public class CoopPanel {
       // 这时用"这台方块自己的容量"当分母就会出现"1482273/60"这种数字
       // （用户视频现场：组合钻机 x6 的面板显示 铜 1482273/60、硅 5555520/60，还在每帧乱跳）。
       int itemCap = Math.max(combine.net.ComboNet.panelItemCap(build), Math.max(build.block.itemCapacity, 1));
-      // 超级炮台：容量就是"里面每一格累加"（用户要求），别用 block 上那个静态估算
-      if (st != null)
-        itemCap = Math.max(st.realItemCap, 1);
       // 【池子也要取"网络实际共用的那一份"】并池之后池子可能躺在网络里别的成员手上，
       // 直接读 build.items 会显示"（空）"或在不同模块之间乱跳（视频里 1482273 → 487 → 8）。
       mindustry.world.modules.ItemModule pool = combine.net.ComboNet.panelItemPool(build);
@@ -418,8 +403,6 @@ public class CoopPanel {
       // 组合方块取 baseLiquidCapacity —— 全在 ComboReflect.baseLiquidCap() 里。
       float liquidCap = Math.max(combine.net.ComboNet.panelLiquidCap(build),
           Math.max(combine.util.ComboReflect.baseLiquidCap(build), 1f));
-      if (st != null)
-        liquidCap = Math.max(st.realLiquidCap, 1f);
       mindustry.world.modules.LiquidModule lpool = combine.net.ComboNet.panelLiquidPool(build);
       if (lpool == null)
         lpool = build.liquids;
@@ -468,34 +451,23 @@ public class CoopPanel {
       }
 
       // 【热量】整组产热的对外合计 + 需热合计。
-      // 超级组合炮台：真正吃热的是格子里那些 afflict 单元，整台共用一个热量池
-      // （comboTotalHeat 是 updateTile 每帧从探针/原版 calculateHeat 读回来的），
-      // 直接显示这一份；普通组合体把组里每个 HeatBlock 成员的 heat() 加起来
-      // （产热机各报各的那份，合计 = 整池），需热量按 block 上的 heatRequirement 反射求和。
+      // 【合体炮台那一路已独立到 merge】这里只统计"整组成员"：
+      // 把组里每个 HeatBlock 成员的 heat() 加起来（产热机各报各的那份，合计 = 整池），
+      // 需热量按 block 上的 heatRequirement 反射求和。
       try {
         float heatSum = 0f, reqSum = 0f;
         boolean anyHeat = false;
-        if (st != null) {
-          heatSum = Math.max(0f, st.comboTotalHeat);
-          // 分子 = 整台拿到的热量；分母 = 里面每一台需热炮台需求之和（合体后 N 台就要 N 份，
-          // 不再用方块上那个"单台"标记值 —— 用户报的"合体后只需要一个炮台的热量"）。
-          float need = st.heatDemand();
-          reqSum = need > 0f ? need
-              : Math.max(0f, ((combine.turret.SuperTurret) st.block).heatRequirement);
-          anyHeat = true;
-        } else {
-          for (Building m : members) {
-            if (m == null || !m.isValid())
-              continue;
-            if (m instanceof mindustry.world.blocks.heat.HeatBlock hb) {
-              heatSum += Math.max(0f, hb.heat());
-              anyHeat = true;
-            }
-            Float req = combine.util.ComboReflect.getFloat(m.block, "heatRequirement");
-            if (req != null && req > 0f) {
-              reqSum += req;
-              anyHeat = true;
-            }
+        for (Building m : members) {
+          if (m == null || !m.isValid())
+            continue;
+          if (m instanceof mindustry.world.blocks.heat.HeatBlock hb) {
+            heatSum += Math.max(0f, hb.heat());
+            anyHeat = true;
+          }
+          Float req = combine.util.ComboReflect.getFloat(m.block, "heatRequirement");
+          if (req != null && req > 0f) {
+            reqSum += req;
+            anyHeat = true;
           }
         }
         // 【自己实际吃到的热】那些"没被本模组替换"的需热方块（mod 炮台等）不是 HeatBlock，
@@ -610,16 +582,12 @@ public class CoopPanel {
     // 热量：变了也要重画面板（整数粒度够看，不会每帧抖动）
     sb.append('|');
     try {
-      if (build instanceof combine.turret.SuperTurret.SuperTurretBuild stb) {
-        sb.append(Math.round(stb.comboTotalHeat)).append('/').append(Math.round(stb.heatDemand()));
-      } else {
-        float h = 0f;
-        for (Building m : members) {
-          if (m instanceof mindustry.world.blocks.heat.HeatBlock hb)
-            h += Math.max(0f, hb.heat());
-        }
-        sb.append(Math.round(h));
+      float h = 0f;
+      for (Building m : members) {
+        if (m instanceof mindustry.world.blocks.heat.HeatBlock hb)
+          h += Math.max(0f, hb.heat());
       }
+      sb.append(Math.round(h));
     } catch (Throwable ignored) {
     }
     return sb.toString();
@@ -733,19 +701,11 @@ public class CoopPanel {
 
   // ==================== 供面板 / 测试共用的数据 ====================
 
-  /**
-   * 参与"弹仓"统计的炮台：超级炮台 = 里面每一格；其它（组合炮台）= 整组成员里的炮台。
-   */
+  /** 参与"弹仓"统计的炮台：整组成员里的炮台（合体炮台已独立到 merge 项目）。 */
   public static Seq<Building> turretMembers(Building b) {
     Seq<Building> out = new Seq<>();
     if (b == null)
       return out;
-    if (b instanceof combine.turret.SuperTurret.SuperTurretBuild st) {
-      for (Object c : st.cells)
-        if (c instanceof Building cb)
-          out.add(cb);
-      return out;
-    }
     for (Building m : members(b))
       if (m instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild)
         out.add(m);
@@ -756,12 +716,6 @@ public class CoopPanel {
   public static ObjectIntMap<Item> ammoCounts(Building b) {
     ObjectIntMap<Item> out = new ObjectIntMap<>();
     Seq<Building> members = turretMembers(b);
-    // 合体炮台：每一格各装各的，整台显示的是各格之和。
-    if (b instanceof combine.turret.SuperTurret.SuperTurretBuild) {
-      for (Building m : members)
-        addAmmo(out, m, false);
-      return out;
-    }
     // 组合炮台：整组并池到 leader 那一份上，只读 leader 的弹仓。
     // 以前是把整组里每台炮台的弹仓都累加，而并池后弹药只存在 leader
     // 那一份上，于是同一池按台数被重复计 N 次，弹仓显示得越大越离谱。
@@ -857,12 +811,8 @@ public class CoopPanel {
     for (Building m : members)
       counts.increment(m.block, 1);
     StringBuilder sb = new StringBuilder();
-    combine.turret.SuperTurret.SuperTurretBuild st = b instanceof combine.turret.SuperTurret.SuperTurretBuild s ? s
-        : null;
-    sb.append(st != null ? "超级组合炮台" : "协作组合")
+    sb.append(isCombined(b.block) ? "组合体" : "协作组合")
         .append(" x").append(Math.max(members.size, 1)).append(' ').append(b.block.localizedName);
-    if (st != null)
-      sb.append(" | 里面: ").append(st.innerSummary());
     sb.append(" | 构成: ");
     for (Block bl : counts.keys())
       sb.append(bl.localizedName).append('x').append(counts.get(bl, 0)).append(' ');

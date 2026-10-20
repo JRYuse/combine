@@ -943,7 +943,10 @@ public class CombinedGenerator extends ConsumeGenerator {
     // -------------------- 核心更新 --------------------
     @Override
     public void updateTile() {
-      if (!combine.util.ComboTeams.playerTeam(team)) { super.updateTile(); return; }   // 只玩家组合开关：AI 敌人的建筑按原版跑，不参与组合那套
+      // 关掉相邻自动组合（总开关 / 只保留超级组合）/ 不是玩家队伍：照常跑自己的逻辑 ——
+      // 本类的 super 是 ConsumeGeneratorBuild（不是它仿写的 ImpactReactorBuild 等），
+      // 走 super 会丢掉冲击反应堆的预热/核反应堆的热量；分组只剩自己时 = 原版单机行为。
+      if (!combine.util.ComboTeams.playerTeam(team)) combine.util.ComboReflect.markSolo(this);
       if (pendingLeaderPos != -1) {
         Building b = world.build(pendingLeaderPos);
         if (b instanceof CombinedGeneratorBuild leaderBuild

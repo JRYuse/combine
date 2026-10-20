@@ -41,10 +41,8 @@ verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.DetachTest
 verify/run-headless.sh mx /tmp/mp_cj/data   combine.dbg.DetachTest
 verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.FilterTest
 verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.ContentTableTest -Dseed=container
-verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.FactoryCombineTest   # 组合工厂（合体工厂）
 ```
 
-- `FactoryCombineTest`：框选多台工厂 → 合成 side×side（每格一台工厂）的组合工厂：布局/来源/库存编码、拆掉原料、库存并池、**耗电生效**、**耗热生效**、存读档、解体放回
 - `DetachTest`：设置里关掉/打开某建筑组合 → 物品/液体是否立刻拆开、容量与导电性还原、重新打开是否立刻恢复；顺带验列表分类
 - `FilterTest`：`显示可组合 / 显示不可组合` 只列能手动开关的建筑，且和关掉的状态对得上
 - `ContentTableTest`：设置里的手动名单**不能**改动内容表（`-Dseed=<方块名>` 模拟"上次关过它"）
@@ -73,13 +71,17 @@ verify/run-headless.sh mx /tmp/mp_coop/data combine.dbg.MultiBuildPerfTest -Dper
 
 ## 3. 真客户端截图（UI 改动必跑）
 
-`factory` 模式：摆三台工厂 → 合成一台 1x1 组合工厂 → 截图（世界里那个方块自己画出来的样子）
-→ 再弹出"点方块"的那张面板截图（构成列表 + 解体按钮）。截图在**桌面** `shots/`。
+`hudbtn` 模式：搭一片矿物地板 → 跑 HUD 浮标自检（挂上了没 / 位置尺寸 / 点得到 / 没改原版 input）
+→ 把浮标挪到屏幕左半边、展开子按钮截图（截图在**桌面** `shots/`，日志里报浮标与子按钮的坐标）。
 
-`veil` 模式：走**原版左键落地**（`flushPlans` → `SuperCombineFactory.onNewPlan`）把工厂放下去，
-落地后 +0.4s / +1.6s / +3.2s 各拍一张，看新工厂有没有被"残留虚影的黑底"压暗（用户报的
-"放置后两秒内盖一层暗滤镜、过两秒才亮回来"）。日志里 `排队计划仍在 selectPlans=false` 且
-`selectPlans=0` = `drawGhost` 不会再画黑板；截图也在**桌面** `shots/`。
+> **合体类功能（炮台合体 / 工厂合体 / 合体钻头·矿物阴影 / 传送带·管道·卸载器叠层）已经独立到 `merge` 项目**（见 `../merge`）。
+> **两个模组可以（也应该）同时装**：合体格子借 combine 的替换表换回原版方块、合体炮台↔组合炮台相邻
+> / 被组合节点接成一张网络都照旧（跨模组那条在 merge 的 `verify/tests/CrossModTest` 里，需要同时装两个模组）。
+> 本仓库的验证器不再覆盖合体/钻头/叠层本身 —— 那一套用例（SuperTurretTest / SuperTurretDissolveTest /
+> FactoryCombineTest / FactoryCampaignTest / ShadowDrillTest / ConveyorOverlayTest）和 `factory`/`veil`/`superturret`/`planet`/`pd`
+> 这些驱动模式都随功能一起搬走了。combine 侧**不再有 HUD 浮标**（原来的炮台/工厂/矿物阴影按钮都在 merge 的
+> 浮标上）；`verify/client/Driver.java` 里遗留的 `shadow`/`hudbtn` 模式只作历史参考，实际验证请用 merge 的
+> `-Mode hud` 和 `merge.dbg.ShadowDrillTest`。下面"修复记录"里那些带日期的条目保留原样，当作历史记录看。
 
 ### arc 界面输入的兜底（`ComboInputGuard`）
 
@@ -110,7 +112,7 @@ verify/run-client.sh mx      /tmp/mp_coop/data list    # 换 MindustryX 再跑�
 
 原理：`Xvfb` 提供离屏 X，`SDL_VIDEODRIVER=offscreen` 让 SDL 走 EGL，Mesa 软渲染（llvmpipe）出画面；
 截图由 `verify/client/Driver.java`（一个驱动 mod）用 `ScreenUtils.saveScreenshot` 自己抓。
-驱动 mod 的参数：`-Ddrv.mode=list|coop|factory|veil|gen|status|conn|bp|wall|rebuild|rep|pwr|tech|tech2|technode|mega|pool|userpanel`、`-Ddrv.out=<目录>`
+驱动 mod 的参数：`-Ddrv.mode=list|coop|hudbtn|gen|status|conn|bp|wall|rebuild|rep|pwr|tech|tech2|technode|mega|pool|userpanel`、`-Ddrv.out=<目录>`
 （`tech` = 主菜单直接开科技树；`tech2` = 进图后再开、并把每棵根树的树页都切一遍截图；`technode` = 把镜头居中到组合连接器/液体卸载器节点再截图，用来核对节点在不在两棵树上、图标对不对）
 （`gen` = 核反应堆 + 一台容量 10 万的发电机，看燃料条/发电效率；`status` = 方块状态菱形 + 容器面板；
 `conn` = 两台组合工厂 + 一串组合连接器，看连接器贴图/连线与信息面板；
@@ -370,7 +372,6 @@ java -cp "<game.jar>;verify\build\cfv" combine.dbg.<Test> C:\tmp\cfv\data
 
 - `ShadowDrillTest` 45/45 PASS（新增：压格版本保留原钻头造价 + alwaysUnlocked + 阴影块 writeNet=true +
   点空位不动/点已占不放 + 拆除退还原钻头造价 copper +6）
-- `FactoryCombineTest` PASS=68 FAIL=0（新增 6.5 段：拆除组合工厂退还原料工厂造价，核心 +141）
 - `ConveyorOverlayTest` 32/32 PASS（回归：叠层/存档/速度不受影响）
 - 真客户端：`verify/run-client.ps1 -Game vanilla -Mode conv` → `030_conv_world.png`、
   `-Game mx` → `032_conv_world.png`：拉到试验带近景，带子上能看到 "2/2/3/2/2/2/2/2" 的层数数字；

@@ -24,7 +24,8 @@ import mindustry.world.Tile;
  * 1) 相邻并池按**同类**（同一个组合方块类，例如两台不同配方的"组合工厂"）判定，
  *    不是按"同一个方块对象"；不同**类**（组合工厂 vs 组合钻头）相邻不并，
  *    要靠组合节点/组合连接器才并。
- * 2) 合体炮台（SuperTurret）应该能和组合炮台（CombinedTurret 族）组合。
+ * （原先还有一条"合体炮台（SuperTurret）应该能和组合炮台（CombinedTurret 族）组合"——
+ *  合体建筑已经独立到 merge 项目，这条用例随之删掉了。）
  */
 public class AdjacencyGroupTest implements arc.ApplicationListener {
   static String dataDir = "/tmp/mp_cj/data";
@@ -136,7 +137,7 @@ public class AdjacencyGroupTest implements arc.ApplicationListener {
 
       Block gpress = find("graphite-press"), smelter = find("silicon-smelter");
       Block drill = find("mechanical-drill");
-      Block nodeB = null, duo = find("duo"), super2 = find("super-turret-2");
+      Block nodeB = null, duo = find("duo");
       for (Block b : Vars.content.blocks())
         if (b.getClass().getName().equals("combine.net.ComboNode")) {
           nodeB = b;
@@ -146,9 +147,8 @@ public class AdjacencyGroupTest implements arc.ApplicationListener {
           + " silicon-smelter=" + (smelter == null ? "null" : smelter.getClass().getSimpleName())
           + " mechanical-drill=" + (drill == null ? "null" : drill.getClass().getSimpleName())
           + " duo=" + (duo == null ? "null" : duo.getClass().getSimpleName())
-          + " node=" + (nodeB == null ? "null" : nodeB.getClass().getSimpleName())
-          + " super-turret-2=" + (super2 == null ? "null" : super2.getClass().getSimpleName()));
-      if (gpress == null || smelter == null || drill == null || nodeB == null || duo == null || super2 == null) {
+          + " node=" + (nodeB == null ? "null" : nodeB.getClass().getSimpleName()));
+      if (gpress == null || smelter == null || drill == null || nodeB == null || duo == null) {
         System.out.println("[AG] 数据集缺方块，跳过（exit 0）");
         System.exit(0);
       }
@@ -181,36 +181,7 @@ public class AdjacencyGroupTest implements arc.ApplicationListener {
       System.out.println("[AG] 不同类+节点: items 同模块=" + (gp2.items == dr.items));
       check("不同类组合建筑用节点连上：并池", gp2.items == dr.items);
 
-      // 4) 合体炮台 + 组合炮台相邻 → 并池（用户要的例外）
-      Building sup = place(super2, 70, 40);      // size2 → 占 70..71
-      Building dt = place(duo, 72, 40);          // size1，紧贴 71
-      run(30);
-      System.out.println("[AG] 合体炮台+组合炮台相邻: 液池同模块="
-          + (sup != null && dt != null && sup.liquids == dt.liquids));
-      try {
-        Class<?> net = Class.forName("combine.net.ComboNet", true, Vars.mods.getMod("combine").main.getClass().getClassLoader());
-        var m = net.getMethod("componentMembers", Building.class);
-        @SuppressWarnings("unchecked")
-        arc.struct.Seq<Building> cm = (arc.struct.Seq<Building>) m.invoke(null, sup);
-        boolean hasDt = false;
-        for (Building b : cm) if (b == dt) hasDt = true;
-        System.out.println("[AG] 合体炮台所在网络成员数=" + cm.size + " 含组合炮台=" + hasDt
-            + " 成员=" + cm.map(b -> b.block.name));
-        try {
-          var f = net.getDeclaredField("netByPos");
-          f.setAccessible(true);
-          Object netMap = f.get(null);
-          @SuppressWarnings("unchecked")
-          Object list = ((arc.struct.IntMap<Object>) netMap).get(sup.pos());
-          System.out.println("[AG] 权威图 netByPos[合体炮台]=" + (list == null ? "null" : list));
-        } catch (Throwable t2) {
-          System.out.println("[AG] 读 netByPos 失败: " + t2);
-        }
-      } catch (Throwable t) {
-        System.out.println("[AG] 读网络成员失败: " + t);
-      }
-      check("合体炮台和组合炮台相邻：并成一台（共用液池）", sup != null && dt != null && sup.liquids == dt.liquids);
-
+      // 4) 【已删除】"合体炮台 + 组合炮台相邻就并成一台"那条例外随合体建筑一起独立到 merge 项目。
       // 5) 单位生产族（组装厂 ↔ 重构厂）相邻 → 并成一台（用户报的"Reconstructor 和 UnitFactory
       //    的组合没了"）。这两个是**不同的组合类**，靠 allowCrossTypeCombo（单位族例外）并。
       {

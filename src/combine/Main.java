@@ -11,17 +11,12 @@ import combine.net.ComboConnector;
 import combine.net.ComboNet;
 import combine.net.ComboNode;
 import combine.production.CombinedCrafter;
-import combine.production.CombinedDrill;
 import combine.production.CombinedFracker;
 import combine.production.CombinedGenerator;
 import combine.production.CombinedPump;
 import combine.production.CombinedSolidPump;
 import combine.production.CombinedWallCrafter;
 import combine.production.CombinedVariableReactor;
-import combine.production.SuperCombineFactory;
-import combine.production.SuperCombineGenerator;
-import combine.production.FactoryCombiner;
-import combine.production.GeneratorCombiner;
 import combine.saves.SafeW11;
 import combine.saves.SafeWLegacy;
 import combine.saves.SafeWShort;
@@ -85,9 +80,6 @@ import mindustry.world.blocks.power.HeaterGenerator;
 import mindustry.world.blocks.power.ImpactReactor;
 import mindustry.world.blocks.power.NuclearReactor;
 import mindustry.world.blocks.production.AttributeCrafter;
-import mindustry.world.blocks.production.BeamDrill;
-import mindustry.world.blocks.production.BurstDrill;
-import mindustry.world.blocks.production.Drill;
 import mindustry.world.blocks.production.GenericCrafter;
 import mindustry.world.blocks.production.HeatCrafter;
 import mindustry.world.blocks.power.VariableReactor;
@@ -114,8 +106,6 @@ public class Main extends Mod {
   public static ComboConnector comboConnector;
   public static ComboNode comboNode;
   public static LiquidUnloader liquidUnloader;
-  public static SuperCombineFactory superCombineFactory;
-  public static SuperCombineGenerator superCombineGenerator;
 
   static JsonReader reader = new JsonReader();
   static JsonValue json;
@@ -158,7 +148,6 @@ public class Main extends Mod {
     Events.on(mindustry.game.EventType.WorldLoadBeginEvent.class, e -> {
       // 换图：上一张图的"组合体共享配置"不能带到新图（新档里读到本块会再装回来）
       combine.saves.ComboShareState.onWorldLoadBegin();
-      combine.production.OreShadow.onWorldLoadBegin();
       ComboNet.beginWorldLoad();
     });
     // 【读**存档**只会发 SaveLoadEvent，不会发 WorldLoadBegin/WorldLoad】那两条是"读地图"才发的。
@@ -169,13 +158,11 @@ public class Main extends Mod {
     Events.on(SaveLoadEvent.class, e -> {
       // 【必须在 beginWorldLoad 之前】读档末尾补一次"没读到本块就清空"（见 ComboShareState）
       combine.saves.ComboShareState.onLoadFinished();
-      combine.production.OreShadow.onLoadFinished();
       ComboNet.beginWorldLoad();
       ComboNet.rebuildLoading();
     });
     Events.on(WorldLoadEvent.class, e -> {
       combine.saves.ComboShareState.onLoadFinished();
-      combine.production.OreShadow.onLoadFinished();
       // 联机入服时 rules 是刚按名字反查出来的（researched/bannedBlocks 可能装着被替换掉的原版实例），
       // 必须在任何 UI/建造校验读到它之前纠正，否则客户端建造菜单里组合建筑会全部消失。
       Replacer.remapStaleContent();
@@ -204,10 +191,6 @@ public class Main extends Mod {
 
     // 跨组合体网络（连接器/节点）：每帧最多重建一次，避免放一个连接器就重建 5~10 遍
     ComboNet.register();
-
-    // 组合传送带：手里选着同种传送带点在同种传送带上 → 叠一层提速（走原版 Call.tileTap/TapEvent，
-    // 桌面点击与手机点按都覆盖；服务端权威 + 转发，见 combine.distribution.ConveyorOverlay）
-    combine.distribution.ConveyorOverlay.register();
 
     // 【arc 输入兜底】只吞掉"UI 元素在触摸派发过程中被摘掉 → Element.notify 读 getScene() 为 null"
     // 那条 arc 已知 NPE（别的异常照旧抛），别让一次点击把整个存档崩回主菜单。详见 ComboInputGuard。
@@ -248,18 +231,9 @@ public class Main extends Mod {
     // 设置里的"建筑组合开关"界面（客户端才有 UI，服务端自动跳过）
 //    combine.ui.ComboBlockList.register();
 
-    // 超级组合炮台：快捷键/按钮 → 框选炮台 → 按数量生成对应边长的组合体（纯客户端交互）
-    combine.turret.SuperTurretPlacer.register();
-    combine.production.FactoryCombiner.register();
-    combine.production.GeneratorCombiner.register();
-    // 矿物阴影：框选矿物地板 → 画一层阴影 → 阴影上放钻头会缩到 1x1
-    combine.production.OreShadow.register();
-    // 【必须】框选流程本体（输入 + 拖框那层高亮/边框 + 自动取消）的注册：
-    // 漏了它的话 start() 仍会把输入处理器装上、也能框出阴影，但 Trigger.draw 那条没挂 →
-    // **拖框时看不到任何框（没有填充也没有线条边框）**（用户 2026-10-09 报的）。
-    combine.production.OreShadowPlacer.register();
-    // 【用户要求 2026-09-28】不再改 input：入口是 SuperTurretPlacer 自己挂的"框选合体"悬浮按钮
-    // （手机/桌面同一个，可拖动，见 SuperTurretPlacer#ensureButton），输入处理器保持原版。
+    // 【合体钻头 / 矿物阴影已经搬到 merge 项目】合体炮台、合体工厂、合体钻头连同
+    // HUD 浮标入口（炮台合体 / 工厂合体 / 矿物阴影）都由 merge 提供；
+    // 本模组只保留"相邻/区域自动组合"这一半，不再往 HUD 上挂浮标。
 
 //    Events.on(ClientLoadEvent.class, e -> combine.ui.ComboBlockList.register());
     // 客户端在这之后才把蓝图库从磁盘读进来（assets.load(schematics)），再兜一次键；
@@ -394,8 +368,6 @@ public class Main extends Mod {
 
   /** 客户端与（专用）服务端共用的内容装配。 */
   static boolean contentSetupDone = false;
-  /** 矿物阴影用的 1x1 钻头版本装配过没有。 */
-  static boolean shadowDrillsReady = false;
 
   void setupContent() {
     if (contentSetupDone)
@@ -445,14 +417,9 @@ public class Main extends Mod {
     combine.saves.ComboSaveState.register();
     // 组合体自己的"共享哪些部分"配置（按 pos 存在 ComboShare 里，见 ComboShareState）
     combine.saves.ComboShareState.register();
-    // 组合传送带的"覆盖层数"（存档 + 联机入服世界流都带它，见 ConveyorLayerState）
-    combine.distribution.ConveyorLayerState.register();
-
     try {
       getWhiteList();
       processModBlocks();
-      // 组合传送带（原版/模组的 Conveyor/ArmoredConveyor/Duct/StackConveyor → 能"覆盖叠层提速"的组合版）
-      processConveyors();
       processWalls();
       processCompatBlocks();
       // 内容初始化期被"按引用抓走"的老方块实例（典型：组装机 UnitAssembler 配方里的
@@ -463,21 +430,12 @@ public class Main extends Mod {
       // 造价表必须在 content.load() 之后现造（Items.* 是 load() 阶段才赋值的静态字段）
       initRequirementTables();
       createLinkBlocks();
-      createSuperCombineFactory();
-      createSuperCombineGenerator();
       createLiquidBlocks();
-      // 跨距离传热用的探针（组合节点/连接器把热喂给"连线接进来的"需热建筑；和超级炮台开关无关）
+      // 跨距离传热用的探针（组合节点/连接器把热喂给"连线接进来的"需热建筑）
       combine.util.ComboHeatProbe.create();
-      createSuperTurrets();
       for (var entry : Replacer.replaced) {
         postInit(entry.value);
       }
-      // 【放在 postInit 之后】组合传送带的描述是 postInit 从原版方块抄来的，这里再补一行玩法说明
-      combine.distribution.ConveyorOverlay.applyHints();
-      // 【矿物阴影】每种钻头一个"压成 1x1"的隐藏版本（阴影上摆钻头时由 CombinedDrill.onNewPlan 顶替）。
-      // 【放在 postInit 之后】组合钻头的 localizedName / 图标是 postInit 里从原版方块补上的，
-      // 早建的话 1x1 版本会抄到 null（点它会显示 "shadow-xxx" 这种内部名）。
-      createShadowDrills();
       // 启动日志汇总（逐类刷屏已在 BlockCloner 里合并成一行）
       BlockCloner.logFallbackSummary();
       // 协作组合：抓取"放大前"的基础容量（必须在任何世界加载之前）
@@ -680,171 +638,6 @@ public class Main extends Mod {
     comboNode.alwaysUnlocked = !onTree;
   }
 
-  /**
-   * 组合工厂（合体工厂）：框选多台工厂 → 合成一台 side×side（每格一台工厂）、物品/液体/电力/热量共享的方块
-   * （入口是 HUD 浮标里的"工厂合体"子按钮，见 combine.production.FactoryCombiner）。
-   *
-   * <p>和其它"方块在 Mod.init() 里现造"的情况一样：v8 不会替这一步注册的方块调
-   * init()/postInit()/loadIcon()，必须自己补，否则 buildType / 图标是空的。
-   * 方块本身不显示在建造菜单里（buildVisibility=hidden + isVisible()=false），
-   * 但放置流程要合法（isPlaceable() 单独放行）。
-   */
-  void createSuperCombineFactory() {
-    if (SuperCombineFactory.bySide[SuperCombineFactory.MIN_SIDE] != null)
-      return;
-    // 每种边长一个方块（和超级组合炮台一样）：N 台工厂 → ceil(sqrt(N)) × ceil(sqrt(N))，
-    // 每格一台工厂（缩到 1x1）。台数不够铺满的格子留空。
-    for (int side = SuperCombineFactory.MIN_SIDE; side <= SuperCombineFactory.MAX_SIDE; side++) {
-      SuperCombineFactory f = new SuperCombineFactory("super-combine-factory-" + side, side);
-      try {
-        f.localizedName = "组合工厂 " + side + "x" + side;
-        f.description = "多台工厂合体成 " + side + "x" + side + " 的组合工厂：每格一台工厂（缩到 1x1），"
-            + "物品/液体/电力/热量整台共享，可以继续往里加工厂，也能解体拆回每一台。"
-            + "入口：屏幕上的浮标 →「工厂合体」→ 框选要合体的工厂。";
-        f.health = 320 * side;
-        // 【必须用 hidden】以前写成 requirements(Category, ItemStack.with())：那个重载会把
-        // buildVisibility 覆盖成 shown，于是这个 0 造价的方块直接进了建造菜单（用户可见的 bug）。
-        f.requirements(Category.production, BuildVisibility.hidden, new ItemStack[0]);
-        // 【战役模式必须】本方块是 Mod.init() 里现造的隐藏方块，没进科技树、永远不会被研究 ——
-        // 而原版虚影链路 control.input.useSchematic → Schematics.toPlans 会 removeAll 掉
-        // `!block.unlockedNow()` 的计划，UnlockableContent.unlockedNow() 在战役里
-        // （state.isCampaign() = rules.sector != null）只认 unlocked/alwaysUnlocked：
-        // 少了这一行，战役图里框选完**虚影根本不会生成**、点下去什么也不发生
-        // （用户报的"战役模式下工厂无法合体"）。沙盒/自定义图 isCampaign()=false，
-        // unlockedNow() 恒真，所以只有战役会坏。超级组合炮台当年也是靠这一行才在战役里能用
-        // （见 createSuperTurrets）。hidden 方块不进建造菜单/数据库，这一行没有别的副作用。
-        f.alwaysUnlocked = true;
-        f.init();
-        f.postInit();
-        // 血量/液体产物的信息条：原版是在 afterPatch 里建的，我们现造的方块要自己调一次
-        f.setBars();
-      } catch (Throwable t) {
-        Log.err("[combine] 组合工厂 @x@ 装配失败（已兜底，不会带崩建造菜单）", side, side, t);
-      } finally {
-        ensureIcons(f);
-      }
-      SuperCombineFactory.bySide[side] = f;
-    }
-    superCombineFactory = SuperCombineFactory.bySide[SuperCombineFactory.MIN_SIDE];
-    Log.info("[combine] 组合工厂：@ 种边长已装配（2x2 .. @x@）",
-        SuperCombineFactory.MAX_SIDE - SuperCombineFactory.MIN_SIDE + 1, SuperCombineFactory.MAX_SIDE);
-  }
-
-  /** 与组合工厂同构的**发电机合体**方块（入口：浮标 →「发电机合体」，见 GeneratorCombiner）。 */
-  void createSuperCombineGenerator() {
-    if (SuperCombineGenerator.bySide[SuperCombineGenerator.MIN_SIDE] != null)
-      return;
-    for (int side = SuperCombineGenerator.MIN_SIDE; side <= SuperCombineGenerator.MAX_SIDE; side++) {
-      SuperCombineGenerator g = new SuperCombineGenerator("super-combine-generator-" + side, side);
-      try {
-        g.localizedName = "组合发电机 " + side + "x" + side;
-        g.description = "多台发电机合体成 " + side + "x" + side + " 的组合发电机：每格一台发电机（缩到 1x1），"
-            + "物品/液体/电力/热量整台共享，可以继续往里加发电机，也能解体拆回每一台。"
-            + "入口：屏幕上的浮标 →「发电机合体」→ 框选要合体的发电机。";
-        g.health = 320 * side;
-        g.requirements(Category.power, BuildVisibility.hidden, new ItemStack[0]);
-        g.alwaysUnlocked = true;
-        g.init();
-        g.postInit();
-        g.setBars();
-      } catch (Throwable t) {
-        Log.err("[combine] 组合发电机 @x@ 装配失败（已兜底，不会带崩建造菜单）", side, side, t);
-      } finally {
-        ensureIcons(g);
-      }
-      SuperCombineGenerator.bySide[side] = g;
-    }
-    superCombineGenerator = SuperCombineGenerator.bySide[SuperCombineGenerator.MIN_SIDE];
-    Log.info("[combine] 组合发电机：@ 种边长已装配（2x2 .. @x@）",
-        SuperCombineGenerator.MAX_SIDE - SuperCombineGenerator.MIN_SIDE + 1, SuperCombineGenerator.MAX_SIDE);
-  }
-
-  /**
-   * 【矿物阴影】给每一种钻头现造一个"压成 1x1"的隐藏版本（{@code CombinedDrill} 克隆体）。
-   *
-   * <p>它本体只占 1 格（{@code size=1}），但 {@code mineSize} 记着原来的边长 —— 挖矿、判定矿石、
-   * 激光束数量全按"原来那 size×size 每格都盖住了矿物"算；阴影区域里的这些 1x1 钻头共用一口
-   * 物品 / 液体池（组合逻辑原样继承），所以通水给任意一台就能加速整站，物品也能从区域任意一边出去。
-   *
-   * <p>隐藏方块：不进建造菜单、不参与研究，玩家看到的还是原来的钻头（和合体工厂 / 合体炮台同一个思路）。
-   * 方块名固定 {@code shadow-<原名>}，两端遍历顺序一致 → id 也一致，联机不会错位。
-   */
-  void createShadowDrills() {
-    if (shadowDrillsReady)
-      return;
-    shadowDrillsReady = true;
-    // 快照遍历：新方块会追加进注册表，不能直接遍历
-    Seq<Content> snapshot = new Seq<>(Vars.content.getBy(ContentType.block));
-    int made = 0;
-    for (var c : snapshot) {
-      if (!(c instanceof CombinedDrill cd))
-        continue;
-      if (cd.shadowShrunk || cd.shadowVariant != null || cd.size <= 1)
-        continue;
-      try {
-        CombinedDrill sh = new CombinedDrill("shadow-" + cd.name);
-        copyFields(cd, sh);
-        sh.shadowShrunk = true;
-        sh.shadowVariant = sh;
-        sh.mineSize = cd.size;
-        sh.size = 1;
-        sh.localizedName = cd.localizedName == null ? cd.name : cd.localizedName;
-        sh.description = "压成 1 格的钻头（只出现在矿物阴影上）：挖矿速度仍按原来 "
-            + cd.size + "x" + cd.size + " 每格都盖住了矿物计算。";
-        sh.buildVisibility = BuildVisibility.hidden;
-        // 【用户 2026-10-10 报"放置合体钻头还不消耗材料"】以前这里写
-        // {@code sh.requirements(Category.production, BuildVisibility.hidden, new ItemStack[0])} ——
-        // 那把造价整个清零了：玩家在阴影上摆下来的 1x1 钻头**不要钱**。改成保留原钻头那份造价
-        // （和玩家选的还是同一台钻头一个价）。这份 requirements 同时是两个地方的口径：
-        //   · 客户端 {@code BuilderComp} 的"核心有没有料"那一关（缺料就 stuck，不施工）；
-        //   · 拆除时原版 {@code ConstructBuild.deconstruct} 按 {@code requirements} 退料。
-        // 所以拆除合体钻头（用户 2026-10-10 报的"应该返回物品"）也是靠这一行拿到退款的。
-        // 注意：不能调 {@code requirements(...)} 那个重载 —— 它会把 buildVisibility 一起覆盖成 hidden 之外的值。
-        sh.category = cd.category;
-        sh.requirements = cd.requirements == null ? new ItemStack[0] : cd.requirements.clone();
-        // 【战役/联机也必须可用】和隐藏的组合工厂、超级组合炮台同一个坑：现造的隐藏方块没进科技树，
-        // 战役里 `unlockedNow()` 只认 unlocked/alwaysUnlocked —— 少了这一行，涉及"按解锁过滤"的
-        // 链路（蓝图/虚影、以及客户端自己那份解锁表）会把压格钻头当成没解锁的东西丢掉。
-        sh.alwaysUnlocked = true;
-        sh.init();
-        // 【offset 必须是 1x1 自己的值（0）】以前为了让贴图落在"原来那片地基的中心"把它设成
-        // 原钻头的半格偏移 —— 结果 Block.bounds()/hitbox 整体偏半格，原版放置判据里
-        // "新方块要能罩住这一格原有的东西"那条直接失败，validPlace=false，
-        // 表现就是**用户报的"阴影上摆钻头、点建造后钻头直接消失"**。
-        // 1x1 的方块就该以自己那一格为中心（init() 已按 size=1 算好 offset/sizeOffset）。
-        sh.postInit();
-        try {
-          sh.setBars();
-        } catch (Throwable ignored) {
-        }
-        // 【贴图：抄原钻头的，别走 ensureIcons】ensureIcons 调的是 sh.load()，它按**自己的名字**
-        // "shadow-机械钻头" 去图集里找贴图 —— 找不到就把 region/topRegion 全换成 error，
-        // 真实客户端截图上就是"阴影上一块 error 方块"（实测踩过）。整套沿用原钻头加载好的贴图。
-        CombinedDrill.copyVisuals(cd, sh);
-        shadowIconFallback(cd, sh);
-        cd.shadowVariant = sh;
-        made++;
-      } catch (Throwable t) {
-        Log.err("[combine] 矿物阴影：@ 的 1x1 版本装配失败（这种钻头不参与阴影压格）", cd.name, t);
-      }
-    }
-    Log.info("[combine] 矿物阴影：@ 种钻头有了压成 1x1 的版本", made);
-  }
-
-  /** 1x1 版本的图标兜底：抄不到原钻头那份就给 error，uiIcon/fullIcon/region 都不留 null。 */
-  static void shadowIconFallback(Block src, Block dst) {
-    try {
-      Object error = (arc.Core.atlas == null) ? null : arc.Core.atlas.find("error");
-      if (dst.fullIcon == null)
-        dst.fullIcon = src.fullIcon != null ? src.fullIcon : (arc.graphics.g2d.TextureRegion) error;
-      if (dst.uiIcon == null)
-        dst.uiIcon = src.uiIcon != null ? src.uiIcon : dst.fullIcon;
-      if (dst.region == null)
-        dst.region = src.region != null ? src.region : dst.fullIcon;
-    } catch (Throwable ignored) {
-    }
-  }
-
   void createLiquidBlocks() {
     if (liquidUnloader != null)
       return;
@@ -881,73 +674,7 @@ public class Main extends Mod {
     liquidUnloader.alwaysUnlocked = !onTree;
   }
 
-  /**
-   * 超级组合炮台：每种边长一个方块实例（2x2 ~ 6x6）。
-   *
-   * <p>
-   * 这些方块不进科技树（也不给造价）：它们不是"造"出来的，而是用快捷键/建造菜单里的按钮
-   * 框选一片炮台之后，按炮台数量自动生成对应边长的那一台（见 combine.turret.SuperTurretPlacer）。
-   * 为了走原版那套放置流程（虚影、合法染色、建造队列、联机同步），buildVisibility 必须是
-   * shown（hidden 的方块 Build.validPlace 直接拒绝），所以它们在建造菜单里也会出现一行
-   * —— 点它等于"按下框选按钮"。
-   */
-  void createSuperTurrets() {
-    // 【停用中】用户 2026-09-25：「超级组合炮台先停用，我后面补充描述」。
-    // 开关在 combine.turret.SuperTurret.enabled；关着的时候一个方块都不注册（入口也不挂）。
-    if (!combine.turret.SuperTurret.enabled) {
-      Log.info("[combine] 超级组合炮台当前停用（SuperTurret.enabled=false）");
-      return;
-    }
-    if (combine.turret.SuperTurret.bySide[combine.turret.SuperTurret.MIN_SIDE] != null)
-      return;
-    // 内部用的热量探针（不落地、不进建造菜单）：把整台的热量喂给每一格
-    try {
-      combine.turret.SuperTurret.heatProbe = new combine.turret.SuperTurret.HeatProbe("super-turret-heat");
-      combine.turret.SuperTurret.heatProbe.init();
-      combine.turret.SuperTurret.heatProbe.postInit();
-      // 隐藏方块也要有非空图标，免得别的界面顺手画到它
-      combine.turret.SuperTurret.HeatProbe hp = combine.turret.SuperTurret.heatProbe;
-      if (visuals()) {
-        arc.graphics.g2d.TextureRegion reg = arc.Core.atlas.find("heat-source", arc.Core.atlas.find("error"));
-        hp.region = reg;
-        hp.fullIcon = reg;
-        hp.uiIcon = reg;
-      }
-    } catch (Throwable t) {
-      Log.err("[combine] 超级组合炮台热量探针装配失败（热量会退回逐格相邻）", t);
-    }
-    for (int side = combine.turret.SuperTurret.MIN_SIDE; side <= combine.turret.SuperTurret.MAX_SIDE; side++) {
-      combine.turret.SuperTurret st = new combine.turret.SuperTurret("super-turret-" + side, side);
-      try {
-        st.requirements(Category.turret, BuildVisibility.shown, new ItemStack[0]);
-        st.localizedName = "超级组合炮台 " + side + "x" + side;
-        st.description = "在建造菜单里点它（或按快捷键，默认 G）= 框选炮台："
-            + "按框里的炮台数量生成对应边长的一台（2~4 台→2x2，5~9 台→3x3 …），"
-            + "每格一台炮台、不够的格子留空；物品/液体/电力整台共用，各格各自开火、各自冷却。"
-            + "虚影跟着鼠标走，左键确定位置，右键/Q/Esc 取消。";
-        st.alwaysUnlocked = true;
-        // 【不要往 shownPlanets 里加星球】原版 UnlockableContent.isOnPlanet() 是
-        // "planet == null || shownPlanets.isEmpty() || shownPlanets.contains(planet)" ——
-        // 一旦写进了 {塞普罗, 埃里克尔}，**别的星球（含模组星球）就会被过滤掉**。
-        // 卡住的是放置那一步：Build.validPlaceIgnoreUnits 里的 type.environmentBuildable()
-        // （原版 Block.environmentBuildable() 就是 isOnPlanet(state.getPlanet())）——
-        // 框选、虚影都正常，点下去却什么也不发生，表现就是用户报的
-        // "在其他星球的地图上合体炮台无法建造"。
-        // 空集合 = 所有星球都能用，这里什么都不用加。
-        st.init();
-        st.postInit();
-      } catch (Throwable t) {
-        Log.err("[combine] 超级组合炮台 @x@ 装配失败（已兜底）", side, side, t);
-      } finally {
-        ensureIcons(st);
-      }
-      combine.turret.SuperTurret.bySide[side] = st;
-    }
-    Log.info("[combine] 超级组合炮台：@ 种边长已装配",
-        combine.turret.SuperTurret.MAX_SIDE - combine.turret.SuperTurret.MIN_SIDE + 1);
-  }
-
-  /**
+    /**
    * 内容数据兜底：把"带 null 的 ItemStack 数组"从游戏数据里清掉。
    *
    * 为什么必须有：原版这两个地方都是无检查取值，模组改不了它们（都是原版类）——
@@ -1179,70 +906,6 @@ public class Main extends Mod {
     }
   }
 
-  /**
-   * 组合传送带：把原版/模组的 {@code Conveyor / ArmoredConveyor / Duct / StackConveyor}（含子类）
-   * 换成能"覆盖叠层提速"的组合版（同 id、同名字、同贴图、同速度，行为不变）。
-   *
-   * <p>这些类在 {@link NoCombo} 里（传输类不该"组合"共用库存），所以不走 {@link #processModBlocks()}；
-   * 放置/叠层逻辑见 {@code combine.distribution.ConveyorOverlay}。
-   *
-   * <p>和模组其它"现造方块"一样：v8 不会替这一步注册的方块调 init()/postInit()/loadIcon()，
-   * 必须自己补；单个方块失败不能拖垮整张内容表。
-   */
-  void processConveyors() {
-    // 快照遍历：createCombo 会原地修改注册表（set+pop），不可直接遍历
-    Seq<Content> snapshot = new Seq<>(Vars.content.getBy(ContentType.block));
-    int count = 0;
-    for (var c : snapshot) {
-      Block b = (Block) c;
-      if (originalToCombo.containsKey(b) || comboToOriginal.containsKey(b))
-        continue;
-      if (list.contains(b.name))
-        continue;
-      if (b instanceof combine.distribution.CombinedConveyor
-          || b instanceof combine.distribution.CombinedDuct
-          || b instanceof combine.distribution.CombinedStackConveyor)
-        continue;
-
-      boolean isStack = b instanceof mindustry.world.blocks.distribution.StackConveyor;
-      boolean isDuct = b instanceof mindustry.world.blocks.distribution.Duct;
-      boolean isConveyor = b instanceof mindustry.world.blocks.distribution.Conveyor;
-      if (!isStack && !isDuct && !isConveyor)
-        continue;
-
-      try {
-        Block combo;
-        if (isStack) {
-          combo = createCombo(b, combine.distribution.CombinedStackConveyor.class);
-        } else if (isDuct) {
-          combo = createCombo(b, combine.distribution.CombinedDuct.class);
-        } else {
-          combine.distribution.CombinedConveyor cc =
-              createCombo(b, combine.distribution.CombinedConveyor.class);
-          // ArmoredConveyor 只是 Conveyor 上多了"防侧装"，用同一个组合类 + 开关保留它的行为
-          cc.armored = b instanceof mindustry.world.blocks.distribution.ArmoredConveyor;
-          combo = cc;
-        }
-        copyFields(b, combo);
-        combo.init();
-        combo.postInit();
-        if (visuals())
-          // 贴图/图标兜底：方块名和原版一样，load() 会按原名重新取一遍图集贴图
-          // （绝不留 null —— 建造菜单里 uiIcon 为 null 会直接崩）
-          ensureIcons(combo);
-        postInit(combo);
-        // 层数"配置"：copyFields 之后注册一次（原版这些方块没有配置，不会被覆盖，但顺序上更稳）
-        combine.distribution.ConveyorOverlay.install(combo);
-        count++;
-      } catch (Throwable th) {
-        Log.err("[combine] processConveyors failed for " + b.name, th);
-      }
-    }
-    if (count > 0)
-      Log.info("[combine] 组合传送带：@ 种传送带/管道已装配（可覆盖叠层，最多 @ 层，可在设置里调）",
-          count, combine.distribution.ConveyorOverlay.settingMaxLayers());
-  }
-
   void processModBlocks() {
     // 快照遍历：createCombo 会原地修改注册表（set+pop），不可直接遍历
     Seq<Content> snapshot = new Seq<>(Vars.content.getBy(ContentType.block));
@@ -1265,8 +928,6 @@ public class Main extends Mod {
       boolean isHeatProducer = isExact(b, HeatProducer.class);
       boolean isSeparator = isExact(b, Separator.class);
       boolean isAttribute = isExact(b, AttributeCrafter.class);
-      boolean isDrill = isExact(b, Drill.class) || isExact(b, BeamDrill.class)
-          || isExact(b, BurstDrill.class);
       boolean isGenerator = isExact(b, ConsumeGenerator.class)
           || isExact(b, ImpactReactor.class)
           || isExact(b, NuclearReactor.class) || isExact(b, HeaterGenerator.class);
@@ -1314,7 +975,7 @@ public class Main extends Mod {
       boolean isReconstructor = isExact(b, Reconstructor.class);
 
       if (!isFactory && !isHeatCrafter && !isHeatProducer && !isSeparator && !isAttribute
-          && !isDrill && !isGenerator && !isLaunchPad && !isLandingPad
+          && !isGenerator && !isLaunchPad && !isLandingPad
           && !isRegen && !isOverdrive && !isMend && !isForce && !isStorage && !isCore
           && !isLogic && !isContLiquidTurret && !isLiquidTurret && !isItemTurret
           && !isPowerTurret && !isLaserTurret
@@ -1323,7 +984,7 @@ public class Main extends Mod {
         continue;
 
       // 防止重复处理已转换类型
-      if (b instanceof CombinedCrafter || b instanceof CombinedDrill
+      if (b instanceof CombinedCrafter
           || b instanceof CombinedGenerator || b instanceof CombinedLaunchPad || b instanceof CombinedLandingPad
           || b instanceof combine.storage.CombinedCoreBlock
           || b instanceof CombinedRegenProjector || b instanceof CombinedOverdriveProjector
@@ -1355,15 +1016,6 @@ public class Main extends Mod {
         else
           cc.mode = CombinedCrafter.Mode.generic;
         combo = cc;
-      } else if (isDrill) {
-        CombinedDrill cd = createCombo(b, CombinedDrill.class);
-        if (isExact(b, BeamDrill.class))
-          cd.mode = CombinedDrill.Mode.beam;
-        else if (isExact(b, BurstDrill.class))
-          cd.mode = CombinedDrill.Mode.burst;
-        else
-          cd.mode = CombinedDrill.Mode.drill;
-        combo = cd;
       } else if (isGenerator) {
         CombinedGenerator cg = createCombo(b, CombinedGenerator.class);
         // FIX[消耗变快]: copyFields 只拷同名字段，而组合类的模式字段带
