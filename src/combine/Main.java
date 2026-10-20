@@ -114,7 +114,6 @@ public class Main extends Mod {
   public void init() {
     Settings.load();
     MultiBuildList.init();
-    combine.distribution.ConveyorOverlay.loadLayers();
     // 施工替换：残留的旧实例引用（其他模组静态字段等）→ 组合实例。
     Events.on(BlockBuildBeginEvent.class, e -> {
       if (e.breaking)
